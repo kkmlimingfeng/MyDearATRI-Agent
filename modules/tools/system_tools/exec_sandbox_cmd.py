@@ -15,20 +15,20 @@ def exec_sandbox_cmd(cmd: str, timeout: int = 30) -> str:
     """
     在 firejail 沙箱中执行 shell 命令。
 
-    适用于技能需要执行脚本或系统命令的场景。
+    适用于技能需要执行脚本命令或者获取当前时间的场景。
     默认将 SANDBOX_WRITE_PATH（可在 config/.env 中配置）设为可写，其余目录只读。
 
     Args:
         cmd: 要在沙箱中执行的 bash 命令
-        timeout: 最大执行时间（秒）
+        timeout: 最大执行时间（秒）默认为30秒
 
     Returns:
-        命令的标准输出和错误输出
+        命令的输出内容
 
     Example:
         exec_sandbox_cmd(cmd="python modules/skills/some_skill/script/step1.py")
         exec_sandbox_cmd(cmd="echo hello && pwd")
-        exec_sandbox_cmd(cmd="date '+%Y年%m月%d日'")
+        exec_sandbox_cmd(cmd="date '+%Y-%m-%d'")
     """
     # 命令黑名单：弥补 WSL2 网络隔离失效等场景
     ban_list = {"curl", "wget", "ping", "nc", "sudo", "rm -rf", "chmod"}

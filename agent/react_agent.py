@@ -2,7 +2,10 @@
 ReAct Agent - Thought-Action-Observation循环实现
 """
 import ast
+import json
+import os
 import re
+from datetime import datetime
 from typing import Dict, Tuple, Optional, Any
 from .base_agent import BaseAgent, Colors
 
@@ -63,6 +66,31 @@ class ReactAgent(BaseAgent):
         return self._inject_module_descriptions(
             base_prompt, skills_id, '{{SKILLS}}', 'format_skill_overview'
         )
+
+    def _inject_memory(self, base_prompt: str, memory_id: str = 'memory') -> str:
+        """
+        自动注入长期记忆到系统提示词。
+
+        如果 memory 模块已启用，则从总线获取 memory.md 内容并追加到系统提示词。
+        """
+        if not self._enabled.get(memory_id, False):
+            return base_prompt
+
+        try:
+            response = self.bus.request(
+                source='agent',
+                target=memory_id,
+                payload={'action': 'get_memory'}
+            )
+            memory_content = response.payload.get('memory', '')
+        except Exception:
+            return base_prompt
+
+        if not memory_content:
+            return base_prompt
+
+        memory_section = f"## 长期记忆\n\n{memory_content}"
+        return base_prompt + '\n\n' + memory_section
 
     def parse_output(self, output: str) -> Tuple[str, str, str]:
         """
@@ -193,6 +221,8 @@ class ReactAgent(BaseAgent):
         llm_id: str = 'llm',
         tools_id: str = 'tools',
         skills_id: str = 'skills',
+        memory_id: str = 'memory',
+        reviewer_id: str = 'reviewer',
         **kwargs
     ) -> str:
         """
@@ -203,6 +233,8 @@ class ReactAgent(BaseAgent):
         :param llm_id: 使用的LLM模块ID
         :param tools_id: 使用的工具模块ID
         :param skills_id: 使用的技能模块ID
+        :param memory_id: 使用的记忆模块ID
+        :param reviewer_id: 使用的Reviewer模块ID
         :return: 最终回答
         """
         # 检查必要模块是否存在且启用
@@ -232,7 +264,7 @@ class ReactAgent(BaseAgent):
             print(f"{Colors.RED}错误: 获取系统提示词失败 - {str(e)}{Colors.RESET}")
             return "错误: 获取系统提示词失败"
 
-        # 构建完整的系统提示词：注入工具描述和技能描述
+        # 构建完整的系统提示词：注入工具描述、技能描述和长期记忆
         system_prompt = base_prompt
         # 如果工具模块已启用，注入工具描述
         if self._enabled.get(tools_id, False):
@@ -240,6 +272,8 @@ class ReactAgent(BaseAgent):
         # 如果技能模块已启用，注入技能目录简介
         if self._enabled.get(skills_id, False):
             system_prompt = self._inject_skill_overview(system_prompt, skills_id)
+        # 如果记忆模块已启用，自动注入长期记忆
+        system_prompt = self._inject_memory(system_prompt, memory_id)
 
         # 构建历史对话记录，使用标准messages格式
         # 取最近的 max_history_turns 轮对话 + 当前用户输入
@@ -299,12 +333,20 @@ class ReactAgent(BaseAgent):
             # 执行Action（通过总线调用工具）
             observation, final_answer = self.execute_action(action, tools_id)
 
-            # 如果任务完成，返回最终答案
+            # 如果任务完成，先触发 reviewer 总结，再返回最终答案
             if final_answer:
                 # 保存本轮对外的 user/assistant 消息到历史
                 self._add_to_history(user_input, final_answer)
                 # 绿色加粗输出：最终答案
                 print(f"\n{Colors.GREEN}{Colors.BOLD}任务完成，最终答案:{Colors.RESET} {final_answer}")
+                # 后台 reviewer 处理（用户不可见）
+                self._run_reviewer(
+                    user_input=user_input,
+                    final_answer=final_answer,
+                    messages=messages,
+                    reviewer_id=reviewer_id,
+                    prompt_id=prompt_id
+                )
                 return final_answer
 
             # 将工具返回结果格式化并加入messages
@@ -321,7 +363,182 @@ class ReactAgent(BaseAgent):
         print(f"{Colors.RED}{fallback}{Colors.RESET}")
         # 仍然保存本轮记录，避免历史完全丢失
         self._add_to_history(user_input, fallback)
+        # 后台 reviewer 处理（用户不可见）
+        self._run_reviewer(
+            user_input=user_input,
+            final_answer=fallback,
+            messages=messages,
+            reviewer_id=reviewer_id,
+            prompt_id=prompt_id
+        )
         return fallback
+
+    def _run_reviewer(
+        self,
+        user_input: str,
+        final_answer: str,
+        messages: list,
+        reviewer_id: str,
+        prompt_id: str
+    ) -> None:
+        """
+        在最终答案输出后，后台调用 Reviewer 模块进行总结。
+
+        该过程对用户不可见，只负责更新 memory.md 和 USER.md。
+        """
+        if not self._enabled.get(reviewer_id, False):
+            return
+
+        try:
+            reviewer_prompt = self._get_reviewer_prompt(prompt_id)
+            if not reviewer_prompt:
+                return
+
+            conversation_text = self._build_conversation_text(messages, final_answer)
+
+            response = self.bus.request(
+                source='agent',
+                target=reviewer_id,
+                payload={
+                    'action': 'review',
+                    'system_prompt': reviewer_prompt,
+                    'conversation_text': conversation_text
+                }
+            )
+
+            if 'error' in response.payload:
+                return
+
+            result = response.payload.get('result', {})
+            self._apply_review_result(result)
+        except Exception:
+            # Reviewer 失败不应影响主流程
+            pass
+
+    def _get_reviewer_prompt(self, prompt_id: str) -> str:
+        """从 PromptManager 获取 reviewer 系统提示词"""
+        try:
+            response = self.bus.request(
+                source='agent',
+                target=prompt_id,
+                payload={
+                    'action': 'get_system_prompt',
+                    'prompt_name': 'reviewer'
+                }
+            )
+            return response.payload.get('system_prompt', '')
+        except Exception:
+            return ''
+
+    def _build_conversation_text(self, messages: list, final_answer: str) -> str:
+        """将 messages 列表构建为供 reviewer 阅读的对话文本"""
+        lines = []
+        for msg in messages:
+            role = msg.get('role', '')
+            content = msg.get('content', '')
+            if role == 'system':
+                lines.append(f"[系统提示词]\n{content}")
+            elif role == 'user':
+                lines.append(f"[用户]\n{content}")
+            elif role == 'assistant':
+                lines.append(f"[Agent]\n{content}")
+        lines.append(f"[最终回答]\n{final_answer}")
+        return '\n\n'.join(lines)
+
+    def _apply_review_result(self, result: Dict[str, Any]) -> None:
+        """应用 reviewer 输出，更新 memory.md 和 USER.md"""
+        memory_entries = result.get('memory_entries', [])
+        profile_updates = result.get('user_profile_updates', {})
+
+        if memory_entries:
+            self._append_memory_entries(memory_entries)
+
+        if profile_updates:
+            self._update_user_profile(profile_updates)
+
+    def _append_memory_entries(self, entries: list) -> None:
+        """将记忆条目追加到 modules/mem/memory.md"""
+        memory_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "modules", "mem", "memory.md"
+        )
+        try:
+            os.makedirs(os.path.dirname(memory_path), exist_ok=True)
+            with open(memory_path, 'a', encoding='utf-8') as f:
+                for entry in entries:
+                    f.write(f"- {entry}\n")
+        except Exception:
+            pass
+
+    def _update_user_profile(self, updates: Dict[str, str]) -> None:
+        """更新 modules/prompt/SystemPrompt/USER.md"""
+        user_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "modules", "prompt", "SystemPrompt", "USER.md"
+        )
+        try:
+            os.makedirs(os.path.dirname(user_path), exist_ok=True)
+
+            if os.path.isfile(user_path):
+                with open(user_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            else:
+                content = ""
+
+            content = self._merge_user_profile(content, updates)
+
+            with open(user_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+        except Exception:
+            pass
+
+    def _merge_user_profile(self, content: str, updates: Dict[str, str]) -> str:
+        """合并用户画像更新到现有 markdown 内容"""
+        if not content.strip():
+            content = "# USER\n\n## 基本信息\n\n## 偏好\n\n## 目标\n"
+
+        for key, value in updates.items():
+            if '-' not in key:
+                continue
+            section, item = key.split('-', 1)
+            content = self._update_profile_item(content, section, item, value)
+
+        return content
+
+    def _update_profile_item(
+        self,
+        content: str,
+        section: str,
+        item: str,
+        value: str
+    ) -> str:
+        """在 markdown 中更新或添加某个画像项目"""
+        section_pattern = re.compile(rf'^(##\s*{re.escape(section)}\s*)$', re.MULTILINE)
+        match = section_pattern.search(content)
+
+        if not match:
+            # 章节不存在，追加到末尾
+            content += f"\n\n## {section}\n\n- {item}：{value}"
+            return content
+
+        section_start = match.end()
+        # 找到下一个 ## 标题，或文件末尾
+        next_section = re.search(r'\n##\s', content[section_start:])
+        if next_section:
+            section_end = section_start + next_section.start()
+            section_text = content[section_start:section_end]
+            remainder = content[section_end:]
+        else:
+            section_text = content[section_start:]
+            remainder = ""
+
+        item_pattern = re.compile(rf'^(-\s*{re.escape(item)}\s*：\s*).*$', re.MULTILINE)
+        if item_pattern.search(section_text):
+            section_text = item_pattern.sub(rf'\g<1>{value}', section_text)
+        else:
+            section_text = section_text.rstrip() + f"\n- {item}：{value}"
+
+        return content[:section_start] + section_text + remainder
 
     def _add_to_history(self, user_input: str, assistant_answer: str) -> None:
         """将一轮对外的 user/assistant 消息加入历史，并裁剪到窗口大小"""

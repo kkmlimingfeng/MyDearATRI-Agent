@@ -54,6 +54,8 @@ from modules.prompt import PromptManager
 from modules.llm import ModelScopeLLM
 from modules.tools import ToolModule
 from modules.skills import SkillModule
+from modules.mem import MemoryModule
+from modules.reviewer import ReviewerModule
 
 
 def main():
@@ -65,12 +67,16 @@ def main():
     parser.add_argument("--disable-llm", action="store_true", help="禁用LLM模块")
     parser.add_argument("--disable-tools", action="store_true", help="禁用工具模块")
     parser.add_argument("--disable-skills", action="store_true", help="禁用技能模块")
+    parser.add_argument("--disable-memory", action="store_true", help="禁用记忆模块")
+    parser.add_argument("--disable-reviewer", action="store_true", help="禁用Reviewer模块")
     args = parser.parse_args()
 
     enable_prompt = not args.disable_prompt
     enable_llm = not args.disable_llm
     enable_tools = not args.disable_tools
     enable_skills = not args.disable_skills
+    enable_memory = not args.disable_memory
+    enable_reviewer = not args.disable_reviewer
 
     # 1. 创建Agent（内部创建EventBus）
     agent = ReactAgent(max_iterations=5)
@@ -85,6 +91,8 @@ def main():
     llm = ModelScopeLLM("llm", agent.bus, model_path="./Qwen/Qwen3-0.6B") if enable_llm else None
     tools = ToolModule("tools", agent.bus, config_path=tools_config_path) if enable_tools else None
     skills = SkillModule("skills", agent.bus, config_path=skills_config_path) if enable_skills else None
+    memory = MemoryModule("memory", agent.bus) if enable_memory else None
+    reviewer = ReviewerModule("reviewer", agent.bus, llm_id="llm") if enable_reviewer else None
 
     # 3. 自动扫描并注册 tools / skills
     if enable_tools and tools is not None:
@@ -104,6 +112,10 @@ def main():
         agent.register_module(tools, enabled=enable_tools)
     if skills is not None:
         agent.register_module(skills, enabled=enable_skills)
+    if memory is not None:
+        agent.register_module(memory, enabled=enable_memory)
+    if reviewer is not None:
+        agent.register_module(reviewer, enabled=enable_reviewer)
 
     # 5. 启动Agent（初始化所有模块并注册到总线）
     agent.start()
@@ -132,7 +144,10 @@ def main():
                 user_input=user_input,
                 prompt_name="default",  # 使用 AGENT.md + SOUL.md + USER.md 拼接的系统提示词
                 llm_id="llm",
-                tools_id="tools"
+                tools_id="tools",
+                skills_id="skills",
+                memory_id="memory",
+                reviewer_id="reviewer"
             )
 
             # 输出结果
