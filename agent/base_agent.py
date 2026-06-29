@@ -98,9 +98,9 @@ class BaseAgent(ABC):
     
     def stop(self) -> None:
         """停止Agent：关闭所有已启用的模块"""
-        # 黄色输出：关闭信息
-        print(f"\n{Colors.YELLOW}{Colors.BOLD}  Agent 正在关闭...{Colors.RESET}")
-        
+        # 绿色输出：关闭信息
+        print(f"\n{Colors.GREEN}{Colors.BOLD}  Agent 正在关闭...{Colors.RESET}")
+
         # 遍历所有已注册的模块
         for module_id, module in self._modules.items():
             # 检查模块是否启用
@@ -109,9 +109,9 @@ class BaseAgent(ABC):
                 module.unregister()
                 # 关闭模块
                 module.shutdown()
-                # 蓝色输出：模块已关闭
-                print(f"{Colors.BLUE}  [✓] 模块 {module_id} 已关闭{Colors.RESET}")
-        
+                # 绿色输出：模块已关闭
+                print(f"{Colors.GREEN}  [✓] 模块 {module_id} 已关闭{Colors.RESET}")
+
         # 清空总线上的所有订阅
         self.bus.clear()
         # 绿色输出：关闭完成

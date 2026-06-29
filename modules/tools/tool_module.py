@@ -15,14 +15,22 @@ class ToolModule(BaseTool):
 
         支持 action:
             - 'call': 调用指定工具，参数通过 tool_name 和 params 传递
+            - 'get_tool_descriptions': 返回所有已注册工具的描述信息
+            - 'format_tool_descriptions': 返回格式化的工具说明 Markdown 文本
         """
         if message.type != MessageType.REQUEST:
             return
 
         action = message.payload.get('action')
-        if action != 'call':
-            return
+        if action == 'call':
+            self._handle_call(message)
+        elif action == 'get_tool_descriptions':
+            self._handle_get_descriptions(message)
+        elif action == 'format_tool_descriptions':
+            self._handle_format_descriptions(message)
 
+    def _handle_call(self, message: Message) -> None:
+        """处理工具调用请求"""
         tool_name = message.payload.get('tool_name')
         tool_kwargs = message.payload.get('params', {})
 
@@ -51,3 +59,21 @@ class ToolModule(BaseTool):
                 msg_type=MessageType.RESPONSE,
                 correlation_id=message.correlation_id
             )
+
+    def _handle_get_descriptions(self, message: Message) -> None:
+        """返回工具描述结构化数据"""
+        self.send(
+            target=message.source,
+            payload={'descriptions': self.get_tool_descriptions()},
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )
+
+    def _handle_format_descriptions(self, message: Message) -> None:
+        """返回格式化后的工具说明文本"""
+        self.send(
+            target=message.source,
+            payload={'text': self.format_tool_descriptions()},
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )

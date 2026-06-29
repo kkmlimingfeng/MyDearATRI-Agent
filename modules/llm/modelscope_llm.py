@@ -110,5 +110,5 @@ class ModelScopeLLM(BaseLLM):
         torch.cuda.empty_cache()         # 清空GPU缓存
         gc.collect()                     # 触发Python垃圾回收
         self._initialized = False
-        # 黄色输出：模型已卸载
-        print(f"{Colors.YELLOW}[{self.module_id}] 模型已卸载{Colors.RESET}")
+        # 绿色输出：模型已卸载
+        print(f"{Colors.GREEN}[{self.module_id}] 模型已卸载{Colors.RESET}")

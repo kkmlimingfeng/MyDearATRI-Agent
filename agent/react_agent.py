@@ -9,27 +9,44 @@ from .base_agent import BaseAgent, Colors
 
 class ReactAgent(BaseAgent):
     """ReAct Agent，实现Thought-Action-Observation循环"""
-    
-    def __init__(self, max_iterations: int = 10):
+
+    def __init__(self, max_iterations: int = 10, max_history_turns: int = 10):
         # 调用父类初始化
         super().__init__()
         # 最大循环次数，防止Agent无限循环
         self.max_iterations = max_iterations
+        # 保留的最大历史对话轮数（一轮 = user + assistant）
+        self.max_history_turns = max_history_turns
+        # 历史对话记录，只保存对外的 user/assistant 消息，不包含 ReAct 内部细节
+        self._history: list = []
     
-    def build_system_prompt(self, base_prompt: str) -> str:
-        """
-        构建系统提示词，预留扩展点
-        未来可在此处拼接mem、rag等模块提供的上下文
-        :param base_prompt: 基础系统提示词
-        :return: 完整的系统提示词
-        """
-        # 当前直接返回基础提示词
-        # 未来可在此处添加：
-        # - 从mem模块获取相关记忆
-        # - 从rag模块获取检索结果
-        # - 拼接成完整的系统提示词
-        return base_prompt
     
+    def _inject_tool_descriptions(self, base_prompt: str, tools_id: str) -> str:
+        """
+        从工具模块获取工具描述，并注入到系统提示词中。
+
+        支持 {{TOOLS}} 占位符：如果 base_prompt 中包含 {{TOOLS}}，则替换为工具描述；
+        否则将工具描述追加到系统提示词末尾。
+        """
+        try:
+            tools_response = self.bus.request(
+                source='agent',
+                target=tools_id,
+                payload={'action': 'format_tool_descriptions'}
+            )
+            tool_descriptions = tools_response.payload.get('text', '')
+        except Exception:
+            # 如果工具模块未响应，保持原提示词不变
+            return base_prompt
+
+        if not tool_descriptions:
+            return base_prompt
+
+        if '{{TOOLS}}' in base_prompt:
+            return base_prompt.replace('{{TOOLS}}', tool_descriptions)
+
+        return base_prompt + '\n\n' + tool_descriptions
+
     def parse_output(self, output: str) -> Tuple[str, str, str]:
         """
         解析LLM输出，提取Thought和Action
@@ -185,12 +202,15 @@ class ReactAgent(BaseAgent):
             print(f"{Colors.RED}错误: 获取系统提示词失败 - {str(e)}{Colors.RESET}")
             return "错误: 获取系统提示词失败"
 
-        # 构建完整的系统提示词（预留扩展点）
-        system_prompt = self.build_system_prompt(base_prompt)
+        # 构建完整的系统提示词：从工具模块获取工具描述并注入
+        system_prompt = self._inject_tool_descriptions(base_prompt, tools_id)
 
         # 构建历史对话记录，使用标准messages格式
+        # 取最近的 max_history_turns 轮对话 + 当前用户输入
+        context_messages = self._history[-self.max_history_turns * 2:]
         messages = [
             {"role": "system", "content": system_prompt},
+            *context_messages,
             {"role": "user", "content": user_input}
         ]
 
@@ -245,6 +265,8 @@ class ReactAgent(BaseAgent):
 
             # 如果任务完成，返回最终答案
             if final_answer:
+                # 保存本轮对外的 user/assistant 消息到历史
+                self._add_to_history(user_input, final_answer)
                 # 绿色加粗输出：最终答案
                 print(f"\n{Colors.GREEN}{Colors.BOLD}任务完成，最终答案:{Colors.RESET} {final_answer}")
                 return final_answer
@@ -252,12 +274,22 @@ class ReactAgent(BaseAgent):
             # 将工具返回结果格式化并加入messages
             observation_str = f"Observation: {observation}"
             # 黄色输出：观察结果
-            print(f"{Colors.YELLOW}{observation_str}{Colors.RESET}")
+            print(f"{Colors.GREEN}{observation_str}{Colors.RESET}")
             print(f"{Colors.DIM}{'='*50}{Colors.RESET}")
             messages.append({"role": "user", "content": observation_str})
-            print(f"{Colors.YELLOW}{messages}{Colors.RESET}")
+            print(f"{Colors.CYAN}{messages}{Colors.RESET}")
 
         # 如果循环结束仍未得到最终答案
         # 红色输出：超出最大循环次数
-        print(f"{Colors.RED}已达到最大循环次数 {self.max_iterations}，强制结束{Colors.RESET}")
-        return "已达到最大循环次数，任务未完成"
+        fallback = f"已达到最大循环次数 {self.max_iterations}，任务未完成"
+        print(f"{Colors.RED}{fallback}{Colors.RESET}")
+        # 仍然保存本轮记录，避免历史完全丢失
+        self._add_to_history(user_input, fallback)
+        return fallback
+
+    def _add_to_history(self, user_input: str, assistant_answer: str) -> None:
+        """将一轮对外的 user/assistant 消息加入历史，并裁剪到窗口大小"""
+        self._history.append({"role": "user", "content": user_input})
+        self._history.append({"role": "assistant", "content": assistant_answer})
+        # 只保留最近 max_history_turns 轮
+        self._history = self._history[-self.max_history_turns * 2:]

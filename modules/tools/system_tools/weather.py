@@ -1,43 +1,40 @@
 """
-系统内置工具 - 天气查询工具
+系统内置工具 - 天气查询
 从 8_Agent.ipynb 提取
 """
 import requests
+from modules.tools.base_tool import system_tool
 
 
+@system_tool
 def get_weather(city: str) -> str:
     """
-    通过调用 wttr.in API 查询今天真实的天气信息。
-    
+    查询指定城市的实时天气信息。
+
     Args:
         city: 城市名称，如 "北京"、"苏州"
-    
+
     Returns:
-        天气信息字符串，格式如 "北京当前天气:Sunny，气温26摄氏度"
-        如果出错，返回错误信息
+        天气信息字符串，格式如 "苏州当前天气:晴，气温26摄氏度"。
+        如果查询失败，返回错误信息。
+
+    Example:
+        get_weather(city="苏州")
     """
-    # API端点，我们请求JSON格式的数据
-    url = f"https://wttr.in/{city}?format=j1"
-    
+    url = f"https://wttr.in/{city}?format=j1&lang=zh-cn"
+
     try:
-        # 发起网络请求
         response = requests.get(url)
-        # 检查响应状态码是否为200 (成功)
-        response.raise_for_status() 
-        # 解析返回的JSON数据
+        response.raise_for_status()
         data = response.json()
-            
-        # 提取当前天气状况
+
         current_condition = data['current_condition'][0]
-        weather_desc = current_condition['weatherDesc'][0]['value']
+        weather_desc = current_condition['lang_zh-cn'][0]['value'] # 中文返回
         temp_c = current_condition['temp_C']
-        
-        # 格式化成自然语言返回
+
         return f"{city}当前天气:{weather_desc}，气温{temp_c}摄氏度"
-        
+
     except requests.exceptions.RequestException as e:
-        # 处理网络错误
         return f"错误:查询天气时遇到网络问题 - {e}"
     except (KeyError, IndexError) as e:
-        # 处理数据解析错误
         return f"错误:解析天气数据失败，可能是城市名称无效 - {e}"

@@ -8,12 +8,50 @@ import os
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
+def _load_env_file(env_path: str) -> None:
+    """
+    手动解析 .env 文件并将其中的非空键值导出为环境变量。
+
+    不依赖 python-dotenv，避免引入额外依赖。
+    """
+    if not os.path.isfile(env_path):
+        return
+
+    with open(env_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            # 跳过空行和注释行
+            if not line or line.startswith('#'):
+                continue
+            # 只处理第一个等号
+            if '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip()
+            # 去除两端引号
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            # 仅当环境变量尚未设置且值非空时才写入
+            if key and value and key not in os.environ:
+                os.environ[key] = value
+
+
+# 加载 config/.env 中的环境变量
+_env_path = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "config",
+    ".env"
+)
+_load_env_file(_env_path)
+
+
 from bus import EventBus
 from agent import ReactAgent
 from modules.prompt import PromptManager
 from modules.llm import ModelScopeLLM
 from modules.tools import ToolModule
-from modules.tools.system_tools.weather import get_weather
 
 
 def main():
@@ -27,8 +65,9 @@ def main():
     llm = ModelScopeLLM("llm", agent.bus, model_path="./Qwen/Qwen3-0.6B")
     tools = ToolModule("tools", agent.bus)
 
-    # 3. 注册工具函数到ToolModule
-    tools.register_tool("get_weather", get_weather)
+    # 3. 自动扫描并注册 system_tools 目录下的工具函数
+    tools_dir = os.path.join(os.path.dirname(__file__), "modules", "tools", "system_tools")
+    tools.register_tools_from_directory(tools_dir)
 
     # 4. 注册模块到Agent
     agent.register_module(prompt_mgr, enabled=True)
