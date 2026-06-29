@@ -10,7 +10,7 @@ class BaseLLM(BaseModule):
     """LLM模块基类，所有LLM实现必须继承此类"""
     
     def initialize(self) -> None:
-        """初始化LLM"""
+        """初始化LLM，子类应在完成初始化后设置 self._initialized = True"""
         pass
     
     def handle_message(self, message: Message) -> None:
@@ -40,5 +40,5 @@ class BaseLLM(BaseModule):
         raise NotImplementedError
     
     def shutdown(self) -> None:
-        """关闭LLM，释放资源"""
+        """关闭LLM，释放资源，子类应在完成清理后设置 self._initialized = False"""
         pass

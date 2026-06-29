@@ -36,7 +36,17 @@ class EventBus(BaseBus):
                 try:
                     handler(message)  # 执行模块的消息处理函数
                 except Exception as e:
-                    print(f"Error in handler for {module_id}: {e}")  # handler出错不影响其他模块
+                    # handler出错时不影响其他模块，但对于请求消息需要生成错误响应
+                    # 否则request()会因为等不到响应而报TimeoutError
+                    print(f"Error in handler for {module_id}: {e}")
+                    if message.type == MessageType.REQUEST and message.correlation_id:
+                        self._responses[message.correlation_id] = Message(
+                            type=MessageType.RESPONSE,
+                            source=module_id,
+                            target=message.source,
+                            payload={'error': str(e)},
+                            correlation_id=message.correlation_id
+                        )
     
     def subscribe(self, module_id: str, handler: Callable[[Message], None]) -> None:
         """订阅消息：将handler添加到指定模块的handler列表中"""
@@ -47,11 +57,12 @@ class EventBus(BaseBus):
         if module_id in self._subscribers:
             del self._subscribers[module_id]
     
-    def request(self, source: str, target: str, payload: Dict[str, Any], timeout: float = 30.0) -> Message:
+    def request(self, source: str, target: str, payload: Dict[str, Any]) -> Message:
         """
         同步请求-响应模式：发送请求并等待响应
         当前实现是纯同步的：publish()会同步调用handler，handler同步处理后回复，
         回复的RESPONSE消息会被publish()存入_responses字典，publish()返回后直接取出。
+        若目标模块未响应（包括handler抛异常后生成的错误响应），则抛出 TimeoutError。
         """
         # 生成唯一的correlation_id，用于匹配请求和响应
         msg_id = str(uuid.uuid4())

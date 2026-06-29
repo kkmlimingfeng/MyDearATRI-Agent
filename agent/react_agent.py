@@ -1,6 +1,7 @@
 """
 ReAct Agent - Thought-Action-Observation循环实现
 """
+import ast
 import re
 from typing import Dict, Tuple, Optional, Any
 from .base_agent import BaseAgent, Colors
@@ -91,11 +92,23 @@ class ReactAgent(BaseAgent):
 
         # 提取工具名称
         tool_name = tool_name_match.group(1)
-        # 提取参数字符串
+        # 提取参数字符串（支持简单嵌套括号）
         args_match = re.search(r"\((.*)\)", action)
-        args_str = args_match.group(1) if args_match else ""
-        # 解析参数为字典（支持 key="value" 格式）
-        tool_kwargs = dict(re.findall(r'(\w+)="([^"]*)"', args_str))
+        args_str = args_match.group(1).strip() if args_match else ""
+        # 解析参数为字典（支持 key="value"、key='value'、key=数字/布尔等）
+        tool_kwargs: Dict[str, Any] = {}
+        if args_str:
+            for key, dquote, squote, bare in re.findall(
+                r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^,]+))',
+                args_str
+            ):
+                value: Any = dquote or squote or bare.strip()
+                # 尝试将字面量转换为 Python 对象（数字、布尔、None 等）
+                try:
+                    value = ast.literal_eval(value)
+                except (ValueError, SyntaxError):
+                    pass
+                tool_kwargs[key] = value
 
         # 蓝色输出：正在调用工具
         print(f"{Colors.BLUE}正在调用工具: {tool_name}({tool_kwargs}){Colors.RESET}")
@@ -109,8 +122,7 @@ class ReactAgent(BaseAgent):
                     'action': 'call',
                     'tool_name': tool_name,
                     'params': tool_kwargs
-                },
-                timeout=30.0
+                }
             )
             # 检查响应中是否有错误
             if 'error' in response.payload:
@@ -129,6 +141,7 @@ class ReactAgent(BaseAgent):
         self,
         user_input: str,
         prompt_name: str = 'default',
+        prompt_id: str = 'prompt',
         llm_id: str = 'llm',
         tools_id: str = 'tools',
         **kwargs
@@ -137,30 +150,34 @@ class ReactAgent(BaseAgent):
         运行ReAct Agent
         :param user_input: 用户输入
         :param prompt_name: 使用的系统提示词名称
+        :param prompt_id: 使用的提示词模块ID
         :param llm_id: 使用的LLM模块ID
         :param tools_id: 使用的工具模块ID
         :return: 最终回答
         """
         # 检查必要模块是否存在且启用
-        if not self._enabled.get('prompt', False):
+        if not self._enabled.get(prompt_id, False):
             # 红色输出：错误信息
-            print(f"{Colors.RED}错误: PromptManager模块未启用{Colors.RESET}")
+            print(f"{Colors.RED}错误: PromptManager模块 {prompt_id} 未启用{Colors.RESET}")
             return "错误: 提示词模块不可用"
         if not self._enabled.get(llm_id, False):
             # 红色输出：错误信息
             print(f"{Colors.RED}错误: LLM模块 {llm_id} 未启用{Colors.RESET}")
             return f"错误: LLM模块 {llm_id} 不可用"
+        if not self._enabled.get(tools_id, False):
+            # 红色输出：错误信息
+            print(f"{Colors.RED}错误: 工具模块 {tools_id} 未启用{Colors.RESET}")
+            return f"错误: 工具模块 {tools_id} 不可用"
 
         # 通过总线获取系统提示词
         try:
             prompt_response = self.bus.request(
                 source='agent',
-                target='prompt',
+                target=prompt_id,
                 payload={
                     'action': 'get_system_prompt',
                     'prompt_name': prompt_name
-                },
-                timeout=5.0
+                }
             )
             base_prompt = prompt_response.payload.get('system_prompt', '')
         except Exception as e:
@@ -197,8 +214,7 @@ class ReactAgent(BaseAgent):
                     payload={
                         'action': 'generate',
                         'messages': messages
-                    },
-                    timeout=60.0
+                    }
                 )
                 output = llm_response.payload.get('response', '')
             except Exception as e:
@@ -239,6 +255,7 @@ class ReactAgent(BaseAgent):
             print(f"{Colors.YELLOW}{observation_str}{Colors.RESET}")
             print(f"{Colors.DIM}{'='*50}{Colors.RESET}")
             messages.append({"role": "user", "content": observation_str})
+            print(f"{Colors.YELLOW}{messages}{Colors.RESET}")
 
         # 如果循环结束仍未得到最终答案
         # 红色输出：超出最大循环次数

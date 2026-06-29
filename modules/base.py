@@ -63,9 +63,7 @@ class BaseModule(ABC):
     def register(self) -> None:
         """注册到总线：将自己的handle_message方法作为handler订阅到总线"""
         self.bus.subscribe(self.module_id, self.handle_message)
-        self._initialized = True
-    
+
     def unregister(self) -> None:
         """从总线取消注册：不再接收任何消息"""
         self.bus.unsubscribe(self.module_id)
-        self._initialized = False

@@ -45,6 +45,6 @@ class BaseBus(ABC):
         pass
     
     @abstractmethod
-    def request(self, source: str, target: str, payload: Dict[str, Any], timeout: float = 30.0) -> Message:
-        """同步请求-响应模式：发送请求并阻塞等待目标模块返回响应，超时则抛异常"""
+    def request(self, source: str, target: str, payload: Dict[str, Any]) -> Message:
+        """同步请求-响应模式：发送请求并阻塞等待目标模块返回响应"""
         pass

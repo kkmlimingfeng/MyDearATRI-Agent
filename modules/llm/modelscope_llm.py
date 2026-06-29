@@ -26,7 +26,7 @@ class ModelScopeLLM(BaseLLM):
         self,
         module_id: str,
         bus,
-        model_path: str,
+        model_path: str = "./Qwen/Qwen3-0.6B",
         dtype: torch.dtype = torch.bfloat16,
         enable_thinking: bool = True,      # 思考模式开关，默认开启
         max_new_tokens: int = 32768        # 最大生成token数，可配置
@@ -52,6 +52,8 @@ class ModelScopeLLM(BaseLLM):
             dtype=self.dtype,
             device_map="auto"             # 自动分配到可用GPU
         )
+        # 设置为评估模式，禁用 dropout 等训练专用层
+        self.model.eval()
         self._initialized = True
         # 绿色输出：模型加载完成
         print(f"{Colors.GREEN}[{self.module_id}] 模型加载完成{Colors.RESET}")
@@ -71,11 +73,12 @@ class ModelScopeLLM(BaseLLM):
         )
         # 将文本编码为模型输入的tensor，放到模型所在的设备上
         model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
-        # 模型生成，使用可配置的max_new_tokens
-        generated_ids = self.model.generate(
-            **model_inputs,
-            max_new_tokens=self.max_new_tokens
-        )
+        # 模型生成，使用可配置的max_new_tokens，关闭梯度计算以节省显存
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **model_inputs,
+                max_new_tokens=self.max_new_tokens
+            )
         # 截取新生成的token ids（去掉输入部分）
         output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
         

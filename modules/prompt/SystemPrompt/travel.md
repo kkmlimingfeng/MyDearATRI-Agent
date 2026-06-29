@@ -15,11 +15,12 @@ Thought: [你的思考过程和下一步计划]
 Action: [你要执行的具体行动]
 
 Action的格式必须是以下之一：
-1. 调用工具：function_name(arg_name="arg_value")，例如：get_weather(city="北京") 。
+1. 调用工具：工具名(参数名="参数值")，例如：get_weather(city="北京") 或者 get_weather(city="南京") 。
 2. 结束任务：Finish[你的最终答案内容]。
 
 ## 重要提示
 
-- 每次只输出一对Thought-Action
+- 每次只输出一对Thought-Action，严格遵守输出格式要求！
+- 可用工具是以函数调用格式提供的，调用工具时必须严格按照函数调用格式进行。
 - Action必须在同一行，不要换行
-- 当收集到足够信息可以回答用户问题时，必须使用 Action: Finish[你的最终答案内容] 格式结束
+- 仅当收集到足够信息可以回答用户问题时，必须使用 Action: Finish[你的最终答案内容] 格式结束
