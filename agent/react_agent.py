@@ -19,33 +19,50 @@ class ReactAgent(BaseAgent):
         self.max_history_turns = max_history_turns
         # 历史对话记录，只保存对外的 user/assistant 消息，不包含 ReAct 内部细节
         self._history: list = []
-    
-    
-    def _inject_tool_descriptions(self, base_prompt: str, tools_id: str) -> str:
-        """
-        从工具模块获取工具描述，并注入到系统提示词中。
 
-        支持 {{TOOLS}} 占位符：如果 base_prompt 中包含 {{TOOLS}}，则替换为工具描述；
-        否则将工具描述追加到系统提示词末尾。
+    def _inject_module_descriptions(
+        self,
+        base_prompt: str,
+        target: str,
+        placeholder: str,
+        action: str
+    ) -> str:
+        """
+        从指定模块获取描述文本，并注入到系统提示词中。
+
+        支持占位符替换：如果 base_prompt 中包含占位符，则替换为描述文本；
+        否则将描述文本追加到系统提示词末尾。
         """
         try:
-            tools_response = self.bus.request(
+            response = self.bus.request(
                 source='agent',
-                target=tools_id,
-                payload={'action': 'format_tool_descriptions'}
+                target=target,
+                payload={'action': action}
             )
-            tool_descriptions = tools_response.payload.get('text', '')
+            descriptions = response.payload.get('text', '')
         except Exception:
-            # 如果工具模块未响应，保持原提示词不变
+            # 如果目标模块未响应，保持原提示词不变
             return base_prompt
 
-        if not tool_descriptions:
+        if not descriptions:
             return base_prompt
 
-        if '{{TOOLS}}' in base_prompt:
-            return base_prompt.replace('{{TOOLS}}', tool_descriptions)
+        if placeholder in base_prompt:
+            return base_prompt.replace(placeholder, descriptions)
 
-        return base_prompt + '\n\n' + tool_descriptions
+        return base_prompt + '\n\n' + descriptions
+
+    def _inject_tool_descriptions(self, base_prompt: str, tools_id: str) -> str:
+        """注入工具描述到系统提示词（{{TOOLS}} 占位符）"""
+        return self._inject_module_descriptions(
+            base_prompt, tools_id, '{{TOOLS}}', 'format_tool_descriptions'
+        )
+
+    def _inject_skill_overview(self, base_prompt: str, skills_id: str) -> str:
+        """注入技能目录简介到系统提示词（{{SKILLS}} 占位符）"""
+        return self._inject_module_descriptions(
+            base_prompt, skills_id, '{{SKILLS}}', 'format_skill_overview'
+        )
 
     def parse_output(self, output: str) -> Tuple[str, str, str]:
         """
@@ -71,15 +88,23 @@ class ReactAgent(BaseAgent):
         # 解析Action内容（"Action:"之后的所有内容）
         action_match = re.search(r'Action:\s*(.*)', output, re.DOTALL)
         
-        # 如果没有匹配到Action，返回错误
+        # 如果没有匹配到 Action，尝试将输出作为直接回答处理
         if not action_match:
+            output = output.strip()
+            if output:
+                # 将无 Action 的输出回退为 Finish[输出内容]
+                return (
+                    "用户的问题不需要使用工具，直接回答即可。",
+                    f"Finish[{output}]",
+                    ""
+                )
             return "", "", "未能解析到 Action 字段，请确保格式为 'Thought: ... Action: ...'"
-        
+
         # 提取Thought内容（如果没有则为空）
         thought = thought_match.group(1).strip() if thought_match else ""
         # 提取Action内容
         action = action_match.group(1).strip()
-        
+
         return thought, action, ""
     
     def execute_action(self, action: str, tools_module_id: str = 'tools') -> Tuple[Optional[str], str]:
@@ -161,6 +186,7 @@ class ReactAgent(BaseAgent):
         prompt_id: str = 'prompt',
         llm_id: str = 'llm',
         tools_id: str = 'tools',
+        skills_id: str = 'skills',
         **kwargs
     ) -> str:
         """
@@ -170,6 +196,7 @@ class ReactAgent(BaseAgent):
         :param prompt_id: 使用的提示词模块ID
         :param llm_id: 使用的LLM模块ID
         :param tools_id: 使用的工具模块ID
+        :param skills_id: 使用的技能模块ID
         :return: 最终回答
         """
         # 检查必要模块是否存在且启用
@@ -202,8 +229,11 @@ class ReactAgent(BaseAgent):
             print(f"{Colors.RED}错误: 获取系统提示词失败 - {str(e)}{Colors.RESET}")
             return "错误: 获取系统提示词失败"
 
-        # 构建完整的系统提示词：从工具模块获取工具描述并注入
+        # 构建完整的系统提示词：注入工具描述和技能描述
         system_prompt = self._inject_tool_descriptions(base_prompt, tools_id)
+        # 如果技能模块已启用，注入技能目录简介
+        if self._enabled.get(skills_id, False):
+            system_prompt = self._inject_skill_overview(system_prompt, skills_id)
 
         # 构建历史对话记录，使用标准messages格式
         # 取最近的 max_history_turns 轮对话 + 当前用户输入

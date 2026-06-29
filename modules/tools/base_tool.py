@@ -184,7 +184,7 @@ class BaseTool(BaseModule):
         if not descs:
             return ""
 
-        lines = ["## 可用工具\n"]
+        lines = ["## 可用工具Tools\n"]
         for desc in descs:
             params_str = ", ".join(
                 f'{p["name"]}: {self._format_type(p.get("type"))}'

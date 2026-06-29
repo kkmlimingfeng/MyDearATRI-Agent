@@ -4,6 +4,7 @@ MyDearATRI-Agent 启动脚本
 """
 import sys
 import os
+import argparse
 
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -52,27 +53,52 @@ from agent import ReactAgent
 from modules.prompt import PromptManager
 from modules.llm import ModelScopeLLM
 from modules.tools import ToolModule
+from modules.skills import SkillModule
 
 
 def main():
     """主函数：创建并运行Agent"""
 
+    # 模块开关：通过命令行参数控制各模块是否启用
+    parser = argparse.ArgumentParser(description="MyDearATRI-Agent 启动脚本")
+    parser.add_argument("--disable-prompt", action="store_true", help="禁用提示词模块")
+    parser.add_argument("--disable-llm", action="store_true", help="禁用LLM模块")
+    parser.add_argument("--disable-tools", action="store_true", help="禁用工具模块")
+    parser.add_argument("--disable-skills", action="store_true", help="禁用技能模块")
+    args = parser.parse_args()
+
+    enable_prompt = not args.disable_prompt
+    enable_llm = not args.disable_llm
+    enable_tools = not args.disable_tools
+    enable_skills = not args.disable_skills
+
     # 1. 创建Agent（内部创建EventBus）
     agent = ReactAgent(max_iterations=5)
 
     # 2. 创建模块实例（每个模块都持有bus引用）
-    prompt_mgr = PromptManager("prompt", agent.bus)
-    llm = ModelScopeLLM("llm", agent.bus, model_path="./Qwen/Qwen3-0.6B")
-    tools = ToolModule("tools", agent.bus)
+    prompt_mgr = PromptManager("prompt", agent.bus) if enable_prompt else None
+    llm = ModelScopeLLM("llm", agent.bus, model_path="./Qwen/Qwen3-0.6B") if enable_llm else None
+    tools = ToolModule("tools", agent.bus) if enable_tools else None
+    skills = SkillModule("skills", agent.bus) if enable_skills else None
 
-    # 3. 自动扫描并注册 system_tools 目录下的工具函数
-    tools_dir = os.path.join(os.path.dirname(__file__), "modules", "tools", "system_tools")
-    tools.register_tools_from_directory(tools_dir)
+    # 3. 自动扫描并注册 tools / skills
+    if enable_tools and tools is not None:
+        tools_dir = os.path.join(os.path.dirname(__file__), "modules", "tools", "system_tools")
+        tools.register_tools_from_directory(tools_dir)
+
+    if enable_skills and skills is not None:
+        skills_dir = os.path.join(os.path.dirname(__file__), "modules", "skills")
+        skills.register_skills_from_directory(skills_dir)
 
     # 4. 注册模块到Agent
-    agent.register_module(prompt_mgr, enabled=True)
-    agent.register_module(llm, enabled=True)
-    agent.register_module(tools, enabled=True)
+    if prompt_mgr is not None:
+        agent.register_module(prompt_mgr, enabled=enable_prompt)
+    if llm is not None:
+        agent.register_module(llm, enabled=enable_llm)
+    if tools is not None:
+        agent.register_module(tools, enabled=enable_tools)
+    if skills is not None:
+        agent.register_module(skills, enabled=enable_skills)
 
     # 5. 启动Agent（初始化所有模块并注册到总线）
     agent.start()
