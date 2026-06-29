@@ -130,7 +130,7 @@ def main():
             # 运行Agent（ReAct循环）
             result = agent.run(
                 user_input=user_input,
-                prompt_name="travel",  # 使用travel.md系统提示词
+                prompt_name="default",  # 使用 AGENT.md + SOUL.md + USER.md 拼接的系统提示词
                 llm_id="llm",
                 tools_id="tools"
             )
