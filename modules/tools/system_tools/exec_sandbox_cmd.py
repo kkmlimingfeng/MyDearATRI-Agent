@@ -19,7 +19,7 @@ def exec_sandbox_cmd(cmd: str, timeout: int = 30) -> str:
     默认将 SANDBOX_WRITE_PATH（可在 config/.env 中配置）设为可写，其余目录只读。
 
     Args:
-        cmd: 要在沙箱中执行的 shell 命令
+        cmd: 要在沙箱中执行的 bash 命令
         timeout: 最大执行时间（秒）
 
     Returns:
@@ -28,6 +28,7 @@ def exec_sandbox_cmd(cmd: str, timeout: int = 30) -> str:
     Example:
         exec_sandbox_cmd(cmd="python modules/skills/some_skill/script/step1.py")
         exec_sandbox_cmd(cmd="echo hello && pwd")
+        exec_sandbox_cmd(cmd="date '+%Y年%m月%d日'")
     """
     # 命令黑名单：弥补 WSL2 网络隔离失效等场景
     ban_list = {"curl", "wget", "ping", "nc", "sudo", "rm -rf", "chmod"}

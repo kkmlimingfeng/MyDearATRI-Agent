@@ -75,11 +75,16 @@ def main():
     # 1. 创建Agent（内部创建EventBus）
     agent = ReactAgent(max_iterations=5)
 
+    # 配置文件路径（用于工具/技能级开关）
+    config_dir = os.path.join(os.path.dirname(__file__), "config")
+    tools_config_path = os.path.join(config_dir, "tools.json")
+    skills_config_path = os.path.join(config_dir, "skills.json")
+
     # 2. 创建模块实例（每个模块都持有bus引用）
     prompt_mgr = PromptManager("prompt", agent.bus) if enable_prompt else None
     llm = ModelScopeLLM("llm", agent.bus, model_path="./Qwen/Qwen3-0.6B") if enable_llm else None
-    tools = ToolModule("tools", agent.bus) if enable_tools else None
-    skills = SkillModule("skills", agent.bus) if enable_skills else None
+    tools = ToolModule("tools", agent.bus, config_path=tools_config_path) if enable_tools else None
+    skills = SkillModule("skills", agent.bus, config_path=skills_config_path) if enable_skills else None
 
     # 3. 自动扫描并注册 tools / skills
     if enable_tools and tools is not None:

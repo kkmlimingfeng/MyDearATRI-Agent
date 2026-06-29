@@ -2,14 +2,16 @@
 工具模块基类
 
 提供工具注册、查找、自动扫描、描述提取等公共能力，
+支持通过配置文件控制每个工具的启用/禁用状态，
 具体消息处理逻辑由子类实现。
 """
 import importlib.util
 import inspect
+import json
 import os
 import re
 from abc import abstractmethod
-from typing import Dict, Any, Callable, List
+from typing import Dict, Any, Callable, List, Optional
 from modules.base import BaseModule
 from bus.base import Message
 
@@ -77,18 +79,82 @@ def _parse_docstring(func: Callable) -> Dict[str, Any]:
 class BaseTool(BaseModule):
     """工具模块基类，所有具体工具模块应继承此类"""
 
-    def __init__(self, module_id: str, bus):
+    def __init__(self, module_id: str, bus, config_path: Optional[str] = None):
         super().__init__(module_id, bus)
         # 工具函数字典：key是工具名，value是工具函数
         self._tools: Dict[str, Callable] = {}
+        # 工具级开关配置文件路径（JSON），为空则不使用配置
+        self._config_path: Optional[str] = config_path
+        # 每个工具的启用状态，默认全部启用
+        self._enabled_tools: Dict[str, bool] = {}
 
     def register_tool(self, name: str, func: Callable) -> None:
         """注册一个工具函数"""
         self._tools[name] = func
+        # 新注册的工具默认启用
+        if name not in self._enabled_tools:
+            self._enabled_tools[name] = True
 
     def get_tool(self, name: str) -> Callable:
         """获取已注册的工具函数"""
         return self._tools.get(name)
+
+    def is_tool_enabled(self, name: str) -> bool:
+        """查询指定工具是否启用，未配置则默认启用"""
+        return self._enabled_tools.get(name, True)
+
+    def set_tool_enabled(self, name: str, enabled: bool) -> None:
+        """设置指定工具的启用状态（仅影响内存，不自动写文件）"""
+        if name in self._tools:
+            self._enabled_tools[name] = enabled
+
+    def list_tools(self) -> List[Dict[str, Any]]:
+        """列出所有工具及其启用状态，供前端页面读取"""
+        return [
+            {"name": name, "enabled": self.is_tool_enabled(name)}
+            for name in self._tools
+        ]
+
+    def _load_enabled_config(self) -> None:
+        """
+        从配置文件加载工具启用状态。
+
+        如果配置文件不存在，则根据当前已注册工具自动生成一份全部启用的配置。
+        如果配置文件中缺少某些已注册工具，则默认启用并合并到配置中。
+        """
+        if not self._config_path:
+            # 没有配置路径时，所有工具按默认启用处理
+            for name in self._tools:
+                if name not in self._enabled_tools:
+                    self._enabled_tools[name] = True
+            return
+
+        config: Dict[str, bool] = {}
+        if os.path.isfile(self._config_path):
+            try:
+                with open(self._config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            except Exception as e:
+                print(f"[警告] 加载工具配置 {self._config_path} 失败: {e}")
+
+        # 合并配置：已注册工具按配置项，未配置默认启用
+        changed = False
+        for name in self._tools:
+            if name in config:
+                self._enabled_tools[name] = bool(config[name])
+            else:
+                self._enabled_tools[name] = True
+                config[name] = True
+                changed = True
+
+        # 如果配置文件不存在或缺少工具，自动生成/更新配置文件
+        if not os.path.isfile(self._config_path) or changed:
+            try:
+                os.makedirs(os.path.dirname(self._config_path), exist_ok=True)
+                with open(self._config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"[警告] 保存工具配置 {self._config_path} 失败: {e}")
 
     def register_tools_from_directory(
         self,
@@ -132,12 +198,15 @@ class BaseTool(BaseModule):
 
     def get_tool_descriptions(self) -> List[Dict[str, Any]]:
         """
-        获取所有已注册工具的结构化描述信息。
+        获取所有已启用工具的结构化描述信息。
 
         每个工具包含：name, description, params, args, returns, example
         """
         descriptions = []
         for name, func in self._tools.items():
+            if not self.is_tool_enabled(name):
+                continue
+
             sig = inspect.signature(func)
             params = []
             for param_name, param in sig.parameters.items():
@@ -178,13 +247,13 @@ class BaseTool(BaseModule):
 
     def format_tool_descriptions(self) -> str:
         """
-        将所有工具描述格式化为适合拼接到系统提示词的 Markdown 字符串。
+        将所有启用工具的描述格式化为适合拼接到系统提示词的 Markdown 字符串。
         """
         descs = self.get_tool_descriptions()
         if not descs:
             return ""
 
-        lines = ["## 可用工具Tools\n"]
+        lines = ["## 可用工具\n"]
         for desc in descs:
             params_str = ", ".join(
                 f'{p["name"]}: {self._format_type(p.get("type"))}'
@@ -209,10 +278,12 @@ class BaseTool(BaseModule):
         pass
 
     def initialize(self) -> None:
-        """初始化工具模块（子类可扩展）"""
+        """初始化工具模块，加载工具级开关配置"""
+        self._load_enabled_config()
         self._initialized = True
 
     def shutdown(self) -> None:
         """关闭工具模块，清空注册的工具"""
         self._tools.clear()
+        self._enabled_tools.clear()
         self._initialized = False

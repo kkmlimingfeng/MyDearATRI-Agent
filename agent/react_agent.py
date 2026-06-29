@@ -152,6 +152,12 @@ class ReactAgent(BaseAgent):
                     pass
                 tool_kwargs[key] = value
 
+        # 检查工具模块是否启用
+        if not self._enabled.get(tools_module_id, False):
+            observation = "错误: 工具模块已禁用，无法执行工具调用"
+            print(f"{Colors.RED}{observation}{Colors.RESET}")
+            return observation, ""
+
         # 蓝色输出：正在调用工具
         print(f"{Colors.BLUE}正在调用工具: {tool_name}({tool_kwargs}){Colors.RESET}")
 
@@ -208,10 +214,7 @@ class ReactAgent(BaseAgent):
             # 红色输出：错误信息
             print(f"{Colors.RED}错误: LLM模块 {llm_id} 未启用{Colors.RESET}")
             return f"错误: LLM模块 {llm_id} 不可用"
-        if not self._enabled.get(tools_id, False):
-            # 红色输出：错误信息
-            print(f"{Colors.RED}错误: 工具模块 {tools_id} 未启用{Colors.RESET}")
-            return f"错误: 工具模块 {tools_id} 不可用"
+        # tools 和 skills 模块为可选，关闭时不影响基础对话
 
         # 通过总线获取系统提示词
         try:
@@ -230,7 +233,10 @@ class ReactAgent(BaseAgent):
             return "错误: 获取系统提示词失败"
 
         # 构建完整的系统提示词：注入工具描述和技能描述
-        system_prompt = self._inject_tool_descriptions(base_prompt, tools_id)
+        system_prompt = base_prompt
+        # 如果工具模块已启用，注入工具描述
+        if self._enabled.get(tools_id, False):
+            system_prompt = self._inject_tool_descriptions(system_prompt, tools_id)
         # 如果技能模块已启用，注入技能目录简介
         if self._enabled.get(skills_id, False):
             system_prompt = self._inject_skill_overview(system_prompt, skills_id)
