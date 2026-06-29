@@ -1,0 +1,13 @@
+# Python 编译缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Windows 特殊附属文件
+*Zone.Identifier
+
+# 大模型权重目录（核心，屏蔽整个Qwen模型文件夹，避免几十MB/GB模型上传GitHub）
+Qwen/
+
+# Jupyter 缓存
+.ipynb_checkpoints/
