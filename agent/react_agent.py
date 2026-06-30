@@ -94,7 +94,11 @@ class ReactAgent(BaseAgent):
 
     def parse_output(self, output: str) -> Tuple[str, List[str], str]:
         """
-        解析LLM输出，提取Thought和一个或多个Action
+        解析LLM输出，提取Thought和一个或多个Action。
+
+        优先解析 JSON 格式：{"thought": "...", "actions": [...]}
+        解析失败时回退到旧的 Thought:/Action: 文本格式。
+
         :param output: LLM的原始输出
         :return: (thought, actions, error)
                  - thought: 思考内容
@@ -105,7 +109,66 @@ class ReactAgent(BaseAgent):
         if not output:
             return "", [], "输出为空"
 
-        # 提取第一个 Thought-Action 块（若模型输出多对 Thought-Action，只取第一块）
+        # 优先尝试解析 JSON 格式（兼容模型把 JSON 包在 markdown 代码块里的情况）
+        json_result = self._parse_json_output(output)
+        if json_result is not None:
+            return json_result
+
+        # 回退：旧的 Thought:/Action: 文本格式
+        return self._parse_text_output(output)
+
+    def _extract_json_from_output(self, output: str) -> Optional[str]:
+        """从模型输出中提取 JSON 字符串（支持裸 JSON 或 markdown 代码块）"""
+        # 尝试匹配 ```json ... ``` 或 ``` ... ``` 代码块
+        code_block_match = re.search(r'```(?:json)?\s*\n?(.*?)```', output, re.DOTALL)
+        if code_block_match:
+            return code_block_match.group(1).strip()
+
+        # 裸 JSON 直接返回
+        if output.startswith('{') or output.startswith('['):
+            return output
+
+        return None
+
+    def _parse_json_output(self, output: str) -> Optional[Tuple[str, List[str], str]]:
+        """尝试按 JSON 格式解析模型输出"""
+        json_str = self._extract_json_from_output(output)
+        if json_str is None:
+            return None
+
+        try:
+            data = json.loads(json_str)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        thought = data.get("thought", "")
+        if not isinstance(thought, str):
+            thought = ""
+
+        actions = data.get("actions", [])
+        if isinstance(actions, str):
+            actions = [actions]
+        elif not isinstance(actions, list):
+            return None
+
+        actions = [str(a).strip() for a in actions if str(a).strip()]
+
+        if not actions:
+            # JSON 里没有 actions，把 thought 当作直接回答
+            answer = thought.strip() if thought else json_str
+            return (
+                "用户的问题不需要使用工具，直接回答即可。",
+                [f"Finish[{answer}]"],
+                ""
+            )
+
+        return thought, actions, ""
+
+    def _parse_text_output(self, output: str) -> Tuple[str, List[str], str]:
+        """按旧的 Thought:/Action: 文本格式解析模型输出"""
         block_match = re.search(
             r'Thought:\s*(.*?)\s*(?=(?:Thought:)|\Z)',
             output,
@@ -113,23 +176,20 @@ class ReactAgent(BaseAgent):
         )
         block = block_match.group(1).strip() if block_match else output
 
-        # 提取 Thought 内容（从块开头到第一个 Action: 之前）
         thought_match = re.search(r'^(.*?)\s*(?=Action:)', block, re.DOTALL)
         thought = thought_match.group(1).strip() if thought_match else ""
 
-        # 提取所有 Action（每行一个 Action: ...）
         actions = re.findall(r'Action:\s*(.+)', block)
         actions = [a.strip() for a in actions if a.strip()]
 
         if not actions:
-            # 如果没有匹配到 Action，尝试将输出作为直接回答处理
             if output:
                 return (
                     "用户的问题不需要使用工具，直接回答即可。",
                     [f"Finish[{output}]"],
                     ""
                 )
-            return "", [], "未能解析到 Action 字段，请确保格式为 'Thought: ... Action: ...'"
+            return "", [], "未能解析到 Action 字段"
 
         return thought, actions, ""
     

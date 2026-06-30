@@ -3,7 +3,10 @@ OpenAI风格LLM模块 - 通过OpenAI兼容API调用远程模型
 支持OpenAI官方API以及所有兼容OpenAI接口的服务（如vLLM、Ollama、LocalAI等）
 """
 from typing import Optional, List, Dict, Any
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None  # type: ignore[misc, assignment]
 from .base_llm import BaseLLM
 
 
@@ -41,6 +44,10 @@ class OpenAILLM(BaseLLM):
     
     def initialize(self) -> None:
         """初始化：创建OpenAI客户端连接"""
+        if OpenAI is None:
+            raise ImportError(
+                "使用 OpenAILLM 需要安装 openai 包，请运行: pip install openai"
+            )
         # 蓝色输出：API连接开始
         print(f"{Colors.BLUE}[{self.module_id}] 正在连接API: {self.base_url}{Colors.RESET}")
         # 创建OpenAI客户端，传入API密钥和服务地址

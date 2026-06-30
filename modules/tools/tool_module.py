@@ -27,6 +27,10 @@ class ToolModule(BaseTool):
             self._handle_list_tools(message)
         elif action == 'set_tool_enabled':
             self._handle_set_enabled(message)
+        elif action == 'get_tool_descriptions':
+            self._handle_get_tool_descriptions(message)
+        elif action == 'format_tool_descriptions':
+            self._handle_format_tool_descriptions(message)
 
     def _handle_call(self, message: Message) -> None:
         """执行工具调用"""
@@ -73,6 +77,24 @@ class ToolModule(BaseTool):
         self.send(
             target=message.source,
             payload={'tools': self.list_tools()},
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )
+
+    def _handle_get_tool_descriptions(self, message: Message) -> None:
+        """返回所有已启用工具的结构化描述"""
+        self.send(
+            target=message.source,
+            payload={'descriptions': self.get_tool_descriptions()},
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )
+
+    def _handle_format_tool_descriptions(self, message: Message) -> None:
+        """返回适合拼接到系统提示词的工具描述文本"""
+        self.send(
+            target=message.source,
+            payload={'text': self.format_tool_descriptions()},
             msg_type=MessageType.RESPONSE,
             correlation_id=message.correlation_id
         )
