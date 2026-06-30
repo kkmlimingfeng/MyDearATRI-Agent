@@ -12,3 +12,5 @@ Qwen/
 # Jupyter 缓存
 .ipynb_checkpoints/
 config/.env
+config/skills.json
+config/tools.json

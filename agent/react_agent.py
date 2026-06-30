@@ -6,7 +6,7 @@ import json
 import os
 import re
 from datetime import datetime
-from typing import Dict, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any
 from .base_agent import BaseAgent, Colors
 
 
@@ -92,93 +92,69 @@ class ReactAgent(BaseAgent):
         memory_section = f"## 长期记忆\n\n{memory_content}"
         return base_prompt + '\n\n' + memory_section
 
-    def parse_output(self, output: str) -> Tuple[str, str, str]:
+    def parse_output(self, output: str) -> Tuple[str, List[str], str]:
         """
-        解析LLM输出，提取Thought和Action
+        解析LLM输出，提取Thought和一个或多个Action
         :param output: LLM的原始输出
-        :return: (thought, action, error)
+        :return: (thought, actions, error)
                  - thought: 思考内容
-                 - action: 行动内容
+                 - actions: 行动内容列表（每个元素是一个 Action 字符串）
                  - error: 错误信息（如果有）
         """
-        # 尝试截断多余的Thought-Action对（模型可能输出多对）
-        match = re.search(
-            r'(Thought:.*?Action:.*?)(?=\n\s*(?:Thought:|Action:)|\Z)',
+        output = output.strip()
+        if not output:
+            return "", [], "输出为空"
+
+        # 提取第一个 Thought-Action 块（若模型输出多对 Thought-Action，只取第一块）
+        block_match = re.search(
+            r'Thought:\s*(.*?)\s*(?=(?:Thought:)|\Z)',
             output,
             re.DOTALL
         )
-        # 如果匹配到，只保留第一对
-        if match:
-            output = match.group(1).strip()
-        
-        # 解析Thought内容（从"Thought:"到"Action:"之间）
-        thought_match = re.search(r'Thought:\s*(.*?)\s*(?=Action:)', output, re.DOTALL)
-        # 解析Action内容（"Action:"之后的所有内容）
-        action_match = re.search(r'Action:\s*(.*)', output, re.DOTALL)
-        
-        # 如果没有匹配到 Action，尝试将输出作为直接回答处理
-        if not action_match:
-            output = output.strip()
+        block = block_match.group(1).strip() if block_match else output
+
+        # 提取 Thought 内容（从块开头到第一个 Action: 之前）
+        thought_match = re.search(r'^(.*?)\s*(?=Action:)', block, re.DOTALL)
+        thought = thought_match.group(1).strip() if thought_match else ""
+
+        # 提取所有 Action（每行一个 Action: ...）
+        actions = re.findall(r'Action:\s*(.+)', block)
+        actions = [a.strip() for a in actions if a.strip()]
+
+        if not actions:
+            # 如果没有匹配到 Action，尝试将输出作为直接回答处理
             if output:
-                # 将无 Action 的输出回退为 Finish[输出内容]
                 return (
                     "用户的问题不需要使用工具，直接回答即可。",
-                    f"Finish[{output}]",
+                    [f"Finish[{output}]"],
                     ""
                 )
-            return "", "", "未能解析到 Action 字段，请确保格式为 'Thought: ... Action: ...'"
+            return "", [], "未能解析到 Action 字段，请确保格式为 'Thought: ... Action: ...'"
 
-        # 提取Thought内容（如果没有则为空）
-        thought = thought_match.group(1).strip() if thought_match else ""
-        # 提取Action内容
-        action = action_match.group(1).strip()
-
-        return thought, action, ""
+        return thought, actions, ""
     
-    def execute_action(self, action: str, tools_module_id: str = 'tools') -> Tuple[Optional[str], str]:
+    def execute_action(
+        self,
+        actions: List[str],
+        tools_module_id: str = 'tools'
+    ) -> Tuple[Optional[str], str]:
         """
-        执行Action，返回观察结果或最终答案
-        :param action: Action内容
+        执行一个或多个Action，返回观察结果或最终答案
+        :param actions: Action 内容列表（支持多个独立工具调用）
         :param tools_module_id: 工具模块ID
         :return: (observation, final_answer)
-                 - observation: 工具执行结果（如果未完成）
+                 - observation: 工具执行结果（如果未完成），多个结果会合并
                  - final_answer: 最终答案（如果任务完成）
         """
-        # 检查是否是Finish（任务完成）
-        if "Finish" in action:
-            # 提取最终答案
-            finish_match = re.search(r"Finish\[(.*)\]", action)
-            # 如果匹配到Finish[...]格式
-            if finish_match:
-                return None, finish_match.group(1)
-            # 否则取Finish后面的所有内容
-            return None, action.replace("Finish", "").strip("[]").strip()
+        if not actions:
+            return "错误: 没有可执行的 Action", ""
 
-        # 解析工具调用：提取工具名和参数
-        tool_name_match = re.search(r"(\w+)\(", action)
-        # 如果没有匹配到工具调用格式，返回错误
-        if not tool_name_match:
-            return f"无法解析工具调用 '{action}'", ""
-
-        # 提取工具名称
-        tool_name = tool_name_match.group(1)
-        # 提取参数字符串（支持简单嵌套括号）
-        args_match = re.search(r"\((.*)\)", action)
-        args_str = args_match.group(1).strip() if args_match else ""
-        # 解析参数为字典（支持 key="value"、key='value'、key=数字/布尔等）
-        tool_kwargs: Dict[str, Any] = {}
-        if args_str:
-            for key, dquote, squote, bare in re.findall(
-                r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^,]+))',
-                args_str
-            ):
-                value: Any = dquote or squote or bare.strip()
-                # 尝试将字面量转换为 Python 对象（数字、布尔、None 等）
-                try:
-                    value = ast.literal_eval(value)
-                except (ValueError, SyntaxError):
-                    pass
-                tool_kwargs[key] = value
+        # 如果包含 Finish，必须单独出现
+        finish_actions = [a for a in actions if "Finish" in a]
+        if finish_actions:
+            if len(actions) > 1:
+                return "错误: Finish 不能与其他 Action 同时执行", ""
+            return self._execute_finish(finish_actions[0])
 
         # 检查工具模块是否启用
         if not self._enabled.get(tools_module_id, False):
@@ -186,10 +162,68 @@ class ReactAgent(BaseAgent):
             print(f"{Colors.RED}{observation}{Colors.RESET}")
             return observation, ""
 
+        results = []
+        for action in actions:
+            result = self._execute_single_tool(action, tools_module_id)
+            results.append((action, result))
+
+        # 合并多个 Observation，格式与 AGENT.md 中说明的一致
+        if len(results) == 1:
+            observation = results[0][1]
+        else:
+            lines = ["- " + action + " -> " + result for action, result in results]
+            observation = "\n".join(lines)
+
+        return observation, ""
+
+    def _execute_finish(self, action: str) -> Tuple[Optional[str], str]:
+        """执行 Finish Action，提取最终答案"""
+        finish_match = re.search(r"Finish\[(.*)\]", action)
+        if finish_match:
+            return None, finish_match.group(1)
+        return None, action.replace("Finish", "").strip("[]").strip()
+
+    def _parse_tool_call(self, action: str) -> Tuple[str, Dict[str, Any]]:
+        """解析单个工具调用，返回 (tool_name, tool_kwargs)"""
+        tool_name_match = re.search(r"(\w+)\(", action)
+        if not tool_name_match:
+            raise ValueError(f"无法解析工具调用 '{action}'")
+
+        tool_name = tool_name_match.group(1)
+        args_match = re.search(r"\((.*)\)", action)
+        args_str = args_match.group(1).strip() if args_match else ""
+
+        tool_kwargs: Dict[str, Any] = {}
+        if args_str:
+            for key, dquote, squote, bare in re.findall(
+                r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^,]+))',
+                args_str
+            ):
+                value: Any = dquote or squote or bare.strip()
+                try:
+                    value = ast.literal_eval(value)
+                except (ValueError, SyntaxError):
+                    pass
+                tool_kwargs[key] = value
+
+        return tool_name, tool_kwargs
+
+    def _execute_single_tool(
+        self,
+        action: str,
+        tools_module_id: str = 'tools'
+    ) -> str:
+        """执行单个工具调用，返回观察结果字符串"""
+        try:
+            tool_name, tool_kwargs = self._parse_tool_call(action)
+        except ValueError as e:
+            error_msg = str(e)
+            print(f"{Colors.RED}{error_msg}{Colors.RESET}")
+            return error_msg
+
         # 蓝色输出：正在调用工具
         print(f"{Colors.BLUE}正在调用工具: {tool_name}({tool_kwargs}){Colors.RESET}")
 
-        # 通过总线调用工具
         try:
             response = self.bus.request(
                 source='agent',
@@ -200,18 +234,16 @@ class ReactAgent(BaseAgent):
                     'params': tool_kwargs
                 }
             )
-            # 检查响应中是否有错误
             if 'error' in response.payload:
                 observation = f"错误: {response.payload['error']}"
                 print(f"{Colors.RED}{observation}{Colors.RESET}")
             else:
                 observation = response.payload.get('result', '')
         except Exception as e:
-            # 红色输出：工具调用失败
             observation = f"错误: 工具调用失败 - {str(e)}"
             print(f"{Colors.RED}{observation}{Colors.RESET}")
 
-        return observation, ""
+        return observation
     
     def run(
         self,
@@ -318,7 +350,7 @@ class ReactAgent(BaseAgent):
             messages.append({"role": "assistant", "content": output})
 
             # 解析LLM输出
-            thought, action, error = self.parse_output(output)
+            thought, actions, error = self.parse_output(output)
 
             # 如果解析出错，记录错误并继续
             if error:
@@ -330,15 +362,15 @@ class ReactAgent(BaseAgent):
                 messages.append({"role": "user", "content": observation_str})
                 continue
 
-            # 执行Action（通过总线调用工具）
-            observation, final_answer = self.execute_action(action, tools_id)
+            # 执行Action（通过总线调用工具，支持多个 Action 顺序执行）
+            observation, final_answer = self.execute_action(actions, tools_id)
 
             # 如果任务完成，先触发 reviewer 总结，再返回最终答案
             if final_answer:
                 # 保存本轮对外的 user/assistant 消息到历史
                 self._add_to_history(user_input, final_answer)
                 # 绿色加粗输出：最终答案
-                print(f"\n{Colors.GREEN}{Colors.BOLD}任务完成，最终答案:{Colors.RESET} {final_answer}")
+                # print(f"\n{Colors.GREEN}{Colors.BOLD}任务完成，最终答案:{Colors.RESET} {final_answer}")
                 # 后台 reviewer 处理（用户不可见）
                 self._run_reviewer(
                     user_input=user_input,

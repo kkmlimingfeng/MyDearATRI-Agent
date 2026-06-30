@@ -68,7 +68,7 @@ def main():
     parser.add_argument("--disable-tools", action="store_true", help="禁用工具模块")
     parser.add_argument("--disable-skills", action="store_true", help="禁用技能模块")
     parser.add_argument("--disable-memory", action="store_true", help="禁用记忆模块")
-    parser.add_argument("--disable-reviewer", action="store_true", help="禁用Reviewer模块")
+    parser.add_argument("--enable-reviewer", action="store_true", help="启用Reviewer模块（默认禁用）")
     args = parser.parse_args()
 
     enable_prompt = not args.disable_prompt
@@ -76,7 +76,7 @@ def main():
     enable_tools = not args.disable_tools
     enable_skills = not args.disable_skills
     enable_memory = not args.disable_memory
-    enable_reviewer = not args.disable_reviewer
+    enable_reviewer = args.enable_reviewer
 
     # 1. 创建Agent（内部创建EventBus）
     agent = ReactAgent(max_iterations=5)
@@ -151,7 +151,7 @@ def main():
             )
 
             # 输出结果
-            print(f"\nAgent: {result}\n")
+            print(f"\nATRI-Agent: {result}\n")
 
     except KeyboardInterrupt:
         # 捕获 Ctrl+C
