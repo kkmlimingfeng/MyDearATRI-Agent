@@ -1,4 +1,4 @@
-# MyDearATRI-Agent
+# MyDearATRI-Agent 全面改造优化，正在施工ing
 
 2026年6月26日 亚托莉Agent开发启动
 
