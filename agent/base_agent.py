@@ -70,8 +70,9 @@ class BaseAgent(ABC):
     
     # ==================== 生命周期 ====================
     
-    def start(self) -> None:
+    def start(self, defer_module_ids=None) -> None:
         """启动Agent：初始化并注册所有已启用的模块"""
+        defer_module_ids = set(defer_module_ids or ())
         # 青色输出：初始化信息
         print(f"{Colors.CYAN}{Colors.BOLD}{'='*50}{Colors.RESET}")
         print(f"{Colors.CYAN}{Colors.BOLD}  Agent 正在初始化...{Colors.RESET}")
@@ -81,12 +82,15 @@ class BaseAgent(ABC):
         for module_id, module in self._modules.items():
             # 检查模块是否启用
             if self._enabled.get(module_id, False):
-                # 初始化模块
-                module.initialize()
                 # 将模块注册到总线
                 module.register()
-                # 绿色输出：模块初始化成功
-                print(f"{Colors.GREEN}  [✓] 模块 {module_id} 已初始化{Colors.RESET}")
+                if module_id in defer_module_ids:
+                    print(f"{Colors.YELLOW}  [·] 模块 {module_id} 已注册，首次调用时初始化{Colors.RESET}")
+                else:
+                    # 初始化模块
+                    module.initialize()
+                    # 绿色输出：模块初始化成功
+                    print(f"{Colors.GREEN}  [✓] 模块 {module_id} 已初始化{Colors.RESET}")
             else:
                 # 黄色输出：模块被禁用
                 print(f"{Colors.YELLOW}  [×] 模块 {module_id} 已禁用，跳过{Colors.RESET}")

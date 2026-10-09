@@ -24,7 +24,8 @@ class BaseRAG(BaseModule):
                 self.send(
                     target=message.source,
                     payload={'results': results},
-                    msg_type=MessageType.RESPONSE
+                    msg_type=MessageType.RESPONSE,
+                    correlation_id=message.correlation_id
                 )
     
     def retrieve(self, query: str) -> List[Dict[str, Any]]:

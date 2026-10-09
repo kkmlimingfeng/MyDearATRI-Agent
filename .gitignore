@@ -8,9 +8,21 @@ __pycache__/
 
 # 大模型权重目录（核心，屏蔽整个Qwen模型文件夹，避免几十MB/GB模型上传GitHub）
 Qwen/
+models/*.gguf
+models/**/*.gguf
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+config/.env
 
 # Jupyter 缓存
 .ipynb_checkpoints/
 config/.env
 config/skills.json
 config/tools.json
+
+# Web editor build output and installed frontend packages
+web/node_modules/
+web/dist/

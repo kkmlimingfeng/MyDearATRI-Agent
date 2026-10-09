@@ -6,7 +6,7 @@ import requests
 from modules.tools.base_tool import system_tool
 
 
-@system_tool
+@system_tool(risk="network", timeout=20, retries=1)
 def get_weather(city: str) -> str:
     """
     查询指定城市的实时天气信息。
@@ -24,7 +24,7 @@ def get_weather(city: str) -> str:
     url = f"https://wttr.in/{city}?format=j1&lang=zh-cn"
 
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=15)
         response.raise_for_status()
         data = response.json()
 

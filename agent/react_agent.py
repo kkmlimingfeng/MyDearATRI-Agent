@@ -1,27 +1,60 @@
 """
 ReAct Agent - Thought-Action-Observation循环实现
 """
-import ast
 import json
 import os
 import re
+import uuid
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from .base_agent import BaseAgent, Colors
+from .protocol import TraceEvent, ToolCall, ToolResult
+from .tool_executor import ToolExecutor
+from .trace import MemoryTraceSink, TraceSink
 
 
 class ReactAgent(BaseAgent):
     """ReAct Agent，实现Thought-Action-Observation循环"""
 
-    def __init__(self, max_iterations: int = 10, max_history_turns: int = 10):
+    def __init__(
+        self,
+        max_iterations: int = 10,
+        max_history_turns: int = 10,
+        display_mode: str = "normal",
+        trace_sink: Optional[TraceSink] = None,
+    ):
         # 调用父类初始化
         super().__init__()
         # 最大循环次数，防止Agent无限循环
         self.max_iterations = max_iterations
         # 保留的最大历史对话轮数（一轮 = user + assistant）
         self.max_history_turns = max_history_turns
+        self.display_mode = display_mode
+        self.trace_sink = trace_sink or MemoryTraceSink()
+        self.tool_executor: Optional[ToolExecutor] = None
+        self._active_run_id = ""
         # 历史对话记录，只保存对外的 user/assistant 消息，不包含 ReAct 内部细节
         self._history: list = []
+
+    def _trace(self, event_type: str, data: Dict[str, Any], node_id: str = None) -> None:
+        event = TraceEvent(
+            event_type=event_type,
+            run_id=self._active_run_id,
+            node_id=node_id,
+            data=data,
+            timestamp=datetime.now().astimezone().isoformat(),
+        )
+        self.trace_sink.emit(event)
+        if self.display_mode == "transparent":
+            print(f"{Colors.DIM}[trace] {json.dumps(event.as_dict(), ensure_ascii=False, default=str)}{Colors.RESET}")
+
+    def get_trace_events(self) -> List[TraceEvent]:
+        """Return events collected by the default in-memory sink."""
+        return list(getattr(self.trace_sink, "events", []))
+
+    def _show(self, text: str, *, level: str = "info") -> None:
+        if self.display_mode == "transparent" or level == "error":
+            print(text)
 
     def _inject_module_descriptions(
         self,
@@ -243,67 +276,71 @@ class ReactAgent(BaseAgent):
             return None, finish_match.group(1)
         return None, action.replace("Finish", "").strip("[]").strip()
 
-    def _parse_tool_call(self, action: str) -> Tuple[str, Dict[str, Any]]:
-        """解析单个工具调用，返回 (tool_name, tool_kwargs)"""
-        tool_name_match = re.search(r"(\w+)\(", action)
-        if not tool_name_match:
-            raise ValueError(f"无法解析工具调用 '{action}'")
-
-        tool_name = tool_name_match.group(1)
-        args_match = re.search(r"\((.*)\)", action)
-        args_str = args_match.group(1).strip() if args_match else ""
-
-        tool_kwargs: Dict[str, Any] = {}
-        if args_str:
-            for key, dquote, squote, bare in re.findall(
-                r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^,]+))',
-                args_str
-            ):
-                value: Any = dquote or squote or bare.strip()
-                try:
-                    value = ast.literal_eval(value)
-                except (ValueError, SyntaxError):
-                    pass
-                tool_kwargs[key] = value
-
-        return tool_name, tool_kwargs
-
     def _execute_single_tool(
         self,
         action: str,
         tools_module_id: str = 'tools'
     ) -> str:
         """执行单个工具调用，返回观察结果字符串"""
-        try:
-            tool_name, tool_kwargs = self._parse_tool_call(action)
-        except ValueError as e:
-            error_msg = str(e)
-            print(f"{Colors.RED}{error_msg}{Colors.RESET}")
-            return error_msg
+        executor = self._get_tool_executor()
+        result = executor.execute_legacy_action(action, tools_module_id)
+        return result.output if result.status == "success" else f"错误: {result.error}"
 
-        # 蓝色输出：正在调用工具
-        print(f"{Colors.BLUE}正在调用工具: {tool_name}({tool_kwargs}){Colors.RESET}")
+    def _execute_tool_call(
+        self,
+        call_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        tools_module_id: str,
+    ) -> ToolResult:
+        """Execute one structured model tool call through the shared executor."""
+        return self._get_tool_executor().execute(
+            ToolCall(call_id=call_id, name=tool_name, arguments=arguments),
+            tools_module_id,
+        )
 
-        try:
-            response = self.bus.request(
-                source='agent',
-                target=tools_module_id,
-                payload={
-                    'action': 'call',
-                    'tool_name': tool_name,
-                    'params': tool_kwargs
-                }
+    def _get_tool_executor(self) -> ToolExecutor:
+        if self.tool_executor is None:
+            self.tool_executor = ToolExecutor(
+                bus=self.bus,
+                enabled=lambda module_id: self._enabled.get(module_id, False),
+                trace=self._trace,
+                show=self._show,
+                approve=getattr(self, "tool_approval_callback", None),
             )
-            if 'error' in response.payload:
-                observation = f"错误: {response.payload['error']}"
-                print(f"{Colors.RED}{observation}{Colors.RESET}")
-            else:
-                observation = response.payload.get('result', '')
-        except Exception as e:
-            observation = f"错误: 工具调用失败 - {str(e)}"
-            print(f"{Colors.RED}{observation}{Colors.RESET}")
+        return self.tool_executor
 
-        return observation
+    def _parse_embedded_tool_calls(self, content: str) -> List[Dict[str, Any]]:
+        """Adapt Qwen/llama.cpp XML tool-call text to the native call shape."""
+        calls = []
+        for index, match in enumerate(
+            re.finditer(r"<tool_call>\s*(.*?)\s*</tool_call>", content, re.DOTALL)
+        ):
+            try:
+                payload = json.loads(match.group(1).strip())
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            name = payload.get("name")
+            arguments = payload.get("arguments", {})
+            if not isinstance(name, str) or not name:
+                continue
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
+            if not isinstance(arguments, dict):
+                arguments = {}
+            calls.append({
+                "id": f"embedded_{self._active_run_id}_{index}",
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            })
+        if calls:
+            self._trace("tool_call_adapted", {"calls": calls}, "llm")
+        return calls
     
     def run(
         self,
@@ -315,6 +352,7 @@ class ReactAgent(BaseAgent):
         skills_id: str = 'skills',
         memory_id: str = 'memory',
         reviewer_id: str = 'reviewer',
+        mode: Optional[str] = None,
         **kwargs
     ) -> str:
         """
@@ -329,14 +367,23 @@ class ReactAgent(BaseAgent):
         :param reviewer_id: 使用的Reviewer模块ID
         :return: 最终回答
         """
+        if mode is not None:
+            if mode not in {"normal", "transparent"}:
+                raise ValueError("mode 必须是 normal 或 transparent")
+            self.display_mode = mode
+        self._active_run_id = str(uuid.uuid4())
+        if hasattr(self.trace_sink, "clear"):
+            self.trace_sink.clear()
+        self._trace("workflow_started", {"user_input": user_input})
+
         # 检查必要模块是否存在且启用
         if not self._enabled.get(prompt_id, False):
             # 红色输出：错误信息
-            print(f"{Colors.RED}错误: PromptManager模块 {prompt_id} 未启用{Colors.RESET}")
+            self._show(f"{Colors.RED}错误: PromptManager模块 {prompt_id} 未启用{Colors.RESET}", level="error")
             return "错误: 提示词模块不可用"
         if not self._enabled.get(llm_id, False):
             # 红色输出：错误信息
-            print(f"{Colors.RED}错误: LLM模块 {llm_id} 未启用{Colors.RESET}")
+            self._show(f"{Colors.RED}错误: LLM模块 {llm_id} 未启用{Colors.RESET}", level="error")
             return f"错误: LLM模块 {llm_id} 不可用"
         # tools 和 skills 模块为可选，关闭时不影响基础对话
 
@@ -353,7 +400,7 @@ class ReactAgent(BaseAgent):
             base_prompt = prompt_response.payload.get('system_prompt', '')
         except Exception as e:
             # 红色输出：获取提示词失败
-            print(f"{Colors.RED}错误: 获取系统提示词失败 - {str(e)}{Colors.RESET}")
+            self._show(f"{Colors.RED}错误: 获取系统提示词失败 - {str(e)}{Colors.RESET}", level="error")
             return "错误: 获取系统提示词失败"
 
         # 构建完整的系统提示词：注入工具描述、技能描述和长期记忆
@@ -377,35 +424,103 @@ class ReactAgent(BaseAgent):
         ]
 
         # 品红色输出：用户输入
-        print(f"\n{Colors.MAGENTA}{Colors.BOLD}用户输入:{Colors.RESET} {user_input}")
-        print(f"{Colors.DIM}{'='*50}{Colors.RESET}")
+        self._show(f"\n{Colors.MAGENTA}{Colors.BOLD}用户输入:{Colors.RESET} {user_input}")
+        self._show(f"{Colors.DIM}{'='*50}{Colors.RESET}")
 
         # 开始ReAct循环
         for i in range(self.max_iterations):
             # 青色输出：循环开始
-            print(f"\n{Colors.CYAN}{Colors.BOLD}--- 循环 {i+1} ---{Colors.RESET}\n")
+            self._trace("node_started", {"iteration": i + 1}, "llm")
+            self._show(f"\n{Colors.CYAN}{Colors.BOLD}--- 循环 {i+1} ---{Colors.RESET}\n")
 
             # 暗淡输出：正在调用LLM
-            print(f"{Colors.DIM}正在调用LLM...{Colors.RESET}")
+            self._show(f"{Colors.DIM}正在调用LLM...{Colors.RESET}")
 
             # 通过总线调用LLM
             try:
+                tool_schemas = []
+                if self._enabled.get(tools_id, False):
+                    schema_response = self.bus.request(
+                        source='agent',
+                        target=tools_id,
+                        payload={'action': 'get_tool_schemas'}
+                    )
+                    tool_schemas = schema_response.payload.get('tools', [])
                 llm_response = self.bus.request(
                     source='agent',
                     target=llm_id,
                     payload={
                         'action': 'generate',
-                        'messages': messages
+                        'messages': messages,
+                        'tools': tool_schemas,
                     }
                 )
                 output = llm_response.payload.get('response', '')
+                tool_calls = llm_response.payload.get('tool_calls', [])
+                if not tool_calls and output:
+                    tool_calls = self._parse_embedded_tool_calls(output)
+                usage = llm_response.payload.get('usage', {})
+                self._trace("llm_completed", {
+                    "content": output,
+                    "tool_calls": tool_calls,
+                    "usage": usage,
+                    "messages": messages,
+                }, "llm")
             except Exception as e:
                 # 红色输出：LLM调用失败
-                print(f"{Colors.RED}错误: LLM调用失败 - {str(e)}{Colors.RESET}")
+                self._show(f"{Colors.RED}错误: LLM调用失败 - {str(e)}{Colors.RESET}", level="error")
                 return "错误: LLM调用失败"
 
             # 绿色输出：模型回复
-            print(f"{Colors.GREEN}{Colors.BOLD}模型输出:{Colors.RESET}\n{output}\n")
+            self._show(f"{Colors.GREEN}{Colors.BOLD}模型输出:{Colors.RESET}\n{output}\n")
+
+            if tool_calls:
+                assistant_message = {
+                    "role": "assistant",
+                    # Some llama.cpp chat templates index content directly and
+                    # do not accept OpenAI's null content for tool-call turns.
+                    "content": "" if "<tool_call>" in output else output,
+                    "tool_calls": [
+                        {
+                            "id": call.get("id", ""),
+                            "type": "function",
+                            "function": {
+                                "name": call.get("function", {}).get("name", ""),
+                                "arguments": json.dumps(
+                                    call.get("function", {}).get("arguments", {}),
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        }
+                        for call in tool_calls
+                    ],
+                }
+                messages.append(assistant_message)
+                tool_observations = []
+                for call in tool_calls:
+                    function = call.get("function", {})
+                    call_id = call.get("id", "")
+                    tool_name = function.get("name", "")
+                    arguments = function.get("arguments", {})
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except json.JSONDecodeError:
+                            arguments = {}
+                    result = self._execute_tool_call(
+                        call_id, tool_name, arguments, tools_id
+                    )
+                    tool_observations.append(result)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(result.as_dict(), ensure_ascii=False, default=str),
+                    })
+                self._trace("tool_results_added", {
+                    "results": [item.as_dict() for item in tool_observations]
+                }, "tools")
+                continue
+
             # 将助手回复加入messages
             messages.append({"role": "assistant", "content": output})
 
@@ -416,8 +531,8 @@ class ReactAgent(BaseAgent):
             if error:
                 observation_str = f"Observation: 错误: {error}"
                 # 红色输出：解析错误
-                print(f"{Colors.RED}{observation_str}{Colors.RESET}")
-                print(f"{Colors.DIM}{'='*50}{Colors.RESET}")
+                self._show(f"{Colors.RED}{observation_str}{Colors.RESET}", level="error")
+                self._show(f"{Colors.DIM}{'='*50}{Colors.RESET}")
                 # 将观察结果加入messages
                 messages.append({"role": "user", "content": observation_str})
                 continue
@@ -429,6 +544,7 @@ class ReactAgent(BaseAgent):
             if final_answer:
                 # 保存本轮对外的 user/assistant 消息到历史
                 self._add_to_history(user_input, final_answer)
+                self._trace("workflow_completed", {"answer": final_answer})
                 # 绿色加粗输出：最终答案
                 # print(f"\n{Colors.GREEN}{Colors.BOLD}任务完成，最终答案:{Colors.RESET} {final_answer}")
                 # 后台 reviewer 处理（用户不可见）
@@ -444,15 +560,16 @@ class ReactAgent(BaseAgent):
             # 将工具返回结果格式化并加入messages
             observation_str = f"Observation: {observation}"
             # 黄色输出：观察结果
-            print(f"{Colors.GREEN}{observation_str}{Colors.RESET}")
-            print(f"{Colors.DIM}{'='*50}{Colors.RESET}")
+            self._show(f"{Colors.GREEN}{observation_str}{Colors.RESET}")
+            self._show(f"{Colors.DIM}{'='*50}{Colors.RESET}")
             messages.append({"role": "user", "content": observation_str})
-            print(f"{Colors.CYAN}{messages}{Colors.RESET}")
+            self._trace("legacy_observation_added", {"observation": observation})
 
         # 如果循环结束仍未得到最终答案
         # 红色输出：超出最大循环次数
         fallback = f"已达到最大循环次数 {self.max_iterations}，任务未完成"
-        print(f"{Colors.RED}{fallback}{Colors.RESET}")
+        self._show(f"{Colors.RED}{fallback}{Colors.RESET}", level="error")
+        self._trace("workflow_failed", {"error": fallback})
         # 仍然保存本轮记录，避免历史完全丢失
         self._add_to_history(user_input, fallback)
         # 后台 reviewer 处理（用户不可见）

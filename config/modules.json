@@ -1,0 +1,53 @@
+{
+  "modules": [
+    {
+      "id": "prompt",
+      "class": "modules.prompt.prompt_manager.PromptManager"
+    },
+    {
+      "id": "llm",
+      "class": "modules.llm.openai_llm.OpenAILLM",
+      "kwargs": {
+        "api_key": {"$env": "OPENAI_API_KEY", "default": ""},
+        "base_url": {"$env": "OPENAI_BASE_URL", "default": ""},
+        "model_name": {"$env": "OPENAI_MODEL_NAME", "default": ""}
+      }
+    },
+    {
+      "id": "tools",
+      "class": "modules.tools.tool_module.ToolModule",
+      "kwargs": {
+        "config_path": {"$path": "config/tools.json"}
+      },
+      "setup": [
+        {
+          "method": "register_tools_from_directory",
+          "kwargs": {"directory": {"$path": "modules/tools/system_tools"}}
+        }
+      ]
+    },
+    {
+      "id": "skills",
+      "class": "modules.skills.skill_module.SkillModule",
+      "kwargs": {
+        "config_path": {"$path": "config/skills.json"}
+      },
+      "setup": [
+        {
+          "method": "register_skills_from_directory",
+          "kwargs": {"directory": {"$path": "modules/skills"}}
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "class": "modules.mem.memory_module.MemoryModule"
+    },
+    {
+      "id": "reviewer",
+      "class": "modules.reviewer.reviewer_module.ReviewerModule",
+      "enabled": false,
+      "kwargs": {"llm_id": "llm"}
+    }
+  ]
+}

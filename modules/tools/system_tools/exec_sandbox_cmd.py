@@ -10,7 +10,7 @@ import subprocess
 from modules.tools.base_tool import system_tool
 
 
-@system_tool
+@system_tool(risk="execute", timeout=35, retries=0, parallel=False)
 def exec_sandbox_cmd(cmd: str, timeout: int = 30) -> str:
     """
     在 firejail 沙箱中执行 shell 命令。

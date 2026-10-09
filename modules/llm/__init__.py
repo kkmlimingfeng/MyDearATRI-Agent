@@ -7,4 +7,10 @@ except ImportError:
     # 本地依赖（如 torch、transformers、modelscope）未安装时不影响 OpenAI 模块使用
     ModelScopeLLM = None  # type: ignore[misc, assignment]
 
-__all__ = ['BaseLLM', 'ModelScopeLLM', 'OpenAILLM']
+try:
+    from .gguf_llm import GGUFLLM
+except ImportError:
+    # llama-cpp-python 是可选依赖，仅 GGUF 后端需要。
+    GGUFLLM = None  # type: ignore[misc, assignment]
+
+__all__ = ['BaseLLM', 'ModelScopeLLM', 'OpenAILLM', 'GGUFLLM']

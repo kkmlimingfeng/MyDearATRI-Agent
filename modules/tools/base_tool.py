@@ -10,20 +10,38 @@ import inspect
 import json
 import os
 import re
+import typing
+from concurrent.futures import ThreadPoolExecutor
 from abc import abstractmethod
 from typing import Dict, Any, Callable, List, Optional
 from modules.base import BaseModule
 from bus.base import Message
 
 
-def system_tool(func: Callable) -> Callable:
+def system_tool(
+    func: Optional[Callable] = None,
+    *,
+    risk: str = "read",
+    timeout: Optional[float] = None,
+    retries: int = 0,
+    parallel: bool = True,
+) -> Callable:
     """
     标记一个函数为系统工具。
 
     被标记的函数会被 ToolModule 自动发现并注册到总线。
     """
-    func.__tool__ = True  # type: ignore[attr-defined]
-    return func
+    def decorate(target: Callable) -> Callable:
+        target.__tool__ = True  # type: ignore[attr-defined]
+        target.__tool_metadata__ = {  # type: ignore[attr-defined]
+            "risk": risk,
+            "timeout": timeout,
+            "retries": max(0, int(retries)),
+            "parallel": bool(parallel),
+        }
+        return target
+
+    return decorate(func) if func is not None else decorate
 
 
 def _parse_docstring(func: Callable) -> Dict[str, Any]:
@@ -87,6 +105,7 @@ class BaseTool(BaseModule):
         self._config_path: Optional[str] = config_path
         # 每个工具的启用状态，默认全部启用
         self._enabled_tools: Dict[str, bool] = {}
+        self._execution_pool = ThreadPoolExecutor(max_workers=8)
 
     def register_tool(self, name: str, func: Callable) -> None:
         """注册一个工具函数"""
@@ -98,6 +117,12 @@ class BaseTool(BaseModule):
     def get_tool(self, name: str) -> Callable:
         """获取已注册的工具函数"""
         return self._tools.get(name)
+
+    def get_tool_metadata(self, name: str) -> Dict[str, Any]:
+        """Return execution metadata attached by :func:`system_tool`."""
+        func = self.get_tool(name)
+        metadata = getattr(func, "__tool_metadata__", {}) if func else {}
+        return dict(metadata)
 
     def is_tool_enabled(self, name: str) -> bool:
         """查询指定工具是否启用，未配置则默认启用"""
@@ -225,8 +250,82 @@ class BaseTool(BaseModule):
                 "args": parsed["args"],
                 "returns": parsed["returns"],
                 "example": parsed["example"],
+                "metadata": self.get_tool_metadata(name),
             })
         return descriptions
+
+    @staticmethod
+    def _json_schema_type(annotation: Any) -> str:
+        """Map common Python annotations to JSON Schema types."""
+        origin = typing.get_origin(annotation)
+        if origin is not None:
+            args = [arg for arg in typing.get_args(annotation) if arg is not type(None)]
+            if args:
+                return BaseTool._json_schema_type(args[0])
+        return {
+            str: "string",
+            int: "integer",
+            float: "number",
+            bool: "boolean",
+            list: "array",
+            dict: "object",
+        }.get(annotation, "string")
+
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        """Return enabled tools using the provider-neutral function schema."""
+        schemas = []
+        for name, func in self._tools.items():
+            if not self.is_tool_enabled(name):
+                continue
+            parsed = _parse_docstring(func)
+            signature = inspect.signature(func)
+            properties = {}
+            required = []
+            for param_name, param in signature.parameters.items():
+                if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                    continue
+                prop = {"type": self._json_schema_type(param.annotation)}
+                description = parsed["args"].get(param_name)
+                if description:
+                    prop["description"] = description
+                if param.default is not inspect.Parameter.empty:
+                    prop["default"] = param.default
+                else:
+                    required.append(param_name)
+                properties[param_name] = prop
+            schemas.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": parsed["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                        "additionalProperties": False,
+                    },
+                },
+            })
+        return schemas
+
+    def get_openai_tool_schemas(self) -> List[Dict[str, Any]]:
+        """Compatibility alias for older callers and OpenAI adapters."""
+        return self.get_tool_schemas()
+
+    def validate_tool_arguments(
+        self, name: str, arguments: Dict[str, Any]
+    ) -> Optional[str]:
+        """Validate names and required arguments before calling Python code."""
+        func = self.get_tool(name)
+        if func is None:
+            return f"工具 {name} 不存在"
+        if not isinstance(arguments, dict):
+            return "工具参数必须是 JSON 对象"
+        try:
+            inspect.signature(func).bind(**arguments)
+        except TypeError as exc:
+            return f"工具参数错误: {exc}"
+        return None
 
     @staticmethod
     def _format_type(annotation: Any) -> str:
@@ -284,6 +383,7 @@ class BaseTool(BaseModule):
 
     def shutdown(self) -> None:
         """关闭工具模块，清空注册的工具"""
+        self._execution_pool.shutdown(wait=False, cancel_futures=True)
         self._tools.clear()
         self._enabled_tools.clear()
         self._initialized = False

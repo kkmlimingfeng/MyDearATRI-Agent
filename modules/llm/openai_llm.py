@@ -2,7 +2,9 @@
 OpenAI风格LLM模块 - 通过OpenAI兼容API调用远程模型
 支持OpenAI官方API以及所有兼容OpenAI接口的服务（如vLLM、Ollama、LocalAI等）
 """
+import json
 from typing import Optional, List, Dict, Any
+from agent.protocol import LLMResponse, ToolCall
 try:
     from openai import OpenAI
 except ImportError:
@@ -59,21 +61,45 @@ class OpenAILLM(BaseLLM):
         # 绿色输出：API连接完成
         print(f"{Colors.GREEN}[{self.module_id}] API连接完成，模型: {self.model_name}{Colors.RESET}")
     
-    def generate(self, messages: List[Dict[str, str]]) -> str:
+    def generate_response(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> LLMResponse:
         """
         使用OpenAI API生成文本
         :param messages: 标准messages格式，如[{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
         :return: 模型生成的文本
         """
         # 调用OpenAI的chat completion API
-        response = self.client.chat.completions.create(
-            model=self.model_name,           # 指定模型
-            messages=messages,               # 对话消息列表（标准格式）
-            temperature=self.temperature,    # 温度参数
-            max_tokens=self.max_tokens       # 最大生成token数
+        request = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        if tools:
+            request["tools"] = tools
+        response = self.client.chat.completions.create(**request)
+        message = response.choices[0].message
+        calls = []
+        for call in (getattr(message, "tool_calls", None) or []):
+            function = call.function
+            try:
+                arguments = json.loads(function.arguments or "{}")
+            except (TypeError, json.JSONDecodeError):
+                arguments = {}
+            calls.append(ToolCall(call_id=call.id, name=function.name, arguments=arguments))
+        usage = response.usage.model_dump() if response.usage else {}
+        return LLMResponse(
+            content=message.content or "",
+            tool_calls=calls,
+            usage=usage,
+            raw=response.model_dump(),
         )
-        # 提取并返回模型回复的内容
-        return response.choices[0].message.content
+
+    def generate(self, messages: List[Dict[str, str]]) -> str:
+        return self.generate_response(messages).content
     
     def shutdown(self) -> None:
         """关闭客户端连接"""

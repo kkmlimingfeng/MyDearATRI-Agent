@@ -83,13 +83,20 @@ def _select_model_config(models: dict, model_key: str) -> dict:
     }
 
 
+def _model_summary(config: dict) -> str:
+    """Format both remote model endpoints and local model files for the CLI."""
+    if config.get("model_path"):
+        return f"GGUF: {config['model_path']}"
+    return f"{config.get('model_name', '')} @ {config.get('base_url', '')}"
+
+
 def _select_model_numbered(models: dict) -> str:
     """没有 readchar 时的回退：数字编号选择模型"""
     keys = list(models.keys())
     print("\n请选择模型：")
     for i, key in enumerate(keys, 1):
         cfg = models[key]
-        print(f"  {i}. {key}: {cfg.get('model_name')} @ {cfg.get('base_url')}")
+        print(f"  {i}. {key}: {_model_summary(cfg)}")
 
     while True:
         choice = input("请输入编号: ").strip()
@@ -127,7 +134,7 @@ def _select_model_interactive(models: dict) -> str:
         for i, key in enumerate(keys):
             cfg = models[key]
             prefix = "-> " if i == selected else "   "
-            print(f"{prefix}{key}: {cfg.get('model_name')} @ {cfg.get('base_url')}")
+            print(f"{prefix}{key}: {_model_summary(cfg)}")
 
     def clear():
         # 光标上移并清除下方内容
@@ -150,6 +157,14 @@ def _select_model_interactive(models: dict) -> str:
             return keys[selected]
 
 
+def _approve_tool_call(call, metadata: dict) -> bool:
+    """Ask for explicit approval before write/execute tools run."""
+    risk = metadata.get("risk", "unknown")
+    print(f"\n工具 {call.name} 请求执行高风险操作 (risk={risk})")
+    print(json.dumps(call.arguments, ensure_ascii=False, indent=2, default=str))
+    return input("批准本次调用？[y/N]: ").strip().lower() in {"y", "yes"}
+
+
 # 加载 config/.env 中的环境变量
 _env_path = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -159,14 +174,9 @@ _env_path = os.path.join(
 _load_env_file(_env_path)
 
 
-from bus import EventBus
-from agent import ReactAgent
-from modules.prompt import PromptManager
-from modules.llm.openai_llm import OpenAILLM
-from modules.tools import ToolModule
-from modules.skills import SkillModule
-from modules.mem import MemoryModule
-from modules.reviewer import ReviewerModule
+from agent.workflow import WorkflowConfigError, load_workflow
+from modules.module_loader import ModuleConfigError, build_modules, load_module_specs
+from agent.trace import CompositeTraceSink, JsonlTraceSink
 
 
 def main():
@@ -179,27 +189,59 @@ def main():
     parser.add_argument("--disable-tools", action="store_true", help="禁用工具模块")
     parser.add_argument("--disable-skills", action="store_true", help="禁用技能模块")
     parser.add_argument("--disable-memory", action="store_true", help="禁用记忆模块")
-    parser.add_argument("--enable-reviewer", action="store_true", help="启用Reviewer模块（默认禁用）")
+    parser.add_argument("--enable-reviewer", action="store_true", help="启用Reviewer模块")
+    parser.add_argument("--disable-reviewer", action="store_true", help="禁用Reviewer模块")
+    parser.add_argument(
+        "--disable-module", action="append", default=[], metavar="ID",
+        help="按模块 ID 禁用模块，可重复使用"
+    )
+    parser.add_argument(
+        "--enable-module", action="append", default=[], metavar="ID",
+        help="按模块 ID 启用模块，可重复使用"
+    )
+    parser.add_argument(
+        "--modules-config", default="",
+        help="模块配置文件路径，默认使用 config/modules.json"
+    )
+    parser.add_argument(
+        "--workflow", default="",
+        help="工作流 JSON 路径，默认使用 workflows/default_react.json"
+    )
     parser.add_argument("--model", "-m", type=str, default="", help="选择预定义模型（在 config/models.json 中配置）")
     parser.add_argument("--select-model", action="store_true", help="启动时交互式选择模型（支持 ↑↓ 方向键）")
     parser.add_argument("--list-models", action="store_true", help="列出 config/models.json 中可用的模型并退出")
+    parser.add_argument(
+        "--mode", choices=("normal", "transparent"), default="normal",
+        help="对话显示模式：normal 隐藏中间过程，transparent 显示执行轨迹"
+    )
+    parser.add_argument(
+        "--trace-jsonl", default="",
+        help="将运行轨迹追加保存为 JSONL 文件"
+    )
     args = parser.parse_args()
 
-    enable_prompt = not args.disable_prompt
     enable_llm = not args.disable_llm
-    enable_tools = not args.disable_tools
-    enable_skills = not args.disable_skills
-    enable_memory = not args.disable_memory
-    enable_reviewer = args.enable_reviewer
 
-    # 1. 创建Agent（内部创建EventBus）
-    agent = ReactAgent(max_iterations=5)
-
-    # 配置文件路径（用于工具/技能级开关）
-    config_dir = os.path.join(os.path.dirname(__file__), "config")
-    tools_config_path = os.path.join(config_dir, "tools.json")
-    skills_config_path = os.path.join(config_dir, "skills.json")
+    # 配置文件路径
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    config_dir = os.path.join(project_root, "config")
+    modules_config_path = args.modules_config or os.path.join(config_dir, "modules.json")
+    workflow_path = args.workflow or os.path.join(project_root, "workflows", "default_react.json")
     models_config_path = os.path.join(config_dir, "models.json")
+
+    try:
+        workflow = load_workflow(workflow_path)
+        agent = workflow.runtime_class(**workflow.runtime_kwargs)
+    except (WorkflowConfigError, ModuleConfigError, TypeError) as e:
+        parser.error(f"加载工作流失败: {e}")
+
+    if args.trace_jsonl:
+        sink = JsonlTraceSink(os.path.abspath(args.trace_jsonl))
+        existing_sink = getattr(agent, "trace_sink", None)
+        sinks = [existing_sink] if existing_sink is not None else []
+        sinks.append(sink)
+        agent.trace_sink = CompositeTraceSink(sinks)
+    agent.tool_approval_callback = _approve_tool_call
 
     # 加载预定义模型配置
     models_config = _load_models_config(models_config_path)
@@ -210,14 +252,16 @@ def main():
         if not models_config:
             print("  （暂无预定义模型）")
         for key, cfg in models_config.items():
-            print(f"  - {key}: {cfg.get('model_name')} @ {cfg.get('base_url')}")
+            print(f"  - {key}: {_model_summary(cfg)}")
         print()
         return
 
-    # 2. 创建模块实例（每个模块都持有bus引用）
-    prompt_mgr = PromptManager("prompt", agent.bus) if enable_prompt else None
+    # 2. 读取模块配置，并选择 LLM 模型配置
+    try:
+        module_specs = load_module_specs(modules_config_path)
+    except ModuleConfigError as e:
+        parser.error(str(e))
 
-    # 选择并创建 LLM 模块
     if enable_llm:
         # 如果要求交互式选择，或者没有通过 --model 指定且 models.json 里有多个模型
         if args.select_model or (not args.model and len(models_config) > 1):
@@ -226,53 +270,67 @@ def main():
         else:
             model_cfg = _select_model_config(models_config, args.model)
 
-        # 命令行/交互式选择的模型优先级最高；未指定时回退到环境变量
-        base_url = model_cfg.get("base_url") or os.environ.get("OPENAI_BASE_URL", "")
-        model_name = model_cfg.get("model_name") or os.environ.get("OPENAI_MODEL_NAME", "")
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-
-        if not api_key:
-            print("[警告] OPENAI_API_KEY 未设置，LLM 调用可能会失败")
-        if not base_url or not model_name:
-            print("[警告] LLM 的 base_url 或 model_name 未设置，请检查 config/models.json 或 config/.env")
-
-        llm = OpenAILLM(
-            "llm",
-            agent.bus,
-            api_key=api_key,
-            base_url=base_url,
-            model_name=model_name,
+        # 模型配置中的 class / kwargs / 常用字段覆盖 modules.json 中的默认值。
+        llm_id = workflow.bindings["llm_id"]
+        llm_spec = next((spec for spec in module_specs if spec.get("id") == llm_id), None)
+        if llm_spec is None:
+            parser.error(f"工作流绑定的模型模块 {llm_id!r} 不在模块清单中")
+        selected_llm_class = model_cfg.get("class")
+        if selected_llm_class:
+            llm_spec["class"] = model_cfg["class"]
+        llm_kwargs = (
+            {} if selected_llm_class else dict(llm_spec.get("kwargs", {}))
         )
-    else:
-        llm = None
+        if isinstance(model_cfg.get("kwargs"), dict):
+            llm_kwargs.update(model_cfg["kwargs"])
+        # 允许 GGUF 等后端直接在模型条目中声明参数。
+        for key, value in model_cfg.items():
+            if key not in {"class", "provider", "kwargs", "base_url", "model_name"}:
+                llm_kwargs[key] = value
+        if "base_url" in model_cfg:
+            llm_kwargs["base_url"] = model_cfg["base_url"]
+        if "model_name" in model_cfg:
+            llm_kwargs["model_name"] = model_cfg["model_name"]
+        llm_spec["kwargs"] = llm_kwargs
 
-    tools = ToolModule("tools", agent.bus, config_path=tools_config_path) if enable_tools else None
-    skills = SkillModule("skills", agent.bus, config_path=skills_config_path) if enable_skills else None
-    memory = MemoryModule("memory", agent.bus) if enable_memory else None
-    reviewer = ReviewerModule("reviewer", agent.bus, llm_id="llm") if enable_reviewer else None
+    # 3. CLI 开关只是配置驱动加载器的兼容覆盖层。
+    overrides = {}
+    for binding_key, disabled in (
+        ("prompt_id", args.disable_prompt),
+        ("llm_id", args.disable_llm),
+        ("tools_id", args.disable_tools),
+        ("skills_id", args.disable_skills),
+        ("memory_id", args.disable_memory),
+    ):
+        module_id = workflow.bindings.get(binding_key)
+        if disabled and module_id:
+            overrides[module_id] = False
+    if args.enable_reviewer:
+        reviewer_id = workflow.bindings.get("reviewer_id")
+        if reviewer_id:
+            overrides[reviewer_id] = True
+    if args.disable_reviewer:
+        reviewer_id = workflow.bindings.get("reviewer_id")
+        if reviewer_id:
+            overrides[reviewer_id] = False
+    for module_id in args.disable_module:
+        overrides[module_id] = False
+    for module_id in args.enable_module:
+        overrides[module_id] = True
 
-    # 3. 自动扫描并注册 tools / skills
-    if enable_tools and tools is not None:
-        tools_dir = os.path.join(os.path.dirname(__file__), "modules", "tools", "system_tools")
-        tools.register_tools_from_directory(tools_dir)
+    try:
+        modules, configured_enabled = build_modules(
+            module_specs,
+            agent.bus,
+            project_root=project_root,
+            enabled_overrides=overrides,
+        )
+    except (ModuleConfigError, TypeError, ImportError) as e:
+        parser.error(f"加载模块失败: {e}")
 
-    if enable_skills and skills is not None:
-        skills_dir = os.path.join(os.path.dirname(__file__), "modules", "skills")
-        skills.register_skills_from_directory(skills_dir)
-
-    # 4. 注册模块到Agent
-    if prompt_mgr is not None:
-        agent.register_module(prompt_mgr, enabled=enable_prompt)
-    if llm is not None:
-        agent.register_module(llm, enabled=enable_llm)
-    if tools is not None:
-        agent.register_module(tools, enabled=enable_tools)
-    if skills is not None:
-        agent.register_module(skills, enabled=enable_skills)
-    if memory is not None:
-        agent.register_module(memory, enabled=enable_memory)
-    if reviewer is not None:
-        agent.register_module(reviewer, enabled=enable_reviewer)
+    # 4. 所有模块统一注册，主循环不需要知道具体模块类。
+    for module_id, module in modules.items():
+        agent.register_module(module, enabled=configured_enabled.get(module_id, True))
 
     # 5. 启动Agent（初始化所有模块并注册到总线）
     agent.start()
@@ -299,12 +357,8 @@ def main():
             # 运行Agent（ReAct循环）
             result = agent.run(
                 user_input=user_input,
-                prompt_name="default",  # 使用 AGENT.md + SOUL.md + USER.md 拼接的系统提示词
-                llm_id="llm",
-                tools_id="tools",
-                skills_id="skills",
-                memory_id="memory",
-                reviewer_id="reviewer"
+                mode=args.mode,
+                **workflow.bindings
             )
 
             # 输出结果

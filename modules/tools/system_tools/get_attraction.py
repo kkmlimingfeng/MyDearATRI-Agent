@@ -5,7 +5,7 @@ import os
 from modules.tools.base_tool import system_tool
 
 
-@system_tool
+@system_tool(risk="network", timeout=20, retries=1)
 def get_attraction(city: str, weather: str) -> str:
     """
     根据城市名和天气情况，使用 Tavily Search API 搜索并返回优化后的景点推荐。

@@ -24,7 +24,8 @@ class BaseMCP(BaseModule):
                 self.send(
                     target=message.source,
                     payload={'result': result},
-                    msg_type=MessageType.RESPONSE
+                    msg_type=MessageType.RESPONSE,
+                    correlation_id=message.correlation_id
                 )
     
     def execute(self, context: Dict[str, Any]) -> Any:

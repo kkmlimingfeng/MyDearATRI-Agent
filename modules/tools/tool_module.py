@@ -3,6 +3,7 @@
 """
 from .base_tool import BaseTool
 from bus.base import Message, MessageType
+from concurrent.futures import TimeoutError as FutureTimeoutError
 
 
 class ToolModule(BaseTool):
@@ -29,6 +30,12 @@ class ToolModule(BaseTool):
             self._handle_set_enabled(message)
         elif action == 'get_tool_descriptions':
             self._handle_get_tool_descriptions(message)
+        elif action == 'get_openai_tool_schemas':
+            self._handle_get_openai_tool_schemas(message)
+        elif action == 'get_tool_schemas':
+            self._handle_get_tool_schemas(message)
+        elif action == 'get_tool_metadata':
+            self._handle_get_tool_metadata(message)
         elif action == 'format_tool_descriptions':
             self._handle_format_tool_descriptions(message)
 
@@ -56,21 +63,44 @@ class ToolModule(BaseTool):
             )
             return
 
-        try:
-            result = tool_func(**tool_kwargs)
+        validation_error = self.validate_tool_arguments(tool_name, tool_kwargs)
+        if validation_error:
             self.send(
                 target=message.source,
-                payload={'result': result},
+                payload={'error': validation_error},
                 msg_type=MessageType.RESPONSE,
                 correlation_id=message.correlation_id
             )
-        except Exception as e:
-            self.send(
-                target=message.source,
-                payload={'error': str(e)},
-                msg_type=MessageType.RESPONSE,
-                correlation_id=message.correlation_id
-            )
+            return
+
+        metadata = self.get_tool_metadata(tool_name)
+        timeout = metadata.get('timeout')
+        retries = int(metadata.get('retries', 0) or 0)
+        last_error = None
+        for _ in range(retries + 1):
+            future = self._execution_pool.submit(tool_func, **tool_kwargs)
+            try:
+                result = future.result(timeout=float(timeout) if timeout else None)
+                self.send(
+                    target=message.source,
+                    payload={'result': result},
+                    msg_type=MessageType.RESPONSE,
+                    correlation_id=message.correlation_id
+                )
+                return
+            except FutureTimeoutError:
+                future.cancel()
+                last_error = f'工具 {tool_name} 执行超时 ({timeout}s)'
+                break
+            except Exception as e:
+                last_error = str(e)
+
+        self.send(
+            target=message.source,
+            payload={'error': last_error or f'工具 {tool_name} 执行失败'},
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )
 
     def _handle_list_tools(self, message: Message) -> None:
         """返回工具列表及启用状态"""
@@ -86,6 +116,31 @@ class ToolModule(BaseTool):
         self.send(
             target=message.source,
             payload={'descriptions': self.get_tool_descriptions()},
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )
+
+    def _handle_get_openai_tool_schemas(self, message: Message) -> None:
+        self.send(
+            target=message.source,
+            payload={'tools': self.get_openai_tool_schemas()},
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )
+
+    def _handle_get_tool_schemas(self, message: Message) -> None:
+        self.send(
+            target=message.source,
+            payload={'tools': self.get_tool_schemas()},
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )
+
+    def _handle_get_tool_metadata(self, message: Message) -> None:
+        name = message.payload.get('tool_name')
+        self.send(
+            target=message.source,
+            payload={'metadata': self.get_tool_metadata(name) if name else {}},
             msg_type=MessageType.RESPONSE,
             correlation_id=message.correlation_id
         )

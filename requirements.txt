@@ -1,0 +1,17 @@
+# Core runtime dependencies
+openai>=1.0
+requests>=2.30
+tavily-python>=0.3
+readchar>=4.0
+llama-cpp-python>=0.3.16
+numpy<=2.3.2
+pillow>=10.0
+
+# Linux CUDA 12.4 runtime libraries for the JamePeng cu124 wheel.
+# Windows users should use the CUDA runtime shipped/installed for their wheel.
+nvidia-cuda-runtime-cu12==12.4.127; platform_system == "Linux"
+nvidia-cublas-cu12==12.4.5.8; platform_system == "Linux"
+nvidia-nccl-cu12==2.21.5; platform_system == "Linux"
+
+# For CUDA builds on Linux/WSL, set CMAKE_ARGS=-DGGML_CUDA=on before install.
+# On Windows, install the matching prebuilt wheel before this file.

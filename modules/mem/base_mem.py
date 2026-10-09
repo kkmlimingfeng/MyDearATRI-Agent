@@ -25,7 +25,8 @@ class BaseMemory(BaseModule):
                 self.send(
                     target=message.source,
                     payload={'status': 'ok'},
-                    msg_type=MessageType.RESPONSE
+                    msg_type=MessageType.RESPONSE,
+                    correlation_id=message.correlation_id
                 )
             
             elif action == 'recall':
@@ -34,7 +35,8 @@ class BaseMemory(BaseModule):
                 self.send(
                     target=message.source,
                     payload={'value': value},
-                    msg_type=MessageType.RESPONSE
+                    msg_type=MessageType.RESPONSE,
+                    correlation_id=message.correlation_id
                 )
     
     def store(self, key: str, value: Any) -> None:
