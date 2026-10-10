@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import binascii
 import os
 import re
 import threading
@@ -23,6 +25,8 @@ from modules.module_loader import (
 
 ROOT = Path(__file__).resolve().parent
 WORKFLOW_DIR = ROOT / "workflows"
+USER_PROFILE_PATH = ROOT / "modules" / "prompt" / "SystemPrompt" / "USER.md"
+THEME_BACKGROUND_PATH = ROOT / "data" / "theme" / "background.webp"
 _runtime_lock = threading.RLock()
 _runtime_agent = None
 _runtime_graph_key = None
@@ -63,6 +67,48 @@ def _save_graph_workflow(document: Any) -> dict:
     temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temporary.replace(destination)
     return {"id": graph.workflow_id, "name": graph.name, "path": str(destination)}
+
+
+def _read_user_profile() -> dict:
+    try:
+        return {"content": USER_PROFILE_PATH.read_text(encoding="utf-8")}
+    except OSError as exc:
+        raise ValueError(f"读取 USER.md 失败: {exc}") from exc
+
+
+def _save_user_profile(content: Any) -> dict:
+    if not isinstance(content, str):
+        raise ValueError("用户信息内容必须是文本")
+    if len(content) > 500_000:
+        raise ValueError("USER.md 内容不能超过 500 KB")
+    temporary = USER_PROFILE_PATH.with_suffix(".md.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        temporary.replace(USER_PROFILE_PATH)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"保存 USER.md 失败: {exc}") from exc
+    return {"saved": True, "path": str(USER_PROFILE_PATH)}
+
+
+def _save_theme_background(data_url: Any) -> dict:
+    if not isinstance(data_url, str) or not data_url.startswith("data:image/webp;base64,"):
+        raise ValueError("背景图片格式无效，请重新上传")
+    try:
+        image_data = base64.b64decode(data_url.partition(",")[2], validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("背景图片数据无效，请重新上传") from exc
+    if not image_data or len(image_data) > 15 * 1024 * 1024:
+        raise ValueError("背景图片压缩后不能超过 15 MB")
+    THEME_BACKGROUND_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = THEME_BACKGROUND_PATH.with_suffix(".webp.tmp")
+    try:
+        temporary.write_bytes(image_data)
+        temporary.replace(THEME_BACKGROUND_PATH)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"背景图片保存失败: {exc}") from exc
+    return {"saved": True, "url": f"/api/theme/background?v={THEME_BACKGROUND_PATH.stat().st_mtime_ns}"}
 
 
 def _load_models() -> dict:
@@ -444,6 +490,18 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(204, {})
 
     def do_GET(self) -> None:
+        if self.path.startswith("/api/theme/background"):
+            if not THEME_BACKGROUND_PATH.is_file():
+                self._send(404, {"error": "尚未保存背景图片"})
+                return
+            image_data = THEME_BACKGROUND_PATH.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/webp")
+            self.send_header("Content-Length", str(len(image_data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(image_data)
+            return
         if self.path == "/api/health":
             self._send(200, {"status": "ready", "runtime_loaded": _runtime_model_loaded()})
             return
@@ -467,15 +525,27 @@ class ApiHandler(BaseHTTPRequestHandler):
         if self.path == "/api/models":
             self._send(200, {"models": _model_catalog()})
             return
+        if self.path == "/api/user-profile":
+            try:
+                self._send(200, _read_user_profile())
+            except ValueError as exc:
+                self._send(500, {"error": str(exc)})
+            return
         self._send(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/run", "/api/start", "/api/stop", "/api/workflows/save"}:
+        if self.path not in {"/api/run", "/api/start", "/api/stop", "/api/workflows/save", "/api/user-profile", "/api/theme/background"}:
             self._send(404, {"error": "Not found"})
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(size)) if size else {}
+            if self.path == "/api/theme/background":
+                self._send(200, _save_theme_background(payload.get("image")))
+                return
+            if self.path == "/api/user-profile":
+                self._send(200, _save_user_profile(payload.get("content")))
+                return
             if self.path == "/api/workflows/save":
                 self._send(200, _save_graph_workflow(payload.get("workflow")))
                 return

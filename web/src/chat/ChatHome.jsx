@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, ArrowUp, Bot, ChevronDown, FileClock, MessageSquarePlus, MoreHorizontal, PanelLeftClose, Plus, Settings2, Workflow, Zap } from 'lucide-react';
+import { Activity, ArrowUp, Bot, ChevronDown, FileClock, MessageSquarePlus, PanelLeftClose, Pencil, Plus, Save, Trash2, Workflow, X, Zap } from 'lucide-react';
 import { ThemePicker } from '../theme.jsx';
 import { modelChoices } from '../workflow/catalog';
 
 const CHAT_STORAGE_KEY = 'atri.chat.sessions.v1';
 const ACTIVE_CHAT_STORAGE_KEY = 'atri.chat.active.v1';
-const WELCOME_MESSAGE = '早上好。我是 ATRI。今天有什么想聊的？';
+const STATIC_GREETING_MESSAGES = new Set([
+  '早上好。我是 ATRI。今天有什么想聊的？',
+  '新对话已开始。你想从哪里聊起？',
+]);
 
 const starter = {
   workflow_version: 2,
@@ -22,7 +25,7 @@ function createSession() {
   return {
     id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     title: '新的对话',
-    messages: [{ role: 'assistant', content: WELCOME_MESSAGE }],
+    messages: [],
     updatedAt: Date.now(),
   };
 }
@@ -32,6 +35,12 @@ function readChatState() {
     const parsed = JSON.parse(localStorage.getItem(CHAT_STORAGE_KEY) || 'null');
     const sessions = Array.isArray(parsed)
       ? parsed.filter((session) => session && typeof session.id === 'string' && Array.isArray(session.messages))
+        .map((session) => ({
+          ...session,
+          messages: session.messages.filter((message) => !(
+            message?.role === 'assistant' && STATIC_GREETING_MESSAGES.has(message.content)
+          )),
+        }))
       : [];
     const usable = sessions.length ? sessions : [createSession()];
     const savedActiveId = localStorage.getItem(ACTIVE_CHAT_STORAGE_KEY);
@@ -57,6 +66,13 @@ export default function ChatHome({ onNavigate }) {
   const [busy, setBusy] = useState(false);
   const [busySessionId, setBusySessionId] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileText, setProfileText] = useState('');
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [profileSaved, setProfileSaved] = useState(false);
   const { sessions, activeSessionId } = chatState;
   const activeSession = sessions.find((session) => session.id === activeSessionId) || sessions[0];
   const messages = activeSession?.messages || [];
@@ -69,6 +85,17 @@ export default function ChatHome({ onNavigate }) {
       // The conversation remains usable when browser storage is unavailable.
     }
   }, [sessions, activeSessionId]);
+
+  useEffect(() => {
+    const handleShortcut = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        clearConversation();
+      }
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  }, []);
 
   useEffect(() => {
     const load = (preferApplied = false) => {
@@ -152,8 +179,65 @@ export default function ChatHome({ onNavigate }) {
 
   const clearConversation = () => {
     const session = createSession();
-    session.messages = [{ role: 'assistant', content: '新对话已开始。你想从哪里聊起？' }];
     setChatState((current) => ({ sessions: [session, ...current.sessions], activeSessionId: session.id }));
+  };
+
+  const deleteConversation = (event, sessionId) => {
+    event.stopPropagation();
+    if (!window.confirm('确定删除这条对话吗？删除后无法恢复。')) return;
+    setChatState((current) => {
+      const remaining = current.sessions
+        .filter((session) => session.id !== sessionId)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      if (!remaining.length) {
+        const nextSession = createSession();
+        remaining.push(nextSession);
+      }
+      return {
+        sessions: remaining,
+        activeSessionId: current.activeSessionId === sessionId ? remaining[0].id : current.activeSessionId,
+      };
+    });
+  };
+
+  const openUserProfile = async () => {
+    setProfileOpen(true);
+    setProfileLoading(true);
+    setProfileLoaded(false);
+    setProfileError('');
+    setProfileSaved(false);
+    try {
+      const response = await fetch('/api/user-profile');
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || '读取用户信息失败');
+      setProfileText(payload.content || '');
+      setProfileLoaded(true);
+    } catch (error) {
+      setProfileError(error.message || '无法连接到本地 API');
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  const saveUserProfile = async () => {
+    if (!profileLoaded) return;
+    setProfileSaving(true);
+    setProfileError('');
+    setProfileSaved(false);
+    try {
+      const response = await fetch('/api/user-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: profileText }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || '保存用户信息失败');
+      setProfileSaved(true);
+    } catch (error) {
+      setProfileError(error.message || '无法连接到本地 API');
+    } finally {
+      setProfileSaving(false);
+    }
   };
 
   const selectConversation = (sessionId) => {
@@ -167,24 +251,27 @@ export default function ChatHome({ onNavigate }) {
     <div className={`chat-shell ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
       {sidebarOpen && <aside className="chat-sidebar">
         <div className="chat-brand"><div className="brand-mark">A</div><div><strong>ATRI <span>AGENT</span></strong><small>LOCAL WORKSPACE</small></div><button className="icon-button" title="收起侧栏" onClick={() => setSidebarOpen(false)}><PanelLeftClose size={15} /></button></div>
-        <button className="new-chat-button" onClick={clearConversation}><MessageSquarePlus size={15} />新对话<span>⌘ K</span></button>
-        <div className="sidebar-section-title">最近对话 <MoreHorizontal size={15} /></div>
-        {recentSessions.map((session, index) => <button className={`conversation-item ${session.id === activeSessionId ? 'active' : ''}`} key={session.id} onClick={() => selectConversation(session.id)} title={session.title}>
-          {index === 0 ? <MessageSquarePlus size={14} /> : <FileClock size={14} />}<span>{session.title || '新的对话'}</span>
-        </button>)}
+        <button className="new-chat-button" onClick={clearConversation}><MessageSquarePlus size={15} />新对话<span>Ctrl/⌘ K</span></button>
+        <div className="sidebar-section-title">最近对话</div>
+        {recentSessions.map((session, index) => <div className={`conversation-row ${session.id === activeSessionId ? 'active' : ''}`} key={session.id}>
+          <button className={`conversation-item ${session.id === activeSessionId ? 'active' : ''}`} onClick={() => selectConversation(session.id)} title={session.title}>
+            {index === 0 ? <MessageSquarePlus size={14} /> : <FileClock size={14} />}<span>{session.title || '新的对话'}</span>
+          </button>
+          <button className="conversation-delete" onClick={(event) => deleteConversation(event, session.id)} title={`删除对话：${session.title || '新的对话'}`} aria-label={`删除对话：${session.title || '新的对话'}`}><Trash2 size={14} /></button>
+        </div>)}
         <div className="sidebar-bottom">
           <button className="sidebar-workflow-link" onClick={() => onNavigate('workflow')}><Workflow size={16} /><span><strong>工作流编辑器</strong><small>调整 Agent 的底层逻辑</small></span><ChevronDown size={14} className="side-link-chevron" /></button>
-          <button className="profile-row"><div className="profile-avatar">W</div><span><strong>本地会话</strong><small>ATRI Companion</small></span><Settings2 size={15} /></button>
+          <button className="profile-row" onClick={openUserProfile} title="编辑 modules/prompt/SystemPrompt/USER.md"><div className="profile-avatar">W</div><span><strong>编辑用户信息</strong><small>USER.md</small></span><Pencil size={15} /></button>
         </div>
       </aside>}
       <main className="chat-main">
         <header className="chat-topbar">
           {!sidebarOpen && <button className="icon-button" onClick={() => setSidebarOpen(true)} title="展开侧栏"><PanelLeftClose size={15} /></button>}
-          <div className="chat-agent-title"><span className="agent-status-icon"><Bot size={16} /></span><div><strong>ATRI</strong><span>陪伴型 Agent</span></div><ChevronDown size={14} /></div>
+          <div className="chat-agent-title"><span className="agent-status-icon"><Bot size={16} /></span><div><strong>ATRI</strong><span>陪伴型 Agent</span></div></div>
           <nav className="app-nav chat-nav"><button className="active" onClick={() => onNavigate('chat')}>对话</button><button onClick={() => onNavigate('workflow')}>工作流</button></nav>
           <div className="chat-top-spacer" />
           <ThemePicker />
-          <div className="active-config"><span className="config-dot" /><span>{workflow?.name || '加载工作流'}</span><ChevronDown size={12} /></div>
+          <div className="active-config"><span className="config-dot" /><span>{workflow?.name || '加载工作流'}</span></div>
           <div className="mode-switch" role="group" aria-label="对话模式"><button className={mode === 'normal' ? 'selected' : ''} onClick={() => setMode('normal')}>正常</button><button className={mode === 'transparent' ? 'selected' : ''} onClick={() => setMode('transparent')}><Activity size={12} />透明</button></div>
           <button className="icon-button" title="新对话" onClick={clearConversation}><Plus size={16} /></button>
         </header>
@@ -206,6 +293,11 @@ export default function ChatHome({ onNavigate }) {
           <div className="composer-caption">ATRI 会根据当前激活的工作流配置运行。<button onClick={() => onNavigate('workflow')}>编辑工作流</button></div>
         </footer>
       </main>
+      {profileOpen && <div className="profile-editor-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !profileSaving) setProfileOpen(false); }}><section className="profile-editor-modal" role="dialog" aria-modal="true" aria-labelledby="profile-editor-title">
+        <header><div><span className="eyebrow">USER PROFILE</span><h2 id="profile-editor-title">编辑用户信息</h2><span className="profile-file-path">modules/prompt/SystemPrompt/USER.md</span></div><button className="icon-button" disabled={profileSaving} onClick={() => setProfileOpen(false)} title="关闭"><X size={17} /></button></header>
+        <textarea spellCheck="false" value={profileText} onChange={(event) => { setProfileText(event.target.value); setProfileSaved(false); }} disabled={!profileLoaded || profileLoading || profileSaving} placeholder={profileLoading ? '正在读取 USER.md…' : ''} />
+        <footer><div className={profileError ? 'profile-editor-error' : 'profile-editor-status'}>{profileError || (profileSaved ? '已保存到项目中的 USER.md' : '修改将直接写入项目文件')}</div><button className="primary-button" onClick={saveUserProfile} disabled={!profileLoaded || profileLoading || profileSaving}>{profileSaving ? <span className="spinner" /> : <Save size={15} />}{profileSaving ? '保存中…' : '保存'}</button></footer>
+      </section></div>}
     </div>
   );
 }

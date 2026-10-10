@@ -135,7 +135,15 @@ python myagent.py
 
 ## Web 工作区
 
-在两个终端分别启动后端和前端。两者均从项目根目录运行，前端命令进入 `web/`：
+安装完前端依赖后，可以在项目根目录运行启动脚本；脚本会优先激活 Conda `atri` 环境，并同时启动后端和前端，按 `Ctrl+C` 会一起停止：
+
+```bash
+cd web && npm install
+cd ..
+./start.sh
+```
+
+也可以手动在两个终端分别启动：
 
 ```bash
 # 终端一：项目根目录，已激活 atri 环境
@@ -144,9 +152,7 @@ python web_server.py
 
 ```bash
 # 终端二
-cd web
-npm install
-npm run dev
+cd web && npm run dev
 ```
 
 浏览器打开 Vite 输出的地址，通常为 `http://localhost:5173`。前端开发服务器使用 5173，后端 API 默认使用 `127.0.0.1:8765`；模型由后端进程直接加载，不会单独启动模型端口。后端端口可通过 `ATRI_WEB_API_PORT` 设置。

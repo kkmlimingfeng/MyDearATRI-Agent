@@ -10,7 +10,7 @@ import {
   useNodesState,
   useReactFlow,
 } from '@xyflow/react';
-import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronDown, CircleHelp, Code2, Copy, FilePlus2, Maximize2, Play, Save, Search, Square, Trash2, Workflow as WorkflowIcon, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronDown, Code2, Copy, Expand, FilePlus2, Maximize2, Play, Save, Search, Square, Trash2, Workflow as WorkflowIcon, X } from 'lucide-react';
 import WorkflowNode from './WorkflowNode';
 import { categoryMeta, getNodeDefinition, hydrateNodeCatalog, modelChoices, nodeCatalog } from './catalog';
 import { ThemePicker } from '../theme.jsx';
@@ -281,6 +281,7 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
   const [notice, setNotice] = useState('');
   const [jsonOpen, setJsonOpen] = useState(false);
   const [jsonText, setJsonText] = useState('');
+  const [jsonCopied, setJsonCopied] = useState(false);
   const [runPanel, setRunPanel] = useState(false);
   const [runInput, setRunInput] = useState('你好，介绍一下你自己。');
   const [running, setRunning] = useState(false);
@@ -290,6 +291,7 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
   const [agentStopping, setAgentStopping] = useState(false);
   const [runResult, setRunResult] = useState(null);
   const [modelOptions, setModelOptions] = useState(modelChoices);
+  const [collapsedGroups, setCollapsedGroups] = useState({});
   const { fitView, getViewport } = useReactFlow();
 
   useEffect(() => {
@@ -447,6 +449,7 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
   };
   const openJson = () => {
     setJsonText(JSON.stringify(currentDocument(), null, 2));
+    setJsonCopied(false);
     setJsonOpen(true);
   };
   const applyJson = () => {
@@ -476,6 +479,17 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
   const runValidation = () => {
     const currentIssues = validateGraph(nodes, edges, modelOptions);
     setNotice(currentIssues.length ? `发现 ${currentIssues.length} 个接口问题` : '接口完整，JSON 结构可导出');
+    window.setTimeout(() => setNotice(''), 2800);
+  };
+  const copyJson = async () => {
+    try {
+      await navigator.clipboard.writeText(jsonText);
+      setJsonCopied(true);
+      setNotice('JSON 已复制到剪贴板');
+    } catch {
+      setJsonCopied(false);
+      setNotice('复制失败，请检查浏览器剪贴板权限');
+    }
     window.setTimeout(() => setNotice(''), 2800);
   };
   const exportJson = () => downloadDocument(currentDocument());
@@ -593,17 +607,17 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
         <button className="icon-button export-button" onClick={exportJson} title="导出工作流 JSON"><ArrowDownToLine size={16} /></button>
         <button className="secondary-button reset-workflow-button" onClick={() => { setWorkflow(initialDocument); const graph = fromDocument(initialDocument); setNodes(graph.nodes); setEdges(graph.edges); setSelectedId(null); }} title="重置示例工作流"><FilePlus2 size={15} /><span>重置</span></button>
         <button className="secondary-button save-draft-button" onClick={saveLocal} title="保存工作流草稿到本机"><Save size={15} /><span>保存</span></button>
-        <button className="icon-button avatar-button" title="本地工作区">W</button>
       </header>
 
       <main className="workspace">
         <aside className="palette">
-          <div className="panel-heading"><div><span className="eyebrow">工作流构建器</span><h2>节点库</h2></div><button className="icon-button compact" title="节点信息"><CircleHelp size={15} /></button></div>
+          <div className="panel-heading"><div><span className="eyebrow">工作流构建器</span><h2>节点库</h2></div></div>
           <div className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索节点" /></div>
           <div className="palette-scroll">
             {groups.map((group) => {
               const meta = categoryMeta[group.category];
-              return <section className="palette-group" key={group.category}><div className="group-heading"><span className={`group-indicator ${meta.color}`} /><span>{meta.label}</span><span className="group-count">{group.items.length}</span><ChevronDown size={13} /></div>{group.items.map((definition) => <PaletteItem key={definition.type} definition={definition} onAdd={addNode} />)}</section>;
+              const collapsed = Boolean(collapsedGroups[group.category]);
+              return <section className="palette-group" key={group.category}><button className="group-heading" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((current) => ({ ...current, [group.category]: !current[group.category] }))}><span className={`group-indicator ${meta.color}`} /><span>{meta.label}</span><span className="group-count">{group.items.length}</span><ChevronDown size={13} /></button>{!collapsed && group.items.map((definition) => <PaletteItem key={definition.type} definition={definition} onAdd={addNode} />)}</section>;
             })}
             {groups.length === 0 && <div className="no-results">没有匹配的节点</div>}
           </div>
@@ -613,12 +627,11 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
         <section className="canvas-area">
           <div className="canvas-toolbar">
             <div className="canvas-tab active"><WorkflowIcon size={15} />画布</div>
-            <div className="canvas-tab"><span className="tab-indicator" />图结构 <span className="small-count">{nodes.length}</span></div>
             <div className="canvas-toolbar-spacer" />
             <div className="graph-readout"><span>{nodes.length} 节点</span><span className="readout-separator">·</span><span>{edges.length} 连接</span></div>
             <button className="icon-button run-button" onClick={runValidation} title="检查接口"><Check size={15} /></button>
             <button className="secondary-button auto-size-button" onClick={autoSizeNodes} title="让所有节点按内容自适应长宽"><Maximize2 size={15} /><span>自适应</span></button>
-            <button className="icon-button" onClick={() => fitView({ padding: 0.24, duration: 250 })} title="适配画布"><Copy size={15} /></button>
+            <button className="icon-button" onClick={() => fitView({ padding: 0.24, duration: 250 })} title="适配画布"><Expand size={15} /></button>
           </div>
           <div className="canvas-wrap">
             <div className="canvas-caption"><span className="caption-chip">GRAPH V2</span><span>能力模块通过类型化接口连接到运行时</span></div>
@@ -671,9 +684,9 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
         <Inspector node={selectedNode} modelOptions={modelOptions} onChange={updateNode} onDelete={deleteNode} onClose={() => setSelectedId(null)} />
       </main>
 
-      <footer className="app-footer"><span>ATRI · LOCAL WORKSPACE</span><span className="execution-note"><span className="note-dot" />试运行调用当前 Agent · 应用后在对话页使用</span><button onClick={() => { setJsonText(JSON.stringify(currentDocument(), null, 2)); setJsonOpen(true); }}><Code2 size={13} />JSON</button></footer>
+      <footer className="app-footer"><span>ATRI · LOCAL WORKSPACE</span><span className="execution-note"><span className="note-dot" />试运行调用当前 Agent · 应用后在对话页使用</span></footer>
 
-      {jsonOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setJsonOpen(false); }}><section className="json-modal"><header><div><span className="eyebrow">WORKFLOW DOCUMENT</span><h2>工作流 JSON</h2></div><button className="icon-button" onClick={() => setJsonOpen(false)} title="关闭"><X size={17} /></button></header><textarea spellCheck="false" value={jsonText} onChange={(event) => setJsonText(event.target.value)} /><div className="modal-footer"><span>版本 2 · 节点 {nodes.length} · 连接 {edges.length}</span><div><button className="secondary-button" onClick={() => navigator.clipboard?.writeText(jsonText)}><Copy size={14} />复制</button><button className="primary-button" onClick={applyJson}><Check size={14} />应用到画布</button></div></div></section></div>}
+      {jsonOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setJsonOpen(false); }}><section className="json-modal"><header><div><span className="eyebrow">WORKFLOW DOCUMENT</span><h2>工作流 JSON</h2></div><button className="icon-button" onClick={() => setJsonOpen(false)} title="关闭"><X size={17} /></button></header><textarea spellCheck="false" value={jsonText} onChange={(event) => { setJsonText(event.target.value); setJsonCopied(false); }} /><div className="modal-footer"><span>版本 2 · 节点 {nodes.length} · 连接 {edges.length}</span><div><button className="secondary-button" onClick={copyJson}>{jsonCopied ? <Check size={14} /> : <Copy size={14} />}{jsonCopied ? '已复制' : '复制'}</button><button className="primary-button" onClick={applyJson}><Check size={14} />应用到画布</button></div></div></section></div>}
     </div>
   );
 }
