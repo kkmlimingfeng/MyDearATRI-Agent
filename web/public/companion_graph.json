@@ -14,7 +14,10 @@
     { "id": "context", "type": "context.merge", "position": { "x": 340, "y": 610 }, "data": { "label": "上下文联结", "category": "context", "config": {} } },
     { "id": "llm_qwen", "type": "llm.gguf_loader", "position": { "x": 340, "y": 335 }, "data": { "label": "Qwen3 1.7B · GGUF Q4_K_M（运行时）", "category": "model", "module_id": "llm", "implementation": "modules.llm.gguf_llm.GGUFLLM", "config": { "model": "qwen3-1.7b-q4km", "n_gpu_layers": -1 } } },
     { "id": "llm_chat", "type": "llm.chat", "position": { "x": 730, "y": 335 }, "data": { "label": "模型对话", "category": "model", "config": { "max_iterations": 5, "display_mode": "normal" } } },
-    { "id": "chat_output", "type": "core.chat_output", "position": { "x": 1130, "y": 365 }, "data": { "label": "回复输出", "category": "io", "module_id": "", "config": { "show_trace": false } } }
+    { "id": "response_router", "type": "react.response_router", "position": { "x": 1080, "y": 315 }, "data": { "label": "响应解析与分流", "category": "control", "config": {} } },
+    { "id": "tool_dispatch", "type": "tools.dispatch", "position": { "x": 1390, "y": 510 }, "data": { "label": "工具 / 技能执行", "category": "tools", "config": {} } },
+    { "id": "react_loop", "type": "react.loop", "position": { "x": 1710, "y": 510 }, "data": { "label": "ReAct 循环", "category": "control", "config": { "max_iterations": 5 } } },
+    { "id": "chat_output", "type": "core.chat_output", "position": { "x": 1390, "y": 315 }, "data": { "label": "回复输出", "category": "io", "module_id": "", "config": { "show_trace": false } } }
   ],
   "edges": [
     { "id": "e_input_chat", "source": "chat_input", "target": "llm_chat", "sourceHandle": "message", "targetHandle": "message" },
@@ -26,7 +29,11 @@
     { "id": "e_tools_context", "source": "tools", "target": "context", "sourceHandle": "tools", "targetHandle": "tools" },
     { "id": "e_context_chat", "source": "context", "target": "llm_chat", "sourceHandle": "context", "targetHandle": "context" },
     { "id": "e_llm_chat", "source": "llm_qwen", "target": "llm_chat", "sourceHandle": "llm", "targetHandle": "llm" },
-    { "id": "e_chat_output", "source": "llm_chat", "target": "chat_output", "sourceHandle": "answer", "targetHandle": "answer" }
+    { "id": "e_chat_router", "source": "llm_chat", "target": "response_router", "sourceHandle": "response", "targetHandle": "response" },
+    { "id": "e_router_answer", "source": "response_router", "target": "chat_output", "sourceHandle": "answer", "targetHandle": "answer" },
+    { "id": "e_router_tools", "source": "response_router", "target": "tool_dispatch", "sourceHandle": "tool_calls", "targetHandle": "tool_calls" },
+    { "id": "e_tool_results_loop", "source": "tool_dispatch", "target": "react_loop", "sourceHandle": "tool_results", "targetHandle": "tool_results" },
+    { "id": "e_loop_chat", "source": "react_loop", "target": "llm_chat", "sourceHandle": "loop", "targetHandle": "loop" }
   ],
   "viewport": { "x": 0, "y": 0, "zoom": 0.65 },
   "metadata": { "status": "active", "executable": true }

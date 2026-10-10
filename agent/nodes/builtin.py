@@ -99,12 +99,13 @@ class PromptJoinNode(BaseNode):
         PortDefinition("prompt_a", "prompt", required=False),
         PortDefinition("prompt_b", "prompt", required=False),
         PortDefinition("prompt_c", "prompt", required=False),
+        PortDefinition("prompt_d", "prompt", required=False),
     )
     outputs = (PortDefinition("prompt", "prompt"),)
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
         separator = str(self.config.get("separator", "\n\n"))
-        parts = [str(inputs[name]) for name in ("prompt_a", "prompt_b", "prompt_c") if inputs.get(name)]
+        parts = [str(inputs[name]) for name in ("prompt_a", "prompt_b", "prompt_c", "prompt_d") if inputs.get(name)]
         return NodeResult(outputs={"prompt": separator.join(parts)})
 
 
@@ -219,7 +220,64 @@ class LLMChatNode(ReactRuntimeNode):
         PortDefinition("prompt", "prompt"),
         PortDefinition("context", "context", required=False),
         PortDefinition("llm", "llm"),
+        PortDefinition("loop", "loop", required=False),
     )
+    outputs = (
+        PortDefinition("answer", "text"),
+        PortDefinition("trace", "trace", required=False),
+        PortDefinition("response", "model_response", required=False),
+    )
+
+
+class ResponseRouterNode(BaseNode):
+    node_type = "react.response_router"
+    title = "响应解析与分流"
+    category = "control"
+    description = "解析模型结构化响应；工具或技能调用进入执行反馈循环，普通内容进入最终回答。"
+    preview = "运行时按 tool_calls 分流：调用能力后反馈下一轮，无调用时输出回答。"
+    inputs = (
+        PortDefinition("response", "model_response"),
+    )
+    outputs = (
+        PortDefinition("tool_calls", "tool_calls", required=False),
+        PortDefinition("answer", "text", required=False),
+    )
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        response = inputs.get("response")
+        return NodeResult(outputs={
+            "tool_calls": getattr(response, "tool_calls", []) if response is not None else [],
+            "answer": getattr(response, "content", "") if response is not None else "",
+        })
+
+
+class ToolDispatchNode(BaseNode):
+    node_type = "tools.dispatch"
+    title = "工具 / 技能执行"
+    category = "tools"
+    description = "由运行时将解析出的工具或技能调用分发给已启用能力并返回结果。"
+    preview = "技能通过工具调用协议加载或执行；结果返回 ReAct 循环。"
+    inputs = (PortDefinition("tool_calls", "tool_calls"),)
+    outputs = (PortDefinition("tool_results", "tool_results"),)
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        return NodeResult(outputs={"tool_results": []})
+
+
+class ReactLoopNode(BaseNode):
+    node_type = "react.loop"
+    title = "ReAct 循环"
+    category = "control"
+    description = "根据模型输出和工具结果决定继续推理或结束。"
+    defaults = {"max_iterations": 5}
+    inputs = (
+        PortDefinition("trace", "trace", required=False),
+        PortDefinition("tool_results", "tool_results", required=False),
+    )
+    outputs = (PortDefinition("loop", "loop"),)
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        return NodeResult(outputs={"loop": {"max_iterations": self.config.get("max_iterations", 5)}})
 
 
 class ChatOutputNode(BaseNode):
@@ -237,8 +295,11 @@ class ChatOutputNode(BaseNode):
 
 node_registry.register_many((
     ChatInputNode,
+    ReactLoopNode,
     ReactRuntimeNode,
     LLMChatNode,
+    ResponseRouterNode,
+    ToolDispatchNode,
     LLMProviderNode,
     GGUFLoaderNode,
     OpenAILoaderNode,

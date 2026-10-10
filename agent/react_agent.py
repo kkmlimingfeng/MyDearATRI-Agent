@@ -316,21 +316,33 @@ class ReactAgent(BaseAgent):
         for index, match in enumerate(
             re.finditer(r"<tool_call>\s*(.*?)\s*</tool_call>", content, re.DOTALL)
         ):
-            try:
-                payload = json.loads(match.group(1).strip())
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            name = payload.get("name")
-            arguments = payload.get("arguments", {})
-            if not isinstance(name, str) or not name:
-                continue
-            if isinstance(arguments, str):
+            body = match.group(1).strip()
+            function_match = re.fullmatch(
+                r"<function=([\w.-]+)>\s*(.*?)\s*</function>", body, re.DOTALL
+            )
+            if function_match:
+                name = function_match.group(1)
+                argument_text = function_match.group(2).strip()
                 try:
-                    arguments = json.loads(arguments)
+                    arguments = json.loads(argument_text) if argument_text else {}
                 except json.JSONDecodeError:
                     arguments = {}
+            else:
+                try:
+                    payload = json.loads(body)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                name = payload.get("name")
+                arguments = payload.get("arguments", {})
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+            if not isinstance(name, str) or not name:
+                continue
             if not isinstance(arguments, dict):
                 arguments = {}
             calls.append({
@@ -353,6 +365,9 @@ class ReactAgent(BaseAgent):
         memory_id: str = 'memory',
         reviewer_id: str = 'reviewer',
         mode: Optional[str] = None,
+        prompt_override: Optional[str] = None,
+        context_override: Optional[str] = None,
+        graph_previews: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> str:
         """
@@ -375,6 +390,10 @@ class ReactAgent(BaseAgent):
         if hasattr(self.trace_sink, "clear"):
             self.trace_sink.clear()
         self._trace("workflow_started", {"user_input": user_input})
+        for node_id, content in (graph_previews or {}).items():
+            if node_id != "core.chat_input":
+                self._trace("node_output", {"content": content}, node_id)
+        self._trace("model_loaded", {"model_id": llm_id}, llm_id)
 
         # 检查必要模块是否存在且启用
         if not self._enabled.get(prompt_id, False):
@@ -389,15 +408,14 @@ class ReactAgent(BaseAgent):
 
         # 通过总线获取系统提示词
         try:
-            prompt_response = self.bus.request(
-                source='agent',
-                target=prompt_id,
-                payload={
-                    'action': 'get_system_prompt',
-                    'prompt_name': prompt_name
-                }
-            )
-            base_prompt = prompt_response.payload.get('system_prompt', '')
+            if prompt_override is not None:
+                base_prompt = prompt_override
+            else:
+                prompt_response = self.bus.request(
+                    source='agent', target=prompt_id,
+                    payload={'action': 'get_system_prompt', 'prompt_name': prompt_name}
+                )
+                base_prompt = prompt_response.payload.get('system_prompt', '')
         except Exception as e:
             # 红色输出：获取提示词失败
             self._show(f"{Colors.RED}错误: 获取系统提示词失败 - {str(e)}{Colors.RESET}", level="error")
@@ -405,14 +423,21 @@ class ReactAgent(BaseAgent):
 
         # 构建完整的系统提示词：注入工具描述、技能描述和长期记忆
         system_prompt = base_prompt
+        self._trace("prompt_joined", {"content": base_prompt}, "prompt")
+        if context_override:
+            system_prompt = f"{system_prompt}\n\n{context_override}" if system_prompt else context_override
+            self._trace("context_merged", {"content": context_override}, "context")
         # 如果工具模块已启用，注入工具描述
         if self._enabled.get(tools_id, False):
             system_prompt = self._inject_tool_descriptions(system_prompt, tools_id)
+            self._trace("tools_injected", {"content": system_prompt}, tools_id)
         # 如果技能模块已启用，注入技能目录简介
         if self._enabled.get(skills_id, False):
             system_prompt = self._inject_skill_overview(system_prompt, skills_id)
+            self._trace("skills_injected", {"content": system_prompt}, skills_id)
         # 如果记忆模块已启用，自动注入长期记忆
         system_prompt = self._inject_memory(system_prompt, memory_id)
+        self._trace("context_ready", {"content": system_prompt}, memory_id)
 
         # 构建历史对话记录，使用标准messages格式
         # 取最近的 max_history_turns 轮对话 + 当前用户输入
@@ -422,6 +447,7 @@ class ReactAgent(BaseAgent):
             *context_messages,
             {"role": "user", "content": user_input}
         ]
+        self._trace("message_context_ready", {"messages": messages}, "llm.chat")
 
         # 品红色输出：用户输入
         self._show(f"\n{Colors.MAGENTA}{Colors.BOLD}用户输入:{Colors.RESET} {user_input}")
@@ -431,6 +457,7 @@ class ReactAgent(BaseAgent):
         for i in range(self.max_iterations):
             # 青色输出：循环开始
             self._trace("node_started", {"iteration": i + 1}, "llm")
+            self._trace("model_thinking", {"iteration": i + 1}, "llm")
             self._show(f"\n{Colors.CYAN}{Colors.BOLD}--- 循环 {i+1} ---{Colors.RESET}\n")
 
             # 暗淡输出：正在调用LLM
@@ -459,6 +486,12 @@ class ReactAgent(BaseAgent):
                 tool_calls = llm_response.payload.get('tool_calls', [])
                 if not tool_calls and output:
                     tool_calls = self._parse_embedded_tool_calls(output)
+                if tool_calls:
+                    self._trace("response_parsed", {"tool_calls": tool_calls}, "react.response_router")
+                    self._trace("response_routed_to_tools", {"count": len(tool_calls)}, "react.response_router")
+                else:
+                    self._trace("response_parsed", {"answer": output}, "react.response_router")
+                    self._trace("response_routed_to_answer", {"content": output}, "react.response_router")
                 usage = llm_response.payload.get('usage', {})
                 self._trace("llm_completed", {
                     "content": output,
@@ -466,6 +499,7 @@ class ReactAgent(BaseAgent):
                     "usage": usage,
                     "messages": messages,
                 }, "llm")
+                self._trace("loop_decision", {"iteration": i + 1, "continue": bool(tool_calls), "tool_calls": len(tool_calls)}, "react_loop")
             except Exception as e:
                 # 红色输出：LLM调用失败
                 self._show(f"{Colors.RED}错误: LLM调用失败 - {str(e)}{Colors.RESET}", level="error")
@@ -519,6 +553,10 @@ class ReactAgent(BaseAgent):
                 self._trace("tool_results_added", {
                     "results": [item.as_dict() for item in tool_observations]
                 }, "tools")
+                self._trace("node_output", {
+                    "content": json.dumps([item.as_dict() for item in tool_observations], ensure_ascii=False, indent=2, default=str)
+                }, "tools.dispatch")
+                self._trace("loop_feedback", {"iteration": i + 1, "results": [item.as_dict() for item in tool_observations]}, "react_loop")
                 continue
 
             # 将助手回复加入messages

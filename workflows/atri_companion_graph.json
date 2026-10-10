@@ -7,8 +7,8 @@
     {
       "id": "chat_input",
       "position": {
-        "x": 40,
-        "y": 310
+        "x": 965.8931841587768,
+        "y": 110.0526936483362
       },
       "data": {
         "label": "对话输入",
@@ -16,23 +16,26 @@
         "module_id": "",
         "config": {
           "placeholder": "说点什么…",
-          "debug_input": "你好，介绍一下你自己。"
+          "debug_input": "你好，现在几点了。"
         },
-        "sizeMode": "auto"
+        "sizeMode": "auto",
+        "previewExpanded": false
       },
       "width": 230,
-      "height": 252,
+      "height": 142,
       "measured": {
         "width": 230,
-        "height": 252
+        "height": 142
       },
+      "selected": false,
+      "dragging": false,
       "type": "core.chat_input"
     },
     {
       "id": "prompt_agent",
       "position": {
-        "x": 25.218518518518522,
-        "y": 10.437037037037044
+        "x": 181.9726362451946,
+        "y": -56.86768797789195
       },
       "data": {
         "label": "Agent 行为规则",
@@ -43,23 +46,25 @@
           "file": "AGENT.md",
           "source": "modules/prompt/SystemPrompt"
         },
-        "sizeMode": "auto"
+        "sizeMode": "auto",
+        "previewExpanded": false
       },
       "width": 276,
-      "height": 176,
+      "height": 134,
       "measured": {
         "width": 276,
-        "height": 176
+        "height": 134
       },
       "selected": false,
       "dragging": false,
+      "resizing": false,
       "type": "prompt.markdown_file"
     },
     {
       "id": "prompt_soul",
       "position": {
-        "x": -279.5074074074074,
-        "y": 186.6037037037037
+        "x": -114.78013393608478,
+        "y": -53.532738665560686
       },
       "data": {
         "label": "ATRI 人格",
@@ -73,10 +78,10 @@
         "sizeMode": "auto"
       },
       "width": 276,
-      "height": 176,
+      "height": 134,
       "measured": {
         "width": 276,
-        "height": 176
+        "height": 134
       },
       "selected": false,
       "dragging": false,
@@ -85,8 +90,8 @@
     {
       "id": "prompt_join",
       "position": {
-        "x": 340,
-        "y": 100
+        "x": 493.1565421542944,
+        "y": 196.73187320709704
       },
       "data": {
         "label": "提示词联结",
@@ -97,18 +102,20 @@
         "sizeMode": "auto"
       },
       "width": 293,
-      "height": 185,
+      "height": 120,
       "measured": {
         "width": 293,
-        "height": 185
+        "height": 120
       },
+      "selected": false,
+      "dragging": false,
       "type": "prompt.join"
     },
     {
       "id": "memory",
       "position": {
-        "x": -285.19259259259263,
-        "y": 547.2740740740741
+        "x": -261.8588509146043,
+        "y": 897.0729328414167
       },
       "data": {
         "label": "长期记忆",
@@ -121,10 +128,10 @@
         "sizeMode": "auto"
       },
       "width": 230,
-      "height": 176,
+      "height": 125,
       "measured": {
         "width": 230,
-        "height": 176
+        "height": 125
       },
       "selected": false,
       "dragging": false,
@@ -133,8 +140,8 @@
     {
       "id": "skills",
       "position": {
-        "x": 21.807407407407396,
-        "y": 602.4629629629629
+        "x": -11.39487717623112,
+        "y": 896.9074086092592
       },
       "data": {
         "label": "技能目录",
@@ -144,13 +151,14 @@
         "config": {
           "source": "modules/skills"
         },
-        "sizeMode": "auto"
+        "sizeMode": "auto",
+        "previewExpanded": false
       },
       "width": 230,
-      "height": 176,
+      "height": 125,
       "measured": {
         "width": 230,
-        "height": 176
+        "height": 125
       },
       "selected": false,
       "dragging": false,
@@ -159,8 +167,8 @@
     {
       "id": "tools",
       "position": {
-        "x": 28.62962962962962,
-        "y": 836.1666666666666
+        "x": 241.49724915957455,
+        "y": 901.8688266850106
       },
       "data": {
         "label": "工具箱",
@@ -173,10 +181,10 @@
         "sizeMode": "auto"
       },
       "width": 230,
-      "height": 176,
+      "height": 125,
       "measured": {
         "width": 230,
-        "height": 176
+        "height": 125
       },
       "selected": false,
       "dragging": false,
@@ -195,10 +203,10 @@
         "sizeMode": "auto"
       },
       "width": 309,
-      "height": 185,
+      "height": 105,
       "measured": {
         "width": 309,
-        "height": 185
+        "height": 105
       },
       "selected": false,
       "dragging": false,
@@ -207,8 +215,8 @@
     {
       "id": "llm_qwen",
       "position": {
-        "x": 347.9592592592593,
-        "y": 364.562962962963
+        "x": 501.18244749689615,
+        "y": 437.5172298484721
       },
       "data": {
         "label": "Qwen3 1.7B · GGUF Q4_K_M（运行时）",
@@ -216,17 +224,18 @@
         "module_id": "llm",
         "implementation": "modules.llm.gguf_llm.GGUFLLM",
         "config": {
-          "model": "qwen3-1.7b-q4km",
+          "model": "qwen3.5-4b-q4km",
           "mmproj": "",
           "n_gpu_layers": -1
         },
-        "sizeMode": "auto"
+        "sizeMode": "auto",
+        "previewExpanded": false
       },
       "width": 312,
-      "height": 290,
+      "height": 139,
       "measured": {
         "width": 312,
-        "height": 290
+        "height": 139
       },
       "selected": false,
       "dragging": false,
@@ -235,8 +244,8 @@
     {
       "id": "llm_chat",
       "position": {
-        "x": 730,
-        "y": 335
+        "x": 902.0885466296809,
+        "y": 396.7376405887193
       },
       "data": {
         "label": "模型对话",
@@ -245,21 +254,70 @@
           "max_iterations": 5,
           "display_mode": "normal"
         },
+        "sizeMode": "auto",
+        "previewExpanded": true
+      },
+      "width": 380,
+      "height": 111,
+      "measured": {
+        "width": 380,
+        "height": 111
+      },
+      "selected": false,
+      "resizing": false,
+      "dragging": false,
+      "type": "llm.chat"
+    },
+    {
+      "id": "response_router",
+      "position": {
+        "x": 1549.6539132810212,
+        "y": 155.34716988832662
+      },
+      "data": {
+        "label": "响应解析与分流",
+        "category": "control",
+        "config": {},
         "sizeMode": "auto"
       },
-      "width": 339,
-      "height": 212,
+      "width": 376,
+      "height": 67,
       "measured": {
-        "width": 339,
-        "height": 212
+        "width": 376,
+        "height": 67
       },
-      "type": "llm.chat"
+      "selected": false,
+      "dragging": false,
+      "type": "react.response_router"
+    },
+    {
+      "id": "tool_dispatch",
+      "position": {
+        "x": 1506.0415580043177,
+        "y": 539.5833461171392
+      },
+      "data": {
+        "label": "工具 / 技能执行",
+        "category": "tools",
+        "config": {},
+        "sizeMode": "auto",
+        "previewExpanded": true
+      },
+      "width": 304,
+      "height": 103,
+      "measured": {
+        "width": 304,
+        "height": 103
+      },
+      "selected": false,
+      "dragging": false,
+      "type": "tools.dispatch"
     },
     {
       "id": "chat_output",
       "position": {
-        "x": 1130,
-        "y": 365
+        "x": 2055.2762343087616,
+        "y": 145.85727895679352
       },
       "data": {
         "label": "回复输出",
@@ -268,15 +326,94 @@
         "config": {
           "show_trace": false
         },
-        "sizeMode": "auto"
+        "sizeMode": "auto",
+        "previewExpanded": true
       },
       "width": 230,
-      "height": 106,
+      "height": 103,
       "measured": {
         "width": 230,
-        "height": 106
+        "height": 103
       },
+      "selected": false,
+      "dragging": false,
       "type": "core.chat_output"
+    },
+    {
+      "id": "react_loop",
+      "position": {
+        "x": 1061.354010065046,
+        "y": 761.9792209978413
+      },
+      "data": {
+        "label": "ReAct 循环",
+        "category": "control",
+        "config": {
+          "max_iterations": 5
+        },
+        "sizeMode": "auto"
+      },
+      "width": 334,
+      "height": 67,
+      "measured": {
+        "width": 334,
+        "height": 67
+      },
+      "selected": false,
+      "dragging": false,
+      "type": "react.loop"
+    },
+    {
+      "id": "prompt_user",
+      "position": {
+        "x": -121.13696256974099,
+        "y": 211.68688043899687
+      },
+      "data": {
+        "label": "用户信息",
+        "category": "prompt",
+        "module_id": "prompt",
+        "config": {
+          "file": "USER.md",
+          "source": "modules/prompt/SystemPrompt"
+        },
+        "sizeMode": "auto"
+      },
+      "width": 276,
+      "height": 134,
+      "measured": {
+        "width": 276,
+        "height": 134
+      },
+      "selected": false,
+      "dragging": false,
+      "type": "prompt.markdown_file"
+    },
+    {
+      "id": "prompt_heartbeat",
+      "position": {
+        "x": 185.80905199907602,
+        "y": 211.38316149784478
+      },
+      "data": {
+        "label": "主动行为",
+        "category": "prompt",
+        "module_id": "prompt",
+        "config": {
+          "file": "HEARTBEAT.md",
+          "source": "modules/prompt/SystemPrompt"
+        },
+        "sizeMode": "auto"
+      },
+      "width": 276,
+      "height": 134,
+      "measured": {
+        "width": 276,
+        "height": 134
+      },
+      "selected": false,
+      "dragging": false,
+      "type": "prompt.markdown_file"
     }
   ],
   "edges": [
@@ -434,8 +571,42 @@
       }
     },
     {
-      "id": "e_chat_output",
+      "id": "e_chat_router",
       "source": "llm_chat",
+      "target": "response_router",
+      "sourceHandle": "response",
+      "targetHandle": "response",
+      "style": {
+        "stroke": "#a078b5",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#a078b5",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_chat_loop_trace",
+      "source": "llm_chat",
+      "target": "react_loop",
+      "sourceHandle": "trace",
+      "targetHandle": "trace",
+      "style": {
+        "stroke": "#667d72",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#667d72",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_router_answer",
+      "source": "response_router",
       "target": "chat_output",
       "sourceHandle": "answer",
       "targetHandle": "answer",
@@ -449,12 +620,97 @@
         "width": 15,
         "height": 15
       }
+    },
+    {
+      "id": "e_router_tools",
+      "source": "response_router",
+      "target": "tool_dispatch",
+      "sourceHandle": "tool_calls",
+      "targetHandle": "tool_calls",
+      "style": {
+        "stroke": "#bd7650",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#bd7650",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_tool_results_loop",
+      "source": "tool_dispatch",
+      "target": "react_loop",
+      "sourceHandle": "tool_results",
+      "targetHandle": "tool_results",
+      "style": {
+        "stroke": "#bd7650",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#bd7650",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_user_prompt_join",
+      "source": "prompt_user",
+      "target": "prompt_join",
+      "sourceHandle": "prompt",
+      "targetHandle": "prompt_c",
+      "style": {
+        "stroke": "#a66f4e",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#a66f4e",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_heartbeat_prompt_join",
+      "source": "prompt_heartbeat",
+      "target": "prompt_join",
+      "sourceHandle": "prompt",
+      "targetHandle": "prompt_d",
+      "style": {
+        "stroke": "#a66f4e",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#a66f4e",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_loop_chat",
+      "source": "react_loop",
+      "target": "llm_chat",
+      "sourceHandle": "loop",
+      "targetHandle": "loop",
+      "style": {
+        "stroke": "#667d72",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#667d72",
+        "width": 15,
+        "height": 15
+      }
     }
   ],
   "viewport": {
-    "x": 411.36482084690556,
-    "y": 83.82084690553756,
-    "zoom": 0.8794788273615635
+    "x": 310.3105139545231,
+    "y": 209.02498933281174,
+    "zoom": 0.5472815352774099
   },
   "metadata": {
     "status": "active",

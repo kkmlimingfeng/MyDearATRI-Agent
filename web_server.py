@@ -8,6 +8,8 @@ import binascii
 import os
 import re
 import threading
+import uuid
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
@@ -27,11 +29,17 @@ ROOT = Path(__file__).resolve().parent
 WORKFLOW_DIR = ROOT / "workflows"
 USER_PROFILE_PATH = ROOT / "modules" / "prompt" / "SystemPrompt" / "USER.md"
 THEME_BACKGROUND_PATH = ROOT / "data" / "theme" / "background.webp"
+PROMPT_DIR = ROOT / "modules" / "prompt" / "SystemPrompt"
+MEMORY_DIR = ROOT / "modules" / "mem"
+CREDENTIAL_PATH = ROOT / "config" / "model_credentials.json"
 _runtime_lock = threading.RLock()
 _runtime_agent = None
 _runtime_graph_key = None
+_runtime_execution_key = None
 _runtime_bindings: Dict[str, str] = {}
 _runtime_started = False
+_run_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
 
 
 def _graph_workflow_documents() -> list[dict]:
@@ -144,6 +152,151 @@ def _load_models() -> dict:
     return payload
 
 
+def _read_json_map(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"配置文件格式错误: {path.name}")
+    return value
+
+
+def _write_json_map(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    if path == CREDENTIAL_PATH:
+        path.chmod(0o600)
+
+
+def _safe_markdown(directory: Path, filename: str) -> Path:
+    if not isinstance(filename, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+\.md", filename):
+        raise ValueError("文件名无效")
+    path = (directory / filename).resolve()
+    if path.parent != directory.resolve() or not path.is_file():
+        raise ValueError(f"文件不存在: {filename}")
+    return path
+
+
+def _capability_module(kind: str):
+    from bus.event_bus import EventBus
+    from modules.skills.skill_module import SkillModule
+    from modules.tools.tool_module import ToolModule
+    if kind == "skills":
+        module = SkillModule("skills", EventBus(), str(ROOT / "config" / "skills.json"))
+        module.register_skills_from_directory(str(ROOT / "modules" / "skills"))
+    elif kind == "tools":
+        module = ToolModule("tools", EventBus(), str(ROOT / "config" / "tools.json"))
+        module.register_tools_from_directory(str(ROOT / "modules" / "tools" / "system_tools"))
+    else:
+        raise ValueError("未知模块类型")
+    module._load_enabled_config()
+    return module
+
+
+def _capability_catalog(kind: str) -> dict:
+    module = _capability_module(kind)
+    if kind == "skills":
+        items = [{"id": key, "name": module._get_skill_name(key),
+                  "description": module._get_skill_description(key),
+                  "enabled": module.is_skill_enabled(key)} for key in module._skills]
+        text = module.format_skill_overview()
+    else:
+        from modules.tools.base_tool import _parse_docstring
+        items = [{"id": key, "name": key,
+                  "description": _parse_docstring(func)["description"],
+                  "enabled": module.is_tool_enabled(key)} for key, func in module._tools.items()]
+        text = module.format_tool_descriptions()
+    return {"items": items, "text": text}
+
+
+def _set_capability_items(kind: str, updates: Any) -> dict:
+    if not isinstance(updates, dict) or not updates or any(not isinstance(v, bool) for v in updates.values()):
+        raise ValueError("请提供要修改的开关")
+    module = _capability_module(kind)
+    known = module._skills if kind == "skills" else module._tools
+    if set(updates) - set(known):
+        raise ValueError("包含不存在的技能或工具")
+    current = module._enabled_skills if kind == "skills" else module._enabled_tools
+    current.update(updates)
+    _write_json_map(ROOT / "config" / f"{kind}.json", current)
+    with _runtime_lock:
+        if _runtime_agent is not None:
+            active = _runtime_agent.get_module(kind)
+            if active is not None:
+                for name, enabled in updates.items():
+                    (active.set_skill_enabled if kind == "skills" else active.set_tool_enabled)(name, enabled)
+    return _capability_catalog(kind)
+
+
+def _graph_previews(graph: dict, user_input: str = "") -> dict:
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    incoming = {(edge["target"], edge.get("targetHandle")): edge["source"] for edge in graph["edges"]}
+    previews = {}
+    active = set()
+
+    def resolve(node_id: str) -> str:
+        if node_id in previews:
+            return previews[node_id]
+        if node_id in active:
+            raise GraphWorkflowError("提示词连接不能成环")
+        active.add(node_id)
+        node = nodes[node_id]
+        kind = node["type"]
+        config = node.get("data", {}).get("config", {})
+        if kind == "prompt.markdown_file":
+            value = _safe_markdown(PROMPT_DIR, config.get("file", "AGENT.md")).read_text(encoding="utf-8")
+        elif kind == "prompt.text":
+            value = str(config.get("text", ""))
+        elif kind == "prompt.join":
+            parts = [resolve(incoming[(node_id, port)]) for port in ("prompt_a", "prompt_b", "prompt_c", "prompt_d") if (node_id, port) in incoming]
+            value = str(config.get("separator", "\\n\\n")).replace("\\n", "\n").join(filter(None, parts))
+        elif kind == "prompt.provider":
+            value = ""
+        elif kind == "core.chat_input":
+            value = user_input or str(config.get("debug_input", ""))
+        elif kind == "memory.provider":
+            value = (MEMORY_DIR / "memory.md").read_text(encoding="utf-8") if (MEMORY_DIR / "memory.md").is_file() else ""
+        elif kind in {"skills.provider", "tools.provider"}:
+            value = _capability_catalog(kind.split(".")[0])["text"]
+        elif kind == "context.merge":
+            parts = [resolve(incoming[(node_id, port)]) for port in ("tools", "skills", "memory") if (node_id, port) in incoming]
+            value = "\n\n".join(filter(None, parts))
+        else:
+            value = ""
+        previews[node_id] = value
+        active.remove(node_id)
+        return value
+
+    for node in graph["nodes"]:
+        if node["type"] in {"prompt.markdown_file", "prompt.text", "prompt.join", "core.chat_input", "memory.provider", "skills.provider", "tools.provider", "context.merge"}:
+            resolve(node["id"])
+    for edge in graph["edges"]:
+        if edge.get("targetHandle") in {"prompt", "context", "message"}:
+            source_id = edge["source"]
+            if source_id in nodes:
+                resolve(source_id)
+    runtime_node = next((node for node in graph["nodes"] if node["type"] in {"llm.chat", "agent.react_runtime"}), None)
+    if runtime_node:
+        message_edge = next((edge for edge in graph["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "message"), None)
+        if message_edge:
+            previews[message_edge["source"]] = user_input or str(nodes[message_edge["source"]].get("data", {}).get("config", {}).get("debug_input", ""))
+    return previews
+
+
+def _runtime_context_preview(graph: dict, previews: dict) -> str:
+    runtime_node = next(node for node in graph["nodes"] if node["type"] in {"llm.chat", "agent.react_runtime"})
+    edge = next((edge for edge in graph["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "context"), None)
+    return previews.get(edge["source"], "") if edge else ""
+
+
+def _runtime_prompt_preview(graph: dict, previews: dict) -> str:
+    runtime_node = next(node for node in graph["nodes"] if node["type"] in {"llm.chat", "agent.react_runtime"})
+    edge = next((edge for edge in graph["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "prompt"), None)
+    return previews.get(edge["source"], "") if edge else ""
+
+
 def _model_kind(config: dict) -> str:
     if config.get("projection"):
         return "mmproj"
@@ -163,8 +316,8 @@ def _model_catalog() -> list[dict]:
             label_suffix = "mmproj" if kind == "mmproj" else "GGUF"
             label = f"{config.get('label', model_id)} · {label_suffix}"
         else:
-            ready = bool(os.environ.get("OPENAI_API_KEY"))
-            reason = "" if ready else "未配置 OPENAI_API_KEY（或兼容 API Token）"
+            ready = True
+            reason = "请在 API 模型节点配置密钥，或设置 OPENAI_API_KEY"
             label = f"{model_id} · API"
         catalog.append({
             "id": model_id,
@@ -265,6 +418,12 @@ def _make_agent(graph: dict):
     for key in ("max_iterations", "max_history_turns"):
         if key in runtime_config:
             runtime_kwargs[key] = runtime_config[key]
+    loop_edge = next((edge for edge in graph["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "loop"), None)
+    if loop_edge:
+        loop_node = next(node for node in graph["nodes"] if node["id"] == loop_edge["source"])
+        if loop_node["type"] != "react.loop":
+            raise GraphWorkflowError("循环输入必须连接 ReAct 循环节点")
+        runtime_kwargs["max_iterations"] = max(1, min(100, int(loop_node.get("data", {}).get("config", {}).get("max_iterations", 5))))
     agent = base_workflow.runtime_class(**runtime_kwargs)
 
     specs = load_module_specs(str(ROOT / "config" / "modules.json"))
@@ -325,8 +484,15 @@ def _make_agent(graph: dict):
     if isinstance(model_kwargs, dict):
         llm_kwargs.update({key: value for key, value in model_kwargs.items() if key != "model"})
     for key, value in model_config.items():
-        if key not in {"model", "mmproj", "kwargs"}:
+        if key not in {"model", "mmproj", "kwargs", "api_key"}:
             llm_kwargs[key] = value
+    if actual_kind == "api":
+        key = _read_json_map(CREDENTIAL_PATH).get(model_node["id"]) or os.environ.get("OPENAI_API_KEY", "")
+        if not key:
+            raise GraphWorkflowError("API 模型未配置密钥，请在模型节点填写 API Key")
+        llm_kwargs["api_key"] = key
+        if not llm_kwargs.get("base_url"):
+            llm_kwargs["base_url"] = selected_model.get("base_url") or "https://api.openai.com/v1"
     llm_spec["class"] = selected_class or llm_spec["class"]
     llm_spec["kwargs"] = llm_kwargs
 
@@ -353,9 +519,9 @@ def _make_agent(graph: dict):
 def _validate_runtime_graph(graph_data: Any):
     graph = validate_graph_workflow(graph_data)
     supported_types = {
-        "core.chat_input", "agent.react_runtime", "llm.chat", "llm.provider", "llm.gguf_loader", "llm.openai_loader",
+        "core.chat_input", "agent.react_runtime", "llm.chat", "react.response_router", "tools.dispatch", "llm.provider", "llm.gguf_loader", "llm.openai_loader",
         "prompt.provider", "prompt.markdown_file", "prompt.text", "prompt.join", "context.merge", "memory.provider", "skills.provider",
-        "tools.provider", "core.chat_output",
+        "tools.provider", "core.chat_output", "react.loop",
     }
     unsupported = sorted({node["type"] for node in graph.nodes} - supported_types)
     if unsupported:
@@ -388,18 +554,64 @@ def _runtime_model_loaded() -> bool:
     return bool(getattr(llm, "_initialized", False))
 
 
+def _execution_graph_key(graph_data: dict) -> str:
+    ignored_node_fields = {
+        "position", "width", "height", "measured", "selected", "dragging",
+        "resizing", "outputPreview", "previewUsage", "previewExpanded",
+        "executionStatus", "debug_input",
+    }
+    nodes = []
+    for node in graph_data.get("nodes", []):
+        data = node.get("data", {})
+        normalized_data = {
+            key: value
+            for key, value in data.items()
+            if key not in ignored_node_fields and key != "label"
+        }
+        if isinstance(normalized_data.get("config"), dict):
+            normalized_data["config"] = {
+                key: value
+                for key, value in normalized_data["config"].items()
+                if key != "debug_input"
+            }
+        nodes.append({
+            "id": node.get("id"),
+            "type": node.get("type"),
+            "data": normalized_data,
+        })
+    edges = [
+        {
+            "id": edge.get("id"),
+            "source": edge.get("source"),
+            "target": edge.get("target"),
+            "sourceHandle": edge.get("sourceHandle"),
+            "targetHandle": edge.get("targetHandle"),
+        }
+        for edge in graph_data.get("edges", [])
+    ]
+    execution_graph = {
+        "workflow_version": graph_data.get("workflow_version"),
+        "id": graph_data.get("id"),
+        "nodes": nodes,
+        "edges": edges,
+    }
+    return json.dumps(execution_graph, ensure_ascii=False, sort_keys=True)
+
+
 def start_graph(graph_data: Any) -> dict:
     """Activate a workflow and initialize its selected model without a prompt."""
-    global _runtime_agent, _runtime_graph_key, _runtime_bindings, _runtime_started
+    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started
     graph, bindings = _validate_runtime_graph(graph_data)
     serialized_graph = json.dumps(graph_data, ensure_ascii=False, sort_keys=True)
+    execution_key = _execution_graph_key(graph_data)
     with _runtime_lock:
-        if _runtime_agent is None or _runtime_graph_key != serialized_graph:
+        if _runtime_agent is None or _runtime_execution_key != execution_key:
             if _runtime_agent is not None:
                 _runtime_agent.stop()
             _runtime_started = False
             _runtime_agent, _runtime_bindings = _make_agent(graph_data)
-            _runtime_graph_key = serialized_graph
+        _runtime_graph_key = serialized_graph
+        _runtime_execution_key = execution_key
         try:
             llm = _runtime_agent.get_module(bindings["llm_id"])
             if hasattr(llm, "ensure_initialized"):
@@ -411,6 +623,7 @@ def start_graph(graph_data: Any) -> dict:
             _runtime_agent.stop()
             _runtime_agent = None
             _runtime_graph_key = None
+            _runtime_execution_key = None
             _runtime_bindings = {}
             _runtime_started = False
             raise
@@ -423,7 +636,7 @@ def start_graph(graph_data: Any) -> dict:
 
 def stop_runtime() -> dict:
     """Stop the active Agent and release model resources."""
-    global _runtime_agent, _runtime_graph_key, _runtime_bindings, _runtime_started
+    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started
     with _runtime_lock:
         agent = _runtime_agent
         try:
@@ -432,6 +645,7 @@ def stop_runtime() -> dict:
         finally:
             _runtime_agent = None
             _runtime_graph_key = None
+            _runtime_execution_key = None
             _runtime_bindings = {}
             _runtime_started = False
     return {"running": False, "model_loaded": False}
@@ -442,34 +656,97 @@ def run_graph(
     user_input: str,
     mode: str = "normal",
     require_started: bool = False,
+    job_id: str | None = None,
 ) -> dict:
-    global _runtime_agent, _runtime_graph_key, _runtime_bindings, _runtime_started
+    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started
     graph, bindings = _validate_runtime_graph(graph_data)
     serialized_graph = json.dumps(graph_data, ensure_ascii=False, sort_keys=True)
+    execution_key = _execution_graph_key(graph_data)
     with _runtime_lock:
         if require_started and (
-            not _runtime_started or _runtime_graph_key != serialized_graph
+            not _runtime_started or _runtime_execution_key != execution_key
         ):
             raise GraphWorkflowError(
                 "Agent 尚未启动，或当前工作流与运行中的配置不同；请先在工作流页启动"
             )
-        if _runtime_agent is None or _runtime_graph_key != serialized_graph:
+        if _runtime_agent is None or _runtime_execution_key != execution_key:
             if _runtime_agent is not None:
                 _runtime_agent.stop()
             _runtime_started = False
             _runtime_agent, _runtime_bindings = _make_agent(graph_data)
-            _runtime_graph_key = serialized_graph
+            _runtime_execution_key = execution_key
+        _runtime_graph_key = serialized_graph
+        previews = _graph_previews(graph_data, user_input)
+        runtime_node = next(node for node in graph_data["nodes"] if node["type"] in {"llm.chat", "agent.react_runtime"})
+        prompt_edge = next((edge for edge in graph_data["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "prompt"), None)
+        prompt_override = previews.get(prompt_edge["source"]) if prompt_edge else None
+        context_override = _runtime_context_preview(graph_data, previews)
+        prompt_preview = _runtime_prompt_preview(graph_data, previews)
+        for edge in graph_data["edges"]:
+            if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "message":
+                previews[runtime_node["id"]] = previews.get(edge["source"], user_input)
+                break
+        if prompt_edge:
+            previews[prompt_edge["source"]] = prompt_preview
+        if job_id:
+            _runtime_agent.trace_sink.clear()
+            with _jobs_lock:
+                _run_jobs[job_id]["trace_ready"] = True
         answer = _runtime_agent.run(
             user_input=user_input,
             mode=mode,
+            prompt_override=prompt_override,
+            context_override=context_override,
+            graph_previews=previews,
             **_runtime_bindings,
         )
+        previews[runtime_node["id"]] = answer
+        output = next((node["id"] for node in graph_data["nodes"] if node["type"] == "core.chat_output"), None)
+        if output:
+            previews[output] = answer
         return {
             "answer": answer,
             "run_id": getattr(_runtime_agent, "_active_run_id", ""),
             "events": [event.as_dict() for event in _runtime_agent.get_trace_events()],
+            "previews": previews,
             "workflow_id": graph.workflow_id,
         }
+
+
+def _start_run_job(payload: dict) -> dict:
+    job_id = uuid.uuid4().hex
+    with _jobs_lock:
+        if any(not job["done"] for job in _run_jobs.values()):
+            raise GraphWorkflowError("已有工作流正在运行，请等待完成")
+        _run_jobs.clear()
+        _run_jobs[job_id] = {"done": False, "result": None, "error": None, "trace_ready": False}
+
+    def worker() -> None:
+        try:
+            result = run_graph(payload.get("workflow"), payload.get("input", "").strip(), payload.get("mode", "transparent"), bool(payload.get("require_started", False)), job_id)
+            with _jobs_lock:
+                _run_jobs[job_id].update(done=True, result=result)
+        except Exception as exc:
+            with _jobs_lock:
+                _run_jobs[job_id].update(done=True, error=str(exc))
+
+    threading.Thread(target=worker, daemon=True, name=f"atri-run-{job_id[:8]}").start()
+    return {"job_id": job_id}
+
+
+def _run_job_status(job_id: str) -> dict:
+    with _jobs_lock:
+        job = _run_jobs.get(job_id)
+        if job is None:
+            raise ValueError("运行任务不存在")
+        snapshot = dict(job)
+    if snapshot["done"]:
+        return snapshot
+    if not snapshot["trace_ready"]:
+        return {"done": False, "events": []}
+    agent = _runtime_agent
+    events = [event.as_dict() for event in agent.get_trace_events()] if agent is not None else []
+    return {"done": False, "events": events}
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -490,6 +767,36 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(204, {})
 
     def do_GET(self) -> None:
+        parsed_url = urlparse(self.path)
+        query = parse_qs(parsed_url.query)
+        if parsed_url.path == "/api/prompts":
+            self._send(200, {"files": sorted(path.name for path in PROMPT_DIR.glob("*.md"))})
+            return
+        if parsed_url.path == "/api/run/status":
+            try:
+                self._send(200, _run_job_status(query.get("id", [""])[0]))
+            except ValueError as exc:
+                self._send(404, {"error": str(exc)})
+            return
+        if parsed_url.path == "/api/model-credentials":
+            self._send(200, {"configured": sorted(_read_json_map(CREDENTIAL_PATH))})
+            return
+        if parsed_url.path in {"/api/skills", "/api/tools"}:
+            try:
+                self._send(200, _capability_catalog(parsed_url.path.removeprefix("/api/")))
+            except (ValueError, OSError) as exc:
+                self._send(400, {"error": str(exc)})
+            return
+        if parsed_url.path == "/api/memories":
+            self._send(200, {"files": sorted(path.name for path in MEMORY_DIR.glob("*.md"))})
+            return
+        if parsed_url.path == "/api/memory":
+            try:
+                path = _safe_markdown(MEMORY_DIR, query.get("file", [""])[0])
+                self._send(200, {"file": path.name, "content": path.read_text(encoding="utf-8")})
+            except (ValueError, OSError) as exc:
+                self._send(400, {"error": str(exc)})
+            return
         if self.path.startswith("/api/theme/background"):
             if not THEME_BACKGROUND_PATH.is_file():
                 self._send(404, {"error": "尚未保存背景图片"})
@@ -534,12 +841,48 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/run", "/api/start", "/api/stop", "/api/workflows/save", "/api/user-profile", "/api/theme/background"}:
+        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/skills", "/api/tools", "/api/memory"}:
             self._send(404, {"error": "Not found"})
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(size)) if size else {}
+            if self.path == "/api/preview":
+                if not isinstance(payload.get("workflow"), dict) or not isinstance(payload["workflow"].get("nodes"), list) or not isinstance(payload["workflow"].get("edges"), list):
+                    raise ValueError("工作流格式无效")
+                self._send(200, {"previews": _graph_previews(payload["workflow"], payload.get("input", ""))})
+                return
+            if self.path == "/api/run/async":
+                if not isinstance(payload.get("input"), str) or not payload["input"].strip():
+                    raise ValueError("请输入一条消息")
+                self._send(200, _start_run_job(payload))
+                return
+            if self.path == "/api/model-credentials":
+                node_id, key = payload.get("node_id"), payload.get("api_key")
+                if not isinstance(node_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", node_id) or not isinstance(key, str) or len(key) > 4096:
+                    raise ValueError("模型节点 ID 或密钥无效")
+                credentials = _read_json_map(CREDENTIAL_PATH)
+                if key:
+                    credentials[node_id] = key
+                else:
+                    credentials.pop(node_id, None)
+                _write_json_map(CREDENTIAL_PATH, credentials)
+                stop_runtime()
+                self._send(200, {"configured": bool(key)})
+                return
+            if self.path in {"/api/skills", "/api/tools"}:
+                self._send(200, _set_capability_items(self.path.removeprefix("/api/"), payload.get("updates")))
+                return
+            if self.path == "/api/memory":
+                path = _safe_markdown(MEMORY_DIR, payload.get("file"))
+                content = payload.get("content")
+                if not isinstance(content, str) or len(content) > 500_000:
+                    raise ValueError("记忆内容必须是小于 500 KB 的文本")
+                temporary = path.with_suffix(".md.tmp")
+                temporary.write_text(content, encoding="utf-8")
+                temporary.replace(path)
+                self._send(200, {"saved": True})
+                return
             if self.path == "/api/theme/background":
                 self._send(200, _save_theme_background(payload.get("image")))
                 return

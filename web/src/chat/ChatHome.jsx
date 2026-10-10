@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, ArrowUp, Bot, ChevronDown, FileClock, MessageSquarePlus, PanelLeftClose, Pencil, Plus, Save, Trash2, Workflow, X, Zap } from 'lucide-react';
 import { ThemePicker } from '../theme.jsx';
 import { modelChoices } from '../workflow/catalog';
+import TraceView from '../workflow/TraceView';
+import { runWorkflowRequest } from '../workflow/runApi';
 
 const CHAT_STORAGE_KEY = 'atri.chat.sessions.v1';
 const ACTIVE_CHAT_STORAGE_KEY = 'atri.chat.active.v1';
@@ -54,17 +56,16 @@ function readChatState() {
   }
 }
 
-function TraceList({ events }) {
-  return <div className="chat-trace-list">{events.map((event, index) => <div className="chat-trace-event" key={`${event.event_type}-${index}`}><span className="trace-time">{String(index + 1).padStart(2, '0')}</span><span className="trace-event-name">{event.event_type}</span><span className="trace-event-node">{event.node_id || 'runtime'}</span></div>)}</div>;
-}
-
 export default function ChatHome({ onNavigate }) {
   const [workflow, setWorkflow] = useState(null);
+  const [runtimeStatus, setRuntimeStatus] = useState({ loading: true, running: false, workflow_id: null });
   const [chatState, setChatState] = useState(readChatState);
   const [input, setInput] = useState('');
   const [mode, setMode] = useState('normal');
   const [busy, setBusy] = useState(false);
   const [busySessionId, setBusySessionId] = useState(null);
+  const [liveEvents, setLiveEvents] = useState([]);
+  const liveEventsRef = useRef([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileText, setProfileText] = useState('');
@@ -95,6 +96,24 @@ export default function ChatHome({ onNavigate }) {
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const refresh = () => fetch('/api/status')
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('无法读取运行状态')))
+      .then((status) => {
+        const active = localStorage.getItem('atri.active.workflow.v2');
+        let activeId = null;
+        try { activeId = active ? JSON.parse(active).id : null; } catch { localStorage.removeItem('atri.active.workflow.v2'); }
+        if (!disposed) setRuntimeStatus({ ...status, running: Boolean(status.running && activeId === status.workflow_id), loading: false });
+      })
+      .catch(() => { if (!disposed) setRuntimeStatus({ loading: false, running: false, workflow_id: null }); });
+    refresh();
+    const timer = window.setInterval(refresh, 2500);
+    const onStatusChange = () => refresh();
+    window.addEventListener('atri-runtime-status', onStatusChange);
+    return () => { disposed = true; window.clearInterval(timer); window.removeEventListener('atri-runtime-status', onStatusChange); };
   }, []);
 
   useEffect(() => {
@@ -154,26 +173,28 @@ export default function ChatHome({ onNavigate }) {
     const text = input.trim();
     const sessionId = activeSession?.id;
     if (!text || busy || !workflow || !sessionId) return;
+    if (!runtimeStatus.running) {
+      appendMessage(sessionId, { role: 'assistant', error: '工作流尚未启动，请先到工作流页点击“启动工作流”后再对话。' });
+      return;
+    }
     setInput('');
     appendMessage(sessionId, { role: 'user', content: text }, text);
     setBusy(true);
     setBusySessionId(sessionId);
+    setLiveEvents([]);
+    liveEventsRef.current = [];
     try {
-      const response = await fetch('/api/run', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workflow, input: text, mode, require_started: true }),
-      });
-      const raw = await response.text();
-      let result;
-      try { result = raw ? JSON.parse(raw) : {}; } catch { throw new Error(`服务返回了无效数据（HTTP ${response.status}）`); }
-      if (!response.ok) throw new Error(result.error || 'Agent 运行失败');
+      const onProgress = mode === 'transparent' ? (events) => { liveEventsRef.current = events; setLiveEvents(events); } : null;
+      const result = await runWorkflowRequest({ workflow, input: text, mode, require_started: true }, onProgress);
       if (!result.answer && result.error) throw new Error(result.error);
+      liveEventsRef.current = result.events || liveEventsRef.current;
       appendMessage(sessionId, { role: 'assistant', content: result.answer, events: result.events });
     } catch (error) {
-      appendMessage(sessionId, { role: 'assistant', error: error.message });
+      appendMessage(sessionId, { role: 'assistant', error: error.message, events: liveEventsRef.current });
     } finally {
       setBusy(false);
       setBusySessionId(null);
+      setLiveEvents(liveEventsRef.current);
     }
   };
 
@@ -271,7 +292,7 @@ export default function ChatHome({ onNavigate }) {
           <nav className="app-nav chat-nav"><button className="active" onClick={() => onNavigate('chat')}>对话</button><button onClick={() => onNavigate('workflow')}>工作流</button></nav>
           <div className="chat-top-spacer" />
           <ThemePicker />
-          <div className="active-config"><span className="config-dot" /><span>{workflow?.name || '加载工作流'}</span></div>
+          <div className="active-config"><span className={`config-dot ${runtimeStatus.running ? '' : 'warn'}`} /><span>{runtimeStatus.loading ? '检查工作流状态…' : runtimeStatus.running ? workflow?.name || '工作流已启动' : '工作流未启动'}</span></div>
           <div className="mode-switch" role="group" aria-label="对话模式"><button className={mode === 'normal' ? 'selected' : ''} onClick={() => setMode('normal')}>正常</button><button className={mode === 'transparent' ? 'selected' : ''} onClick={() => setMode('transparent')}><Activity size={12} />透明</button></div>
           <button className="icon-button" title="新对话" onClick={clearConversation}><Plus size={16} /></button>
         </header>
@@ -281,15 +302,15 @@ export default function ChatHome({ onNavigate }) {
             {message.role === 'assistant' && <div className="message-avatar"><Bot size={16} /></div>}
             <div className="message-content">
               {message.error ? <div className="message-error">{message.error}</div> : <div className="message-bubble">{message.content}</div>}
-              {mode === 'transparent' && message.events?.length > 0 && <details className="trace-details" open><summary><Activity size={13} />执行轨迹 <span>{message.events.length} events</span></summary><TraceList events={message.events} /></details>}
+              {message.events?.length > 0 && <details className="trace-details" open={mode === 'transparent'}><summary><Activity size={13} />执行轨迹 <span>{message.events.length} steps</span></summary><TraceView events={message.events} /></details>}
               {message.role === 'assistant' && index === 0 && <div className="message-meta"><span>ATRI</span><span>·</span><span>刚刚</span></div>}
             </div>
             {message.role === 'user' && <div className="user-avatar">W</div>}
           </article>)}
-          {busy && busySessionId === activeSessionId && <div className="chat-message assistant"><div className="message-avatar"><Bot size={16} /></div><div className="message-bubble thinking"><span /><span /><span />正在思考</div></div>}
+          {busy && busySessionId === activeSessionId && <div className="chat-message assistant"><div className="message-avatar"><Bot size={16} /></div><div className="message-content"><div className="message-bubble thinking"><span /><span /><span />正在思考</div>{mode === 'transparent' && liveEvents.length > 0 && <TraceView events={liveEvents} />}</div></div>}
         </section>
         <footer className="composer-area">
-          <div className="composer-box"><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder="给 ATRI 发消息…" rows={1} /><div className="composer-tools"><span><Zap size={13} />{activeModel}</span><span className="composer-hint">Enter 发送 · Shift + Enter 换行</span><button className="send-button" disabled={!input.trim() || busy} onClick={sendMessage} title="发送消息"><ArrowUp size={17} /></button></div></div>
+          <div className="composer-box"><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder={runtimeStatus.running ? '给 ATRI 发消息…' : '请先在工作流页启动 Agent'} rows={1} /><div className="composer-tools"><span><Zap size={13} />{activeModel}</span><span className="composer-hint">Enter 发送 · Shift + Enter 换行</span><button className="send-button" disabled={!input.trim() || busy || runtimeStatus.loading || !runtimeStatus.running} onClick={sendMessage} title={runtimeStatus.running ? '发送消息' : '先启动工作流'}><ArrowUp size={17} /></button></div></div>
           <div className="composer-caption">ATRI 会根据当前激活的工作流配置运行。<button onClick={() => onNavigate('workflow')}>编辑工作流</button></div>
         </footer>
       </main>
