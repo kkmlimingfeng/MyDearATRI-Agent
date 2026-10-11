@@ -27,6 +27,20 @@ html, body, #root { width: 100%; min-width: 360px; height: 100%; margin: 0; }
 body { overflow: hidden; }
 button, input, select, textarea { font: inherit; }
 button { color: inherit; cursor: pointer; }
+.app-frame { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.app-page { position: absolute; inset: 0; min-width: 0; min-height: 0; display: none; }
+.app-page.is-active { display: block; }
+.app-global-nav { position: absolute; z-index: 40; top: 11px; left: 50%; transform: translateX(-50%); height: 44px; display: flex; align-items: center; gap: 2px; padding: 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); box-shadow: 0 2px 10px #122b2012; }
+.app-global-nav button { min-width: 84px; height: 34px; padding: 0 12px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 14px; font-weight: 600; white-space: nowrap; }
+.app-global-nav button:hover:not(:disabled) { background: var(--surface-hover); color: var(--theme-accent); }
+.app-global-nav button.active { background: var(--accent-soft); color: var(--theme-accent); }
+.app-global-nav button:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
+.particle-transition { position: fixed; z-index: 100; inset: 0; display: block; width: 100vw; height: 100vh; pointer-events: auto; }
+.particle-transition canvas, .particle-transition-stripes { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.particle-transition-stripes { --wash-radius: 0px; -webkit-mask-image: radial-gradient(circle var(--wash-radius) at center, #000 52%, transparent 100%); mask-image: radial-gradient(circle var(--wash-radius) at center, #000 52%, transparent 100%); mask-mode: alpha; }
+.particle-transition-stripes::before { position: absolute; inset: -100px; background: repeating-linear-gradient(60deg, transparent 0 28px, #ffffff99 28px 38px, transparent 38px 64px); animation: transition-stripes-drift 8s linear infinite alternate; content: ''; }
+.particle-transition-particles { z-index: 1; }
+@keyframes transition-stripes-drift { to { transform: translateX(70px); } }
 .studio-shell { height: 100%; min-height: 560px; display: flex; flex-direction: column; background: var(--canvas); }
 
 .topbar { height: 62px; flex: 0 0 62px; display: flex; align-items: center; gap: 12px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--line); z-index: 20; }
@@ -36,12 +50,6 @@ button { color: inherit; cursor: pointer; }
 .brand-lockup strong span { color: #458d76; font-size: 10px; margin-left: 3px; }
 .brand-lockup small { display: block; margin-top: 2px; color: #96a19c; font: 9px var(--mono); letter-spacing: 0; }
 .topbar-divider { width: 1px; height: 25px; background: #e3e9e6; }
-.app-nav { height: 100%; display: flex; align-items: stretch; gap: 3px; }
-.app-nav button { position: relative; min-width: 48px; padding: 0 9px; border: 0; background: transparent; color: #8b9690; font-size: 11px; }
-.app-nav button:hover { color: #397b62; }
-.app-nav button.active { color: #347b64; font-weight: 600; }
-.app-nav button.active { color: var(--green); }
-.app-nav button.active::after { position: absolute; right: 9px; bottom: 0; left: 9px; height: 2px; background: var(--green); content: ''; }
 .workflow-identity { display: flex; align-items: center; gap: 10px; min-width: 150px; }
 .crumb, .crumb-separator { color: #98a19d; font-size: 12px; }
 .workflow-name-button { max-width: 190px; min-width: 0; overflow: hidden; padding: 5px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -348,7 +356,7 @@ button { color: inherit; cursor: pointer; }
 .note-dot { width: 5px; height: 5px; background: #d0a250; }
 .app-footer button { margin-left: auto; font-size: 9px; }
 .app-footer button + button { margin-left: 3px; }
-.modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: #1e2a2580; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: #1e2a2580; }
 .workflow-save-modal { display: grid; gap: 17px; width: min(420px, 100%); padding: 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 20px 70px #14221b40; color: var(--ink); }
 .workflow-save-modal header, .workflow-save-modal footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .workflow-save-modal h2 { margin: 0; font-size: 18px; }
@@ -419,7 +427,6 @@ button { color: inherit; cursor: pointer; }
 .chat-agent-title strong { color: #35433c; font-size: 11px; }
 .chat-agent-title span:not(.agent-status-icon) { color: #9aa49e; font-size: 8px; }
 .chat-agent-title > svg { margin-left: 2px; color: #a1aaa5; }
-.chat-nav { height: 100%; margin-left: 10px; }
 .chat-top-spacer { flex: 1; }
 .active-config { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid #e6ebe8; border-radius: 5px; background: #fbfcfb; color: #77847c; font-size: 9px; }
 .config-dot { width: 6px; height: 6px; border-radius: 2px; background: #65a27d; }
@@ -477,7 +484,7 @@ button { color: inherit; cursor: pointer; }
 .group-indicator.mint { background: #5ca98e; }.group-indicator.coral { background: #d97968; }.group-indicator.blue { background: #7195c4; }.group-indicator.amber { background: #cb9c50; }.group-indicator.green { background: #70a276; }.group-indicator.violet { background: #8b7bb7; }.group-indicator.cyan { background: #55a1a2; }.group-indicator.slate { background: #84928c; }
 
 /* Keep the workbench readable at normal display scaling. */
-.app-nav button, .icon-button, .primary-button, .secondary-button, .danger-button, .run-top-button { font-size: 12px; }
+.icon-button, .primary-button, .secondary-button, .danger-button, .run-top-button { font-size: 12px; }
 .panel-heading h2 { font-size: 16px; }
 .eyebrow { font-size: 10px; }
 .search-box input, .group-heading, .palette-label, .no-results, .palette-footer { font-size: 12px; }
@@ -502,7 +509,6 @@ button { color: inherit; cursor: pointer; }
 .brand-lockup strong { font-size: 15px; }
 .brand-lockup strong span { font-size: 11px; }
 .brand-lockup small { font-size: 10px; }
-.app-nav button { min-width: 58px; font-size: 14px; }
 .crumb, .crumb-separator { font-size: 14px; }
 .draft-status { font-size: 13px; }
 .icon-button, .primary-button, .secondary-button, .danger-button, .run-top-button { min-height: 38px; font-size: 13px; }
@@ -584,7 +590,19 @@ button { color: inherit; cursor: pointer; }
   .reset-workflow-button span { display: none; }
   .workflow-node { min-width: 216px; }
 }
+@media (min-width: 821px) and (max-width: 1400px) {
+  .draft-status { width: 10px; min-width: 10px; margin-right: 0; font-size: 0; }
+  .draft-status span { width: 8px; height: 8px; flex: none; }
+  .active-config { width: 30px; min-width: 30px; height: 30px; justify-content: center; padding: 0; }
+  .active-config > span:nth-child(2) { display: none; }
+}
+@media (min-width: 821px) and (max-width: 1100px) {
+  .workflow-identity, .chat-agent-title { display: none; }
+}
 @media (max-width: 820px) {
+  .app-global-nav { top: 0; left: 0; transform: none; width: 100%; height: 48px; justify-content: center; border-width: 0 0 1px; border-radius: 0; box-shadow: none; }
+  .app-page { top: 48px; }
+  .app-page .studio-shell { min-height: 0; }
   .workspace { --palette-width: 58px; grid-template-columns: var(--palette-width) minmax(0, 1fr); }
   .palette { align-items: center; }
   .palette .panel-heading { width: 100%; justify-content: center; padding: 0; }
@@ -617,7 +635,6 @@ button { color: inherit; cursor: pointer; }
   .sidebar-workflow-link { width: 37px; height: 37px; min-height: 37px; justify-content: center; padding: 0; }
   .profile-row { justify-content: center; padding: 9px 0 1px; }
   .chat-topbar { gap: 7px; padding: 0 9px; }
-  .chat-nav { display: none; }
   .active-config { max-width: 145px; overflow: hidden; }
   .active-config > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-thread { padding: 25px 16px; }
@@ -653,8 +670,7 @@ button { color: inherit; cursor: pointer; }
 
 /* Theme every secondary surface, control, border, and selected state. */
 .brand-mark { background: var(--theme-accent); }
-.brand-lockup strong span, .app-nav button:hover, .app-nav button.active, .canvas-tab.active { color: var(--theme-accent); }
-.app-nav button.active::after { background: var(--theme-accent); }
+.brand-lockup strong span, .canvas-tab.active { color: var(--theme-accent); }
 .topbar-divider, .palette, .inspector, .palette-footer, .profile-row, .chat-topbar, .chat-sidebar { border-color: var(--line); }
 .icon-button, .primary-button, .secondary-button, .danger-button { border-color: var(--line); background: var(--surface); }
 .icon-button:hover, .secondary-button:hover, .canvas-status button:hover, .app-footer button:hover { background: var(--surface-hover); border-color: var(--line); color: var(--theme-accent); }

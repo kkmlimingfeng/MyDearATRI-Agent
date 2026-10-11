@@ -56,7 +56,7 @@ function readChatState() {
   }
 }
 
-export default function ChatHome({ onNavigate }) {
+export default function ChatHome({ onNavigate, active = true }) {
   const [workflow, setWorkflow] = useState(null);
   const [runtimeStatus, setRuntimeStatus] = useState({ loading: true, running: false, workflow_id: null });
   const [chatState, setChatState] = useState(readChatState);
@@ -88,6 +88,7 @@ export default function ChatHome({ onNavigate }) {
   }, [sessions, activeSessionId]);
 
   useEffect(() => {
+    if (!active) return undefined;
     const handleShortcut = (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -96,7 +97,7 @@ export default function ChatHome({ onNavigate }) {
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, []);
+  }, [active]);
 
   useEffect(() => {
     let disposed = false;
@@ -293,10 +294,9 @@ export default function ChatHome({ onNavigate }) {
         <header className="chat-topbar">
           {!sidebarOpen && <button className="icon-button" onClick={() => setSidebarOpen(true)} title="展开侧栏"><PanelLeftClose size={15} /></button>}
           <div className="chat-agent-title"><span className="agent-status-icon"><Bot size={16} /></span><div><strong>ATRI</strong><span>陪伴型 Agent</span></div></div>
-          <nav className="app-nav chat-nav"><button className="active" onClick={() => onNavigate('chat')}>对话</button><button onClick={() => onNavigate('workflow')}>工作流</button></nav>
           <div className="chat-top-spacer" />
           <ThemePicker />
-          <div className="active-config"><span className={`config-dot ${runtimeStatus.running ? '' : 'warn'}`} /><span>{runtimeStatus.loading ? '检查工作流状态…' : runtimeStatus.running ? workflow?.name || '工作流已启动' : '工作流未启动'}</span></div>
+          <div className="active-config" title={runtimeStatus.loading ? '检查工作流状态…' : runtimeStatus.running ? workflow?.name || '工作流已启动' : '工作流未启动'}><span className={`config-dot ${runtimeStatus.running ? '' : 'warn'}`} /><span>{runtimeStatus.loading ? '检查工作流状态…' : runtimeStatus.running ? workflow?.name || '工作流已启动' : '工作流未启动'}</span></div>
           <div className="mode-switch" role="group" aria-label="对话模式"><button className={mode === 'normal' ? 'selected' : ''} onClick={() => setMode('normal')}>正常</button><button className={mode === 'transparent' ? 'selected' : ''} onClick={() => setMode('transparent')}><Activity size={12} />透明</button></div>
           <button className="icon-button" title="新对话" onClick={clearConversation}><Plus size={16} /></button>
         </header>

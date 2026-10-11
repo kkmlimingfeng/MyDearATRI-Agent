@@ -77,7 +77,14 @@ export function ThemePicker() {
     } catch {
       setStorageError(true);
     }
+    window.dispatchEvent(new CustomEvent('atri-theme-updated', { detail: theme }));
   }, [theme]);
+
+  useEffect(() => {
+    const update = (event) => setTheme((current) => current === event.detail ? current : event.detail);
+    window.addEventListener('atri-theme-updated', update);
+    return () => window.removeEventListener('atri-theme-updated', update);
+  }, []);
 
   useEffect(() => {
     if (!theme.image?.startsWith('data:image/webp;base64,') || migratingLegacyImage.current) return;

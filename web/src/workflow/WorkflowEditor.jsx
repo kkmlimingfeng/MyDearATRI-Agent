@@ -21,7 +21,6 @@ import { runWorkflowRequest } from './runApi';
 
 const nodeTypes = { workflow: WorkflowNode };
 const MIN_NODE_WIDTH = 216;
-let workspaceSession = null;
 
 function fromDocument(document) {
   return {
@@ -268,7 +267,7 @@ function Inspector({ node, modelOptions = modelChoices, promptFiles = [], creden
   );
 }
 
-function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, availableWorkflows, onNavigate, onLeave, onRefreshWorkflows, onOpenDocument, onSwitchWorkflow, onCloseWorkflow, onSaved }) {
+function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, availableWorkflows, onRefreshWorkflows, onOpenDocument, onSwitchWorkflow, onCloseWorkflow, onSaved }) {
   const initialGraph = fromDocument(initialDocument);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialGraph.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialGraph.edges);
@@ -753,10 +752,9 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
       <header className="topbar">
         <div className="brand-lockup"><div className="brand-mark">A</div><div><strong>ATRI <span>STUDIO</span></strong><small>WORKFLOW DESIGNER</small></div></div>
         <div className="topbar-divider" />
-        <nav className="app-nav"><button onClick={() => onLeave(currentDocument())}>对话</button><button className="active" onClick={() => onNavigate('workflow')}>工作流</button></nav>
         <div className="workflow-identity"><span className="crumb">工作流</span><span className="crumb-separator">/</span><button className="workflow-name-button" onClick={() => openSaveDialog('rename')} disabled={saving || agentStarting || agentStopping} title="点击重命名工作流和文件" aria-label={`重命名 ${workflow.name}`}>{workflow.name}</button></div>
         <div className="topbar-spacer" />
-        <span className="draft-status"><span className={agentRunning && serverWorkflowId === workflow.id ? 'applied' : ''} />{agentRunning && serverWorkflowId === workflow.id ? '当前 Agent 配置' : agentRunning ? `运行中：${serverWorkflowId || '其他工作流'}` : '未启动 / 未应用'}</span>
+        <span className="draft-status" title={agentRunning && serverWorkflowId === workflow.id ? '当前 Agent 配置' : agentRunning ? `运行中：${serverWorkflowId || '其他工作流'}` : '未启动 / 未应用'}><span className={agentRunning && serverWorkflowId === workflow.id ? 'applied' : ''} />{agentRunning && serverWorkflowId === workflow.id ? '当前 Agent 配置' : agentRunning ? `运行中：${serverWorkflowId || '其他工作流'}` : '未启动 / 未应用'}</span>
         <button className="icon-button json-button" onClick={openJson} title="查看和编辑工作流 JSON"><Code2 size={16} /><span>JSON</span></button>
         <ThemePicker />
         <label className="icon-button" title="导入工作流 JSON"><ArrowUpFromLine size={16} /><input className="file-input" type="file" accept="application/json,.json" onChange={importFile} /></label>
@@ -890,7 +888,7 @@ function isLegacyDefault(document) {
   return document?.id === 'atri_companion_graph' && !document.nodes?.some((node) => node.type === 'llm.chat');
 }
 
-export default function WorkflowApp({ onNavigate }) {
+export default function WorkflowApp() {
   const [workspaceState, setWorkspaceState] = useState(null);
   useEffect(() => {
     Promise.all([
@@ -899,10 +897,6 @@ export default function WorkflowApp({ onNavigate }) {
     ]).then(([nodePayload, workflowPayload]) => {
       if (Array.isArray(nodePayload?.nodes) && nodePayload.nodes.length) hydrateNodeCatalog(nodePayload.nodes);
       const available = workflowPayload?.workflows || [];
-      if (workspaceSession) {
-        setWorkspaceState({ ...workspaceSession, available });
-        return;
-      }
       const openInitial = (document) => setWorkspaceState({ tabs: [{ id: document.id, document, savedDocument: document, persisted: true }], activeId: document.id, available });
       try {
         const previous = JSON.parse(localStorage.getItem('atri.open.workflow.tabs') || 'null');
@@ -965,11 +959,7 @@ export default function WorkflowApp({ onNavigate }) {
     tabs: current.tabs.map((tab) => tab.id === current.activeId ? { ...tab, id: document.id, document, savedDocument: document, persisted: true } : tab),
     available: current.available.filter((item) => item.id !== previousId && item.id !== document.id).concat({ id: document.id, name: document.name, document }),
   } : current);
-  const leaveWorkspace = (snapshot) => {
-    workspaceSession = { ...workspaceState, tabs: rememberActive(workspaceState.tabs, workspaceState.activeId, snapshot) };
-    onNavigate('chat');
-  };
   if (!workspaceState) return <div className="loading-screen">ATRI WORKFLOW STUDIO</div>;
   const activeTab = workspaceState.tabs.find((tab) => tab.id === workspaceState.activeId);
-  return <ReactFlowProvider key={activeTab.id}><EditorFrame initialDocument={activeTab.document} savedDocument={activeTab.savedDocument} persisted={activeTab.persisted} openTabs={workspaceState.tabs} availableWorkflows={workspaceState.available} onNavigate={onNavigate} onLeave={leaveWorkspace} onRefreshWorkflows={refreshWorkflows} onOpenDocument={openDocument} onSwitchWorkflow={switchWorkflow} onCloseWorkflow={closeWorkflow} onSaved={savedWorkflow} /></ReactFlowProvider>;
+  return <ReactFlowProvider key={activeTab.id}><EditorFrame initialDocument={activeTab.document} savedDocument={activeTab.savedDocument} persisted={activeTab.persisted} openTabs={workspaceState.tabs} availableWorkflows={workspaceState.available} onRefreshWorkflows={refreshWorkflows} onOpenDocument={openDocument} onSwitchWorkflow={switchWorkflow} onCloseWorkflow={closeWorkflow} onSaved={savedWorkflow} /></ReactFlowProvider>;
 }
