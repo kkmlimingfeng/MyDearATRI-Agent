@@ -143,7 +143,7 @@ export default function ChatHome({ onNavigate }) {
           fetch('/companion_graph.json').then((response) => response.json()).then(setWorkflow).catch(() => setWorkflow(starter));
         });
     };
-    load(false);
+    load(true);
     const handleApplied = () => load(true);
     window.addEventListener('atri-workflow-applied', handleApplied);
     return () => window.removeEventListener('atri-workflow-applied', handleApplied);
@@ -152,7 +152,11 @@ export default function ChatHome({ onNavigate }) {
   const activeModel = useMemo(() => {
     const node = workflow?.nodes?.find((item) => ['llm.provider', 'llm.gguf_loader', 'llm.openai_loader'].includes(item.type));
     const modelId = node?.data?.config?.model;
-    return modelChoices.find((option) => option.value === modelId)?.label || modelId || '未选择模型';
+    const direct = workflow?.nodes?.length === 2
+      && workflow.nodes.some((item) => item.type === 'core.chat_input')
+      && workflow.nodes.some((item) => item.type === 'core.chat_output')
+      && workflow.edges?.length === 1;
+    return modelChoices.find((option) => option.value === modelId)?.label || modelId || (direct ? '无模型直通' : '未选择模型');
   }, [workflow]);
 
   const appendMessage = (sessionId, message, title) => {

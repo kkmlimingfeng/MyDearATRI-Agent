@@ -15,20 +15,11 @@
         "category": "io",
         "module_id": "",
         "config": {
-          "placeholder": "说点什么…",
-          "debug_input": "你好，现在几点了。"
+          "placeholder": "说点什么…"
         },
         "sizeMode": "auto",
         "previewExpanded": false
       },
-      "width": 230,
-      "height": 142,
-      "measured": {
-        "width": 230,
-        "height": 142
-      },
-      "selected": false,
-      "dragging": false,
       "type": "core.chat_input"
     },
     {
@@ -49,15 +40,6 @@
         "sizeMode": "auto",
         "previewExpanded": false
       },
-      "width": 276,
-      "height": 134,
-      "measured": {
-        "width": 276,
-        "height": 134
-      },
-      "selected": false,
-      "dragging": false,
-      "resizing": false,
       "type": "prompt.markdown_file"
     },
     {
@@ -77,14 +59,6 @@
         },
         "sizeMode": "auto"
       },
-      "width": 276,
-      "height": 134,
-      "measured": {
-        "width": 276,
-        "height": 134
-      },
-      "selected": false,
-      "dragging": false,
       "type": "prompt.markdown_file"
     },
     {
@@ -101,14 +75,6 @@
         },
         "sizeMode": "auto"
       },
-      "width": 293,
-      "height": 120,
-      "measured": {
-        "width": 293,
-        "height": 120
-      },
-      "selected": false,
-      "dragging": false,
       "type": "prompt.join"
     },
     {
@@ -127,14 +93,6 @@
         },
         "sizeMode": "auto"
       },
-      "width": 230,
-      "height": 125,
-      "measured": {
-        "width": 230,
-        "height": 125
-      },
-      "selected": false,
-      "dragging": false,
       "type": "memory.provider"
     },
     {
@@ -154,14 +112,6 @@
         "sizeMode": "auto",
         "previewExpanded": false
       },
-      "width": 230,
-      "height": 125,
-      "measured": {
-        "width": 230,
-        "height": 125
-      },
-      "selected": false,
-      "dragging": false,
       "type": "skills.provider"
     },
     {
@@ -180,14 +130,6 @@
         },
         "sizeMode": "auto"
       },
-      "width": 230,
-      "height": 125,
-      "measured": {
-        "width": 230,
-        "height": 125
-      },
-      "selected": false,
-      "dragging": false,
       "type": "tools.provider"
     },
     {
@@ -202,14 +144,6 @@
         "config": {},
         "sizeMode": "auto"
       },
-      "width": 309,
-      "height": 105,
-      "measured": {
-        "width": 309,
-        "height": 105
-      },
-      "selected": false,
-      "dragging": false,
       "type": "context.merge"
     },
     {
@@ -231,14 +165,6 @@
         "sizeMode": "auto",
         "previewExpanded": false
       },
-      "width": 312,
-      "height": 139,
-      "measured": {
-        "width": 312,
-        "height": 139
-      },
-      "selected": false,
-      "dragging": false,
       "type": "llm.gguf_loader"
     },
     {
@@ -257,15 +183,6 @@
         "sizeMode": "auto",
         "previewExpanded": true
       },
-      "width": 380,
-      "height": 111,
-      "measured": {
-        "width": 380,
-        "height": 111
-      },
-      "selected": false,
-      "resizing": false,
-      "dragging": false,
       "type": "llm.chat"
     },
     {
@@ -280,14 +197,6 @@
         "config": {},
         "sizeMode": "auto"
       },
-      "width": 376,
-      "height": 67,
-      "measured": {
-        "width": 376,
-        "height": 67
-      },
-      "selected": false,
-      "dragging": false,
       "type": "react.response_router"
     },
     {
@@ -303,14 +212,6 @@
         "sizeMode": "auto",
         "previewExpanded": true
       },
-      "width": 304,
-      "height": 103,
-      "measured": {
-        "width": 304,
-        "height": 103
-      },
-      "selected": false,
-      "dragging": false,
       "type": "tools.dispatch"
     },
     {
@@ -329,14 +230,6 @@
         "sizeMode": "auto",
         "previewExpanded": true
       },
-      "width": 230,
-      "height": 103,
-      "measured": {
-        "width": 230,
-        "height": 103
-      },
-      "selected": false,
-      "dragging": false,
       "type": "core.chat_output"
     },
     {
@@ -353,14 +246,6 @@
         },
         "sizeMode": "auto"
       },
-      "width": 334,
-      "height": 67,
-      "measured": {
-        "width": 334,
-        "height": 67
-      },
-      "selected": false,
-      "dragging": false,
       "type": "react.loop"
     },
     {
@@ -379,14 +264,6 @@
         },
         "sizeMode": "auto"
       },
-      "width": 276,
-      "height": 134,
-      "measured": {
-        "width": 276,
-        "height": 134
-      },
-      "selected": false,
-      "dragging": false,
       "type": "prompt.markdown_file"
     },
     {
@@ -405,14 +282,6 @@
         },
         "sizeMode": "auto"
       },
-      "width": 276,
-      "height": 134,
-      "measured": {
-        "width": 276,
-        "height": 134
-      },
-      "selected": false,
-      "dragging": false,
       "type": "prompt.markdown_file"
     }
   ],

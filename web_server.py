@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import uuid
+from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import Any, Dict
 
 from agent.graph_workflow import GraphWorkflowError, validate_graph_workflow
 from agent.nodes import node_registry
+from agent.protocol import TraceEvent
 from agent.workflow import load_workflow
 from modules.module_loader import (
     ModuleConfigError,
@@ -38,8 +40,10 @@ _runtime_graph_key = None
 _runtime_execution_key = None
 _runtime_bindings: Dict[str, str] = {}
 _runtime_started = False
+_runtime_workflow_id = None
 _run_jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+_workflow_file_lock = threading.Lock()
 
 
 def _graph_workflow_documents() -> list[dict]:
@@ -65,15 +69,34 @@ def _graph_workflow_documents() -> list[dict]:
     return [{key: value for key, value in item.items() if key != "modified"} for item in documents]
 
 
-def _save_graph_workflow(document: Any) -> dict:
+def _save_graph_workflow(document: Any, previous_id: Any = None, create_only: bool = False) -> dict:
     graph = validate_graph_workflow(document)
     if not re.fullmatch(r"[A-Za-z0-9_-]+", graph.workflow_id):
         raise GraphWorkflowError("工作流 ID 只能包含英文字母、数字、下划线和连字符")
+    if previous_id is not None and (not isinstance(previous_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", previous_id)):
+        raise GraphWorkflowError("原工作流 ID 无效")
     WORKFLOW_DIR.mkdir(parents=True, exist_ok=True)
     destination = WORKFLOW_DIR / f"{graph.workflow_id}.json"
-    temporary = WORKFLOW_DIR / f".{graph.workflow_id}.json.tmp"
-    temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(destination)
+    source = WORKFLOW_DIR / f"{previous_id}.json" if previous_id and previous_id != graph.workflow_id else None
+    with _workflow_file_lock:
+        if source and not source.is_file():
+            raise GraphWorkflowError(f"原工作流文件不存在: {source.name}")
+        if (source or create_only) and destination.exists():
+            raise GraphWorkflowError(f"工作流文件已存在: {destination.name}")
+        if source and _runtime_started and _runtime_workflow_id == previous_id:
+            raise GraphWorkflowError("请先停止运行中的工作流，再重命名文件")
+        temporary = WORKFLOW_DIR / f".{graph.workflow_id}.{uuid.uuid4().hex}.tmp"
+        try:
+            temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(destination)
+            if source:
+                try:
+                    source.unlink()
+                except OSError:
+                    destination.unlink(missing_ok=True)
+                    raise
+        finally:
+            temporary.unlink(missing_ok=True)
     return {"id": graph.workflow_id, "name": graph.name, "path": str(destination)}
 
 
@@ -518,6 +541,8 @@ def _make_agent(graph: dict):
 
 def _validate_runtime_graph(graph_data: Any):
     graph = validate_graph_workflow(graph_data)
+    if _is_direct_chat_graph(graph):
+        return graph, {}
     supported_types = {
         "core.chat_input", "agent.react_runtime", "llm.chat", "react.response_router", "tools.dispatch", "llm.provider", "llm.gguf_loader", "llm.openai_loader",
         "prompt.provider", "prompt.markdown_file", "prompt.text", "prompt.join", "context.merge", "memory.provider", "skills.provider",
@@ -528,6 +553,8 @@ def _validate_runtime_graph(graph_data: Any):
         raise GraphWorkflowError(
             "当前运行器暂不支持这些节点: " + ", ".join(unsupported)
         )
+    if not any(node["type"] in {"agent.react_runtime", "llm.chat"} for node in graph.nodes):
+        raise GraphWorkflowError("无模型工作流目前支持：对话输入的 message 直接连接回复输出的 answer")
     bindings, _ = _graph_bindings(graph_data)
     node_map = {node["id"]: node for node in graph.nodes}
     for edge in graph.edges:
@@ -545,6 +572,20 @@ def _validate_runtime_graph(graph_data: Any):
         if provider_module_id != bindings.get(f"{target_handle}_id"):
             raise GraphWorkflowError("节点模块绑定与接口连接不一致")
     return graph, bindings
+
+
+def _is_direct_chat_graph(graph) -> bool:
+    if len(graph.nodes) != 2 or len(graph.edges) != 1:
+        return False
+    nodes = {node["id"]: node["type"] for node in graph.nodes}
+    edge = graph.edges[0]
+    return (
+        set(nodes.values()) == {"core.chat_input", "core.chat_output"}
+        and nodes.get(edge["source"]) == "core.chat_input"
+        and nodes.get(edge["target"]) == "core.chat_output"
+        and edge.get("sourceHandle") == "message"
+        and edge.get("targetHandle") == "answer"
+    )
 
 
 def _runtime_model_loaded() -> bool:
@@ -600,15 +641,26 @@ def _execution_graph_key(graph_data: dict) -> str:
 
 def start_graph(graph_data: Any) -> dict:
     """Activate a workflow and initialize its selected model without a prompt."""
-    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started
+    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started, _runtime_workflow_id
     graph, bindings = _validate_runtime_graph(graph_data)
     serialized_graph = json.dumps(graph_data, ensure_ascii=False, sort_keys=True)
     execution_key = _execution_graph_key(graph_data)
     with _runtime_lock:
+        if _is_direct_chat_graph(graph):
+            if _runtime_agent is not None:
+                _runtime_agent.stop()
+            _runtime_agent = None
+            _runtime_bindings = {}
+            _runtime_graph_key = serialized_graph
+            _runtime_execution_key = execution_key
+            _runtime_started = True
+            _runtime_workflow_id = graph.workflow_id
+            return {"running": True, "model_loaded": False, "workflow_id": graph.workflow_id}
         if _runtime_agent is None or _runtime_execution_key != execution_key:
             if _runtime_agent is not None:
                 _runtime_agent.stop()
             _runtime_started = False
+            _runtime_workflow_id = None
             _runtime_agent, _runtime_bindings = _make_agent(graph_data)
         _runtime_graph_key = serialized_graph
         _runtime_execution_key = execution_key
@@ -619,6 +671,7 @@ def start_graph(graph_data: Any) -> dict:
             elif not getattr(llm, "_initialized", False):
                 llm.initialize()
             _runtime_started = True
+            _runtime_workflow_id = graph.workflow_id
         except Exception:
             _runtime_agent.stop()
             _runtime_agent = None
@@ -626,6 +679,7 @@ def start_graph(graph_data: Any) -> dict:
             _runtime_execution_key = None
             _runtime_bindings = {}
             _runtime_started = False
+            _runtime_workflow_id = None
             raise
         return {
             "running": True,
@@ -636,7 +690,7 @@ def start_graph(graph_data: Any) -> dict:
 
 def stop_runtime() -> dict:
     """Stop the active Agent and release model resources."""
-    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started
+    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started, _runtime_workflow_id
     with _runtime_lock:
         agent = _runtime_agent
         try:
@@ -648,6 +702,7 @@ def stop_runtime() -> dict:
             _runtime_execution_key = None
             _runtime_bindings = {}
             _runtime_started = False
+            _runtime_workflow_id = None
     return {"running": False, "model_loaded": False}
 
 
@@ -658,7 +713,7 @@ def run_graph(
     require_started: bool = False,
     job_id: str | None = None,
 ) -> dict:
-    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started
+    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started, _runtime_workflow_id
     graph, bindings = _validate_runtime_graph(graph_data)
     serialized_graph = json.dumps(graph_data, ensure_ascii=False, sort_keys=True)
     execution_key = _execution_graph_key(graph_data)
@@ -669,10 +724,35 @@ def run_graph(
             raise GraphWorkflowError(
                 "Agent 尚未启动，或当前工作流与运行中的配置不同；请先在工作流页启动"
             )
+        if _is_direct_chat_graph(graph):
+            if _runtime_execution_key != execution_key:
+                _runtime_started = False
+                _runtime_workflow_id = None
+            if _runtime_agent is not None:
+                _runtime_agent.stop()
+                _runtime_agent = None
+                _runtime_bindings = {}
+                _runtime_started = False
+                _runtime_workflow_id = None
+            _runtime_graph_key = serialized_graph
+            _runtime_execution_key = execution_key
+            input_id = next(node["id"] for node in graph.nodes if node["type"] == "core.chat_input")
+            output_id = next(node["id"] for node in graph.nodes if node["type"] == "core.chat_output")
+            run_id = uuid.uuid4().hex
+            timestamp = datetime.now().astimezone().isoformat()
+            events = [
+                TraceEvent("workflow_started", run_id, data={"user_input": user_input}, timestamp=timestamp),
+                TraceEvent("node_output", run_id, input_id, {"content": user_input}, timestamp),
+                TraceEvent("node_output", run_id, output_id, {"content": user_input}, timestamp),
+                TraceEvent("workflow_completed", run_id, output_id, {"answer": user_input}, timestamp),
+            ]
+            return {"answer": user_input, "run_id": run_id, "events": [event.as_dict() for event in events],
+                    "previews": {input_id: user_input, output_id: user_input}, "workflow_id": graph.workflow_id}
         if _runtime_agent is None or _runtime_execution_key != execution_key:
             if _runtime_agent is not None:
                 _runtime_agent.stop()
             _runtime_started = False
+            _runtime_workflow_id = None
             _runtime_agent, _runtime_bindings = _make_agent(graph_data)
             _runtime_execution_key = execution_key
         _runtime_graph_key = serialized_graph
@@ -816,7 +896,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send(200, {
                 "running": _runtime_started,
                 "model_loaded": _runtime_model_loaded(),
-                "workflow_id": getattr(_runtime_agent, "workflow_id", None),
+                "workflow_id": _runtime_workflow_id,
             })
             return
         if self.path == "/api/nodes":
@@ -890,15 +970,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send(200, _save_user_profile(payload.get("content")))
                 return
             if self.path == "/api/workflows/save":
-                self._send(200, _save_graph_workflow(payload.get("workflow")))
+                self._send(200, _save_graph_workflow(payload.get("workflow"), payload.get("previous_id"), payload.get("create_only", False)))
                 return
             if self.path == "/api/stop":
                 self._send(200, stop_runtime())
                 return
             if self.path == "/api/start":
                 result = start_graph(payload.get("workflow"))
-                if _runtime_agent is not None:
-                    _runtime_agent.workflow_id = payload.get("workflow", {}).get("id")
                 self._send(200, result)
                 return
             user_input = payload.get("input", "").strip()

@@ -8,9 +8,10 @@ import {
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
+  useNodesInitialized,
   useReactFlow,
 } from '@xyflow/react';
-import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronDown, Code2, Copy, Expand, FilePlus2, Maximize2, Play, Save, Search, Square, Trash2, Workflow as WorkflowIcon, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronDown, Code2, Copy, Expand, FilePlus2, FolderOpen, Maximize2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Plus, Save, Search, Square, Trash2, Workflow as WorkflowIcon, X } from 'lucide-react';
 import WorkflowNode from './WorkflowNode';
 import { categoryMeta, getNodeDefinition, hydrateNodeCatalog, modelChoices, nodeCatalog } from './catalog';
 import { ThemePicker } from '../theme.jsx';
@@ -20,53 +21,7 @@ import { runWorkflowRequest } from './runApi';
 
 const nodeTypes = { workflow: WorkflowNode };
 const MIN_NODE_WIDTH = 216;
-const MAX_NODE_WIDTH = 680;
-
-function estimateTextWidth(value, fontSize = 14) {
-  return [...String(value ?? '')].reduce((width, character) => (
-    width + (/\p{Script=Han}/u.test(character) ? fontSize : fontSize * 0.62)
-  ), 0);
-}
-
-function estimateNodeSize(node) {
-  const kind = node.data?.kind || node.type;
-  const definition = getNodeDefinition(kind);
-  const data = node.data || {};
-  const config = data.config || {};
-  const titleLength = String(data.label || definition.label || '').length;
-  const typeLength = String(kind || '').length;
-  const measurePortColumn = (ports) => Math.max(0, ...ports.map((port) => (
-    19 + 16 + estimateTextWidth(port.label, 14) + (port.optional ? 58 : 0) + 26
-  )));
-  const inputWidth = measurePortColumn(definition.inputs || []);
-  const outputWidth = measurePortColumn(definition.outputs || []);
-  const contentTextWidth = Math.max(0, ...[
-    data.label || definition.label,
-    ...Object.values(config),
-    data.previewExpanded ? data.outputPreview : '',
-  ].flatMap((value) => String(value ?? '').split(/\r?\n/)).map((line) => estimateTextWidth(line, 13)));
-  const splitPortWidth = definition.inputs?.length && definition.outputs?.length
-    ? inputWidth + outputWidth + 16
-    : Math.max(inputWidth, outputWidth) + 16;
-  const width = Math.max(MIN_NODE_WIDTH, Math.min(MAX_NODE_WIDTH, Math.max(
-    230,
-    80 + titleLength * 8,
-    80 + typeLength * 7,
-    splitPortWidth,
-    58 + contentTextWidth,
-  )));
-  const rowCount = Math.max(definition.inputs?.length || 0, definition.outputs?.length || 0, 1);
-  const editableInput = kind === 'core.chat_input' || kind === 'prompt.text';
-  const modelSelect = ['llm.gguf_loader', 'llm.openai_loader', 'llm.provider'].includes(kind);
-  const preview = !definition.hideOutputPreview && !modelSelect && !['llm.chat', 'agent.react_runtime', 'react.loop'].includes(kind) && (definition.outputs?.length || kind === 'core.chat_output') ? 40 : 0;
-  const footer = data.module_id ? 30 : 0;
-  const debugInput = editableInput ? 106 : 0;
-  const modelSelectHeight = modelSelect ? (kind === 'llm.gguf_loader' ? 114 : kind === 'llm.openai_loader' ? 200 : 62) : kind === 'prompt.markdown_file' ? 62 : 0;
-  const configButtonHeight = ['skills.provider', 'tools.provider', 'memory.provider'].includes(kind) ? 46 : 0;
-  const apiFields = kind === 'llm.openai_loader' ? 104 : 0;
-  const height = 54 + Math.max(52, rowCount * 27 + 10) + debugInput + modelSelectHeight + apiFields + configButtonHeight + preview + footer;
-  return { width: Math.round(width), height: Math.round(height) };
-}
+let workspaceSession = null;
 
 function fromDocument(document) {
   return {
@@ -86,16 +41,10 @@ function fromDocument(document) {
         },
         },
       };
-      const estimated = estimateNodeSize(nextNode);
-      return {
-        ...nextNode,
-        width: node.data?.sizeMode === 'manual' && typeof node.width === 'number'
-          ? Math.min(node.width, MAX_NODE_WIDTH)
-          : estimated.width,
-        height: node.data?.sizeMode === 'manual' && typeof node.height === 'number'
-          ? node.height
-          : estimated.height,
-      };
+      const { width, height, measured, selected, dragging, resizing, ...cleanNode } = nextNode;
+      return node.data?.sizeMode === 'manual'
+        ? { ...cleanNode, width: Math.max(MIN_NODE_WIDTH, width || measured?.width || MIN_NODE_WIDTH), height: Math.max(72, height || measured?.height || 72), data: { ...cleanNode.data, manualHeight: node.data.manualHeight || height || measured?.height || 72 } }
+        : cleanNode;
     }),
     edges: document.edges.map((edge) => {
       const color = edgeColors[edge.sourceHandle] || '#667d72';
@@ -112,11 +61,11 @@ function toDocument(workflow, nodes, edges) {
     id: workflow.id,
     name: workflow.name,
     description: workflow.description ?? '',
-    nodes: nodes.map(({ type, ...node }) => {
-      const { kind, executionStatus, onDataChange, onPreviewToggle, onContentSize, onResizeEnd, onOpenConfig, onSaveCredential, credentialConfigured, modelOptions, promptFiles, outputPreview, previewUsage, ...data } = node.data;
+    nodes: nodes.map(({ type, width, height, measured, selected, dragging, resizing, ...node }) => {
+      const { kind, executionStatus, onDataChange, onPreviewToggle, onContentSize, onResizeStart, onResizeEnd, onOpenConfig, onSaveCredential, credentialConfigured, modelOptions, promptFiles, outputPreview, previewUsage, ...data } = node.data;
       const { api_key, ...config } = data.config || {};
       delete config.debug_input;
-      return { ...node, type: kind, data: { ...data, config } };
+      return { ...node, ...(data.sizeMode === 'manual' ? { width, height } : {}), type: kind, data: { ...data, config } };
     }),
     edges: edges.map(({ type, animated, selected, ...edge }) => edge),
     viewport: workflow.viewport ?? { x: 0, y: 0, zoom: 0.8 },
@@ -186,11 +135,22 @@ function validateGraph(nodes, edges, modelOptions = []) {
       }
     }
   }
-  if (!nodes.some((node) => ['agent.react_runtime', 'llm.chat'].includes(node.data.kind))) issues.push('工作流需要一个模型对话节点');
+  if (!nodes.some((node) => ['agent.react_runtime', 'llm.chat'].includes(node.data.kind)) && !isDirectChatGraph(nodes, edges)) issues.push('无模型工作流需要将对话输入直接连接到回复输出');
   if (!nodes.some((node) => node.data.kind === 'core.chat_input')) issues.push('工作流需要一个对话输入节点');
   if (!nodes.some((node) => node.data.kind === 'core.chat_output')) issues.push('工作流需要一个回复输出节点');
   issues.push(...validateExecutionLayout(nodes, edges, nodeMap));
   return issues;
+}
+
+function isDirectChatGraph(nodes, edges) {
+  if (nodes.length !== 2 || edges.length !== 1) return false;
+  const byId = Object.fromEntries(nodes.map((node) => [node.id, node.data.kind]));
+  const edge = edges[0];
+  return new Set(Object.values(byId)).size === 2
+    && byId[edge.source] === 'core.chat_input'
+    && byId[edge.target] === 'core.chat_output'
+    && edge.sourceHandle === 'message'
+    && edge.targetHandle === 'answer';
 }
 
 function downloadDocument(document) {
@@ -215,10 +175,10 @@ function PaletteItem({ definition, onAdd }) {
   );
 }
 
-function Inspector({ node, modelOptions = modelChoices, promptFiles = [], credentialConfigured = [], onSaveCredential, onChange, onDelete, onClose }) {
+function Inspector({ node, modelOptions = modelChoices, promptFiles = [], credentialConfigured = [], onSaveCredential, onChange, onDelete }) {
   if (!node) return (
     <aside className="inspector empty-inspector">
-      <div className="panel-heading"><div><span className="eyebrow">属性</span><h2>节点设置</h2></div><button className="icon-button" title="关闭属性面板" onClick={onClose}><X size={16} /></button></div>
+      <div className="panel-heading"><div><span className="eyebrow">属性</span><h2>节点设置</h2></div></div>
       <div className="empty-selection"><WorkflowIcon size={24} /><strong>选择一个节点</strong><span>查看接口、绑定模块和配置项</span></div>
     </aside>
   );
@@ -237,7 +197,7 @@ function Inspector({ node, modelOptions = modelChoices, promptFiles = [], creden
 
   return (
     <aside className="inspector">
-      <div className="panel-heading"><div><span className="eyebrow">节点属性</span><h2>配置</h2></div><button className="icon-button" title="关闭属性面板" onClick={onClose}><X size={16} /></button></div>
+      <div className="panel-heading"><div><span className="eyebrow">节点属性</span><h2>配置</h2></div></div>
       <div className="inspector-scroll">
         <div className="selected-node-summary">
           <span className={`palette-icon large ${meta.color}`}><Icon size={18} /></span>
@@ -308,21 +268,31 @@ function Inspector({ node, modelOptions = modelChoices, promptFiles = [], creden
   );
 }
 
-function WorkflowEditor({ initialDocument, onNavigate }) {
+function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, availableWorkflows, onNavigate, onLeave, onRefreshWorkflows, onOpenDocument, onSwitchWorkflow, onCloseWorkflow, onSaved }) {
   const initialGraph = fromDocument(initialDocument);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialGraph.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialGraph.edges);
   const [workflow, setWorkflow] = useState(initialDocument);
   const [selectedId, setSelectedId] = useState(null);
   const [search, setSearch] = useState('');
+  const [nodePicker, setNodePicker] = useState(null);
+  const [nodePickerSearch, setNodePickerSearch] = useState('');
+  const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
+  const [workflowSearch, setWorkflowSearch] = useState('');
+  const workflowMenuRef = useRef(null);
+  const [paletteCollapsed, setPaletteCollapsed] = useState(true);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(true);
   const [notice, setNotice] = useState('');
   const [jsonOpen, setJsonOpen] = useState(false);
   const [jsonText, setJsonText] = useState('');
   const [jsonCopied, setJsonCopied] = useState(false);
+  const [saveDialog, setSaveDialog] = useState(null);
+  const [saving, setSaving] = useState(false);
   const [runPanel, setRunPanel] = useState(false);
   const [runInput, setRunInput] = useState('你好，介绍一下你自己。');
   const [running, setRunning] = useState(false);
   const [agentRunning, setAgentRunning] = useState(false);
+  const [runtimeStatusLoaded, setRuntimeStatusLoaded] = useState(false);
   const [agentModelLoaded, setAgentModelLoaded] = useState(false);
   const [serverWorkflowId, setServerWorkflowId] = useState(null);
   const [agentStarting, setAgentStarting] = useState(false);
@@ -336,7 +306,30 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
   const [configKind, setConfigKind] = useState(null);
   const [previewRevision, setPreviewRevision] = useState(0);
   const [collapsedGroups, setCollapsedGroups] = useState({});
-  const { fitView, getViewport } = useReactFlow();
+  const { fitView, getViewport, screenToFlowPosition, setViewport } = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
+  const didInitialFit = useRef(false);
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    if (!nodesInitialized || didInitialFit.current) return;
+    didInitialFit.current = true;
+    requestAnimationFrame(() => initialDocument.viewport
+      ? setViewport(initialDocument.viewport, { duration: 0 })
+      : fitView({ padding: 0.24, duration: 0, maxZoom: 1 }));
+  }, [nodesInitialized, fitView, initialDocument.viewport, setViewport]);
+
+  useEffect(() => {
+    if (!workflowMenuOpen) return undefined;
+    const closeMenu = (event) => {
+      if (!workflowMenuRef.current?.contains(event.target)) setWorkflowMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', closeMenu);
+    return () => document.removeEventListener('pointerdown', closeMenu);
+  }, [workflowMenuOpen]);
+  useEffect(() => {
+    if (running || agentStarting || agentStopping) setWorkflowMenuOpen(false);
+  }, [running, agentStarting, agentStopping]);
 
   const previewSignature = useMemo(() => JSON.stringify({
     nodes: nodes.map((node) => ({ id: node.id, type: node.data.kind, config: node.data.config })),
@@ -355,7 +348,7 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
           const nextPreview = node.data.kind === 'core.chat_input' ? runInput : node.data.kind === 'prompt.text' ? node.data.config?.text ?? '' : result.previews?.[node.id];
           if (!hasPreview && !['core.chat_input', 'prompt.text'].includes(node.data.kind) || node.data.outputPreview === nextPreview) return node;
           const data = { ...node.data, outputPreview: nextPreview };
-          return { ...node, data, ...(data.sizeMode === 'manual' ? {} : estimateNodeSize({ ...node, data })) };
+          return { ...node, data };
         }));
       } catch { /* Preview is optional while the API is restarting. */ }
     }, 260);
@@ -395,11 +388,12 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
       .then((response) => response.ok ? response.json() : Promise.reject())
       .then((status) => {
         if (disposed) return;
+        setRuntimeStatusLoaded(true);
         setAgentRunning(Boolean(status.running));
         setAgentModelLoaded(Boolean(status.model_loaded));
         setServerWorkflowId(status.workflow_id || null);
       })
-      .catch(() => { if (!disposed) { setAgentRunning(false); setAgentModelLoaded(false); setServerWorkflowId(null); } });
+      .catch(() => { if (!disposed) { setRuntimeStatusLoaded(false); setAgentRunning(false); setAgentModelLoaded(false); setServerWorkflowId(null); } });
     refreshStatus();
     const timer = window.setInterval(refreshStatus, 2500);
     return () => { disposed = true; window.clearInterval(timer); };
@@ -427,9 +421,9 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
     setEdges((current) => addEdge({ ...connection, id: `e_${crypto.randomUUID().slice(0, 8)}`, type: 'smoothstep', style: { stroke: color, strokeWidth: 2 }, markerEnd: { type: 'arrowclosed', color, width: 15, height: 15 } }, current));
   }, [nodes, setEdges]);
 
-  const addNode = (definition) => {
+  const addNode = (definition, position) => {
     const id = `${definition.type.split('.').at(-1)}_${crypto.randomUUID().slice(0, 5)}`;
-    const center = { x: 380 + Math.random() * 260, y: 140 + Math.random() * 320 };
+    const center = position ?? { x: 380 + Math.random() * 260, y: 140 + Math.random() * 320 };
     const node = {
       id,
       type: 'workflow',
@@ -445,25 +439,48 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
         },
       },
     };
-    setNodes((current) => [...current, { ...node, ...estimateNodeSize(node) }]);
+    setNodes((current) => [...current, node]);
     setSelectedId(id);
   };
+  const openNodePicker = (event) => {
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+    setSelectedId(null);
+    setNodePickerSearch('');
+    setNodePicker({
+      x: Math.max(8, Math.min(event.clientX - bounds.left, bounds.width - 320)),
+      y: Math.max(8, Math.min(event.clientY - bounds.top, bounds.height - 430)),
+      position: screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+    });
+  };
+  const pickerGroups = [...new Set([...Object.keys(categoryMeta), ...nodeCatalog.map((item) => item.category)])].map((category) => ({ category, items: nodeCatalog.filter((item) => !item.legacy && item.category === category && `${item.label} ${item.type}`.toLowerCase().includes(nodePickerSearch.toLowerCase())) })).filter((group) => group.items.length);
 
   const updateNode = useCallback((id, data) => setNodes((current) => current.map((node) => {
     if (node.id !== id) return node;
     const nextData = { ...node.data, ...data };
-    const size = nextData.sizeMode === 'manual' ? {} : estimateNodeSize({ ...node, data: nextData });
-    return { ...node, ...size, data: nextData };
+    return { ...node, data: nextData };
   })), [setNodes]);
   const syncNodeHeight = useCallback((id, measuredHeight) => {
-    setNodes((current) => current.map((node) => {
-      if (node.id !== id || Math.abs((node.height || 0) - measuredHeight) < 2) return node;
-      return { ...node, height: measuredHeight };
-    }));
+    setNodes((current) => {
+      const target = current.find((node) => node.id === id);
+      if (!target || target.data.sizeMode !== 'manual' || target.resizing) return current;
+      const height = Math.max(target.data.manualHeight || 72, measuredHeight);
+      if (Math.abs((target.height || 0) - height) < 2) return current;
+      return current.map((node) => node.id === id ? { ...node, height } : node);
+    });
   }, [setNodes]);
   const markNodeManuallySized = useCallback((id) => {
+    setNodes((current) => {
+      const target = current.find((node) => node.id === id);
+      if (!target || (target.data.sizeMode === 'manual' && target.width && target.height)) return current;
+      return current.map((node) => node.id === id
+        ? { ...node, width: node.width || node.measured?.width || MIN_NODE_WIDTH, height: node.height || node.measured?.height || 72, data: { ...node.data, sizeMode: 'manual', manualHeight: node.height || node.measured?.height || 72 } }
+        : node);
+    });
+  }, [setNodes]);
+  const finishNodeResize = useCallback((id, dimensions) => {
     setNodes((current) => current.map((node) => node.id === id
-      ? { ...node, data: { ...node.data, sizeMode: 'manual' } }
+      ? { ...node, data: { ...node.data, sizeMode: 'manual', manualHeight: dimensions?.height || node.height || 72 } }
       : node));
   }, [setNodes]);
   const togglePreview = useCallback((id, expanded) => {
@@ -477,67 +494,64 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
   }, [setNodes]);
   const autoSizeNodes = useCallback(() => {
     setNodes((current) => current.map((node) => {
-      const data = { ...node.data, sizeMode: 'auto' };
-      return { ...node, ...estimateNodeSize({ ...node, data }), data };
+      const { manualHeight, ...nodeData } = node.data;
+      const data = { ...nodeData, sizeMode: 'auto' };
+      const { width, height, measured, ...intrinsicNode } = node;
+      return { ...intrinsicNode, data };
     }));
     setNotice('所有节点已按内容自适应尺寸');
     window.setTimeout(() => setNotice(''), 2400);
   }, [setNodes]);
-  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, data: { ...node.data, modelOptions, promptFiles, credentialConfigured, onSaveCredential: saveCredential, onOpenConfig: setConfigKind, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeEnd: markNodeManuallySized } })), [nodes, modelOptions, promptFiles, credentialConfigured, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized]);
+  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, data: { ...node.data, modelOptions, promptFiles, credentialConfigured, onSaveCredential: saveCredential, onOpenConfig: setConfigKind, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, modelOptions, promptFiles, credentialConfigured, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
   const deleteNode = (id) => {
     setNodes((current) => current.filter((node) => node.id !== id));
     setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));
     setSelectedId(null);
   };
   const currentDocument = () => ({ ...toDocument(workflow, nodes, edges), viewport: getViewport() });
-  const saveLocal = async () => {
-    const document = currentDocument();
-    const content = JSON.stringify(document, null, 2);
-    let response;
+  const openSaveDialog = (mode) => setSaveDialog({ mode, name: workflow.name, id: persisted ? workflow.id : '' });
+  const saveDocument = async (document, mode = 'save') => {
+    if (saving) return;
+    setSaving(true);
     try {
-      response = await fetch('/api/workflows/save', {
+      const response = await fetch('/api/workflows/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workflow: document }),
+        body: JSON.stringify({ workflow: document, previous_id: persisted ? workflow.id : null, create_only: !persisted }),
       });
-    } catch {
-      response = null;
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      try { localStorage.setItem('atri.workflow.v2', JSON.stringify(document)); } catch { /* The workflow file is the persistent copy. */ }
+      setWorkflow(document);
+      setSaveDialog(null);
+      onSaved(document, workflow.id);
+      onRefreshWorkflows().catch(() => {});
+      setNotice(`${mode === 'rename' ? '已重命名并保存' : '已保存'}：workflows/${document.id}.json`);
+    } catch (error) {
+      setNotice(`保存失败：${error.message}`);
+    } finally {
+      setSaving(false);
+      window.setTimeout(() => setNotice(''), 4000);
     }
-    if (response) {
-      let result = {};
-      try { result = await response.json(); } catch { /* Report the HTTP status below. */ }
-      if (!response.ok) {
-        setNotice(`保存失败：${result.error || `HTTP ${response.status}`}`);
-        window.setTimeout(() => setNotice(''), 4000);
-        return;
-      }
-      try { localStorage.setItem('atri.workflow.v2', content); } catch { /* The workflow file is the persistent copy. */ }
-      setNotice(`已保存到 workflows/${document.id}.json，刷新页面可重新加载`);
-      window.setTimeout(() => setNotice(''), 3200);
+  };
+  const saveLocal = () => persisted ? saveDocument(currentDocument()) : openSaveDialog('new');
+  const submitSaveDialog = (event) => {
+    event.preventDefault();
+    const id = saveDialog.id.trim().replace(/\.json$/i, '');
+    const name = saveDialog.name.trim();
+    if (!name || !/^[A-Za-z0-9_-]+$/.test(id)) {
+      setNotice('请输入名称；文件名只能使用英文字母、数字、下划线和连字符');
       return;
     }
-
-    const filename = `${document.id || 'workflow'}.json`;
-    try {
-      if (window.showSaveFilePicker) {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: filename,
-          types: [{ description: 'ATRI 工作流', accept: { 'application/json': ['.json'] } }],
-        });
-        const writable = await handle.createWritable();
-        await writable.write(content);
-        await writable.close();
-        setNotice(`工作流已保存到本地文件：${handle.name}`);
-      } else {
-        downloadDocument(document);
-        setNotice(`工作流 JSON 已下载：${filename}`);
-      }
-    } catch (error) {
-      if (error.name === 'AbortError') return;
-      downloadDocument(document);
-      setNotice(`无法直接写入所选位置，已下载工作流：${filename}`);
+    if (id !== workflow.id && openTabs.some((tab) => tab.id === id)) {
+      setNotice('该文件名已在其他标签中打开');
+      return;
     }
-    window.setTimeout(() => setNotice(''), 3200);
+    if (agentRunning && serverWorkflowId === workflow.id && id !== workflow.id) {
+      setNotice('请先停止运行中的工作流，再重命名文件');
+      return;
+    }
+    saveDocument({ ...currentDocument(), id, name }, saveDialog.mode);
   };
   const openJson = () => {
     setJsonText(JSON.stringify(currentDocument(), null, 2));
@@ -548,6 +562,12 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
     try {
       const parsed = JSON.parse(jsonText);
       if (parsed.workflow_version !== 2 || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) throw new Error('需要 workflow_version 2，且包含 nodes / edges 数组');
+      if (!parsed.id || !parsed.name) throw new Error('工作流需要 id 和 name');
+      if (parsed.id !== workflow.id) {
+        if (openTabs.some((tab) => tab.id === parsed.id)) throw new Error('该工作流已在其他标签中打开');
+        onOpenDocument(parsed, currentDocument(), false);
+        return;
+      }
       const nextGraph = fromDocument(parsed);
       setWorkflow(parsed);
       setNodes(nextGraph.nodes);
@@ -585,6 +605,25 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
     window.setTimeout(() => setNotice(''), 2800);
   };
   const exportJson = () => downloadDocument(currentDocument());
+  const openWorkflowMenu = async () => {
+    if (workflowMenuOpen) { setWorkflowMenuOpen(false); return; }
+    setWorkflowSearch('');
+    setWorkflowMenuOpen(true);
+    try { await onRefreshWorkflows(); } catch { setNotice('无法读取工作流文件夹，请检查后端服务'); }
+  };
+  const createWorkflow = () => {
+    const document = {
+      workflow_version: 2,
+      id: `workflow_${crypto.randomUUID().slice(0, 8)}`,
+      name: '未命名工作流',
+      description: '',
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      metadata: { status: 'design', executable: false },
+    };
+    onOpenDocument(document, currentDocument(), false);
+  };
   const startAgent = async () => {
     if (issues.length) {
       setNotice(`先修复工作流问题：${issues[0]}`);
@@ -593,7 +632,7 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
     }
     const document = currentDocument();
     setAgentStarting(true);
-    setNotice('正在启动工作流并加载模型…');
+    setNotice(isDirectChatGraph(nodes, edges) ? '正在启动直通工作流…' : '正在启动工作流并加载模型…');
     try {
       const response = await fetch('/api/start', {
         method: 'POST',
@@ -611,7 +650,7 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
       setServerWorkflowId(payload.workflow_id || document.id);
       window.dispatchEvent(new Event('atri-workflow-applied'));
       window.dispatchEvent(new Event('atri-runtime-status'));
-      setNotice('工作流运行中，模型已加载');
+      setNotice(payload.model_loaded ? '工作流运行中，模型已加载' : '直通工作流运行中');
       window.setTimeout(() => setNotice(''), 2800);
     } catch (error) {
       setAgentRunning(false);
@@ -649,6 +688,14 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
   };
   const runWorkflow = async () => {
     if (!runInput.trim()) return;
+    if (!runtimeStatusLoaded) {
+      setNotice('正在确认后端运行状态，请稍后重试');
+      return;
+    }
+    if (agentRunning && serverWorkflowId !== workflow.id) {
+      setNotice(`请先停止运行中的工作流：${serverWorkflowId}`);
+      return;
+    }
     setRunning(true);
     setRunResult(null);
     setLiveEvents([]);
@@ -658,7 +705,7 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
       const payload = await runWorkflowRequest({ workflow: currentDocument(), input: runInput, mode: 'transparent' }, (events) => { setLiveEvents(events); lastEventsRef.current = events; });
       setRunResult(payload);
       lastEventsRef.current = payload.events || [];
-      setAgentModelLoaded(true);
+      setAgentModelLoaded(!isDirectChatGraph(nodes, edges));
       setNodes((current) => current.map((node) => {
         let data = node.data;
         if (Object.hasOwn(payload.previews || {}, node.id)) data = { ...node.data, outputPreview: payload.previews[node.id] };
@@ -668,8 +715,7 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
         }
         if (node.data.kind === 'core.chat_input') data = { ...data, config: { ...(data.config || {}), debug_input: runInput } };
         if (data === node.data) return node;
-        const size = data.sizeMode === 'manual' ? {} : estimateNodeSize({ ...node, data });
-        return { ...node, ...size, data };
+        return { ...node, data };
       }));
       const providerByModule = Object.fromEntries(nodes.filter((node) => node.data.module_id).map((node) => [node.data.module_id, node.id]));
       const nodeById = Object.fromEntries(nodes.map((node) => [node.id, node]));
@@ -707,25 +753,47 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
       <header className="topbar">
         <div className="brand-lockup"><div className="brand-mark">A</div><div><strong>ATRI <span>STUDIO</span></strong><small>WORKFLOW DESIGNER</small></div></div>
         <div className="topbar-divider" />
-        <nav className="app-nav"><button onClick={() => onNavigate('chat')}>对话</button><button className="active" onClick={() => onNavigate('workflow')}>工作流</button></nav>
-        <div className="workflow-identity"><span className="crumb">工作流</span><span className="crumb-separator">/</span><input aria-label="工作流名称" value={workflow.name} onChange={(event) => setWorkflow((current) => ({ ...current, name: event.target.value }))} /></div>
+        <nav className="app-nav"><button onClick={() => onLeave(currentDocument())}>对话</button><button className="active" onClick={() => onNavigate('workflow')}>工作流</button></nav>
+        <div className="workflow-identity"><span className="crumb">工作流</span><span className="crumb-separator">/</span><button className="workflow-name-button" onClick={() => openSaveDialog('rename')} disabled={saving || agentStarting || agentStopping} title="点击重命名工作流和文件" aria-label={`重命名 ${workflow.name}`}>{workflow.name}</button></div>
         <div className="topbar-spacer" />
         <span className="draft-status"><span className={agentRunning && serverWorkflowId === workflow.id ? 'applied' : ''} />{agentRunning && serverWorkflowId === workflow.id ? '当前 Agent 配置' : agentRunning ? `运行中：${serverWorkflowId || '其他工作流'}` : '未启动 / 未应用'}</span>
         <button className="icon-button json-button" onClick={openJson} title="查看和编辑工作流 JSON"><Code2 size={16} /><span>JSON</span></button>
         <ThemePicker />
         <label className="icon-button" title="导入工作流 JSON"><ArrowUpFromLine size={16} /><input className="file-input" type="file" accept="application/json,.json" onChange={importFile} /></label>
         <button className="icon-button export-button" onClick={exportJson} title="导出工作流 JSON"><ArrowDownToLine size={16} /></button>
-        <button className="secondary-button reset-workflow-button" onClick={() => { setWorkflow(initialDocument); const graph = fromDocument(initialDocument); setNodes(graph.nodes); setEdges(graph.edges); setSelectedId(null); }} title="重置示例工作流"><FilePlus2 size={15} /><span>重置</span></button>
-        <button className="secondary-button save-draft-button" onClick={saveLocal} title="保存工作流草稿到本机"><Save size={15} /><span>保存</span></button>
+        <button className="secondary-button reset-workflow-button" onClick={() => { setWorkflow(savedDocument); const graph = fromDocument(savedDocument); setNodes(graph.nodes); setEdges(graph.edges); setSelectedId(null); }} title="恢复当前工作流的已保存版本"><FilePlus2 size={15} /><span>重置</span></button>
+        <button className="secondary-button save-draft-button" onClick={saveLocal} disabled={saving} title="保存工作流到项目文件"><Save size={15} /><span>{saving ? '保存中' : '保存'}</span></button>
       </header>
 
-      <main className="workspace">
+      <div className="workflow-tabs">
+        <div className="workflow-open" ref={workflowMenuRef}>
+          <button className="workflow-open-button" onClick={openWorkflowMenu} disabled={running || agentStarting || agentStopping} aria-expanded={workflowMenuOpen} title="打开工作流"><FolderOpen size={16} /><span>打开工作流</span><ChevronDown size={14} /></button>
+          {workflowMenuOpen && <div className="workflow-open-menu" onKeyDown={(event) => { if (event.key === 'Escape') setWorkflowMenuOpen(false); }}>
+            <label><Search size={14} /><input autoFocus value={workflowSearch} onChange={(event) => setWorkflowSearch(event.target.value)} placeholder="搜索工作流" /></label>
+            <div className="workflow-open-list">{availableWorkflows.filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(workflowSearch.toLowerCase())).map((item) => <button key={item.id} onClick={() => { onOpenDocument(item.document, currentDocument(), true); setWorkflowMenuOpen(false); }}><WorkflowIcon size={15} /><span><strong>{item.name}</strong><small>{item.id}</small></span>{openTabs.some((tab) => tab.id === item.id) && <small>已打开</small>}</button>)}
+              {availableWorkflows.length === 0 && <span className="no-results">工作流文件夹为空</span>}
+            </div>
+            <button className="workflow-create-button" onClick={createWorkflow}><Plus size={16} />新建空白工作流</button>
+          </div>}
+        </div>
+        <div className="workflow-tab-list" role="tablist" aria-label="已打开的工作流">
+          {openTabs.map((tab) => <div className={`workflow-tab ${tab.id === initialDocument.id ? 'active' : ''}`} key={tab.id}>
+            <button role="tab" aria-selected={tab.id === initialDocument.id} title={tab.id} disabled={running || agentStarting || agentStopping} onClick={() => onSwitchWorkflow(tab.id, currentDocument())}>
+              {agentRunning && serverWorkflowId === tab.id && <span className="workflow-tab-running" />}
+              <span>{tab.id === initialDocument.id ? workflow.name : tab.document.name}</span>
+            </button>
+            {openTabs.length > 1 && <button className="workflow-tab-close" title={`关闭 ${tab.document.name}`} aria-label={`关闭 ${tab.document.name}`} disabled={!runtimeStatusLoaded || running || agentStarting || agentStopping || (agentRunning && serverWorkflowId === tab.id)} onClick={() => onCloseWorkflow(tab.id, currentDocument())}><X size={13} /></button>}
+          </div>)}
+        </div>
+      </div>
+
+      <main className={`workspace ${paletteCollapsed ? 'palette-collapsed' : ''} ${inspectorCollapsed ? 'inspector-collapsed' : ''}`}>
         <aside className="palette">
           <div className="panel-heading"><div><span className="eyebrow">工作流构建器</span><h2>节点库</h2></div></div>
           <div className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索节点" /></div>
           <div className="palette-scroll">
             {groups.map((group) => {
-              const meta = categoryMeta[group.category];
+              const meta = categoryMeta[group.category] || categoryMeta.control;
               const collapsed = Boolean(collapsedGroups[group.category]);
               return <section className="palette-group" key={group.category}><button className="group-heading" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((current) => ({ ...current, [group.category]: !current[group.category] }))}><span className={`group-indicator ${meta.color}`} /><span>{meta.label}</span><span className="group-count">{group.items.length}</span><ChevronDown size={13} /></button>{!collapsed && group.items.map((definition) => <PaletteItem key={definition.type} definition={definition} onAdd={addNode} />)}</section>;
             })}
@@ -736,18 +804,19 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
 
         <section className="canvas-area">
           <div className="canvas-toolbar">
+            <button className="icon-button sidebar-toggle" onClick={() => setPaletteCollapsed((value) => !value)} title={paletteCollapsed ? '展开节点库' : '收起节点库'} aria-label={paletteCollapsed ? '展开节点库' : '收起节点库'} aria-expanded={!paletteCollapsed}>{paletteCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>
             <div className="canvas-tab active"><WorkflowIcon size={15} />画布</div>
             <div className="canvas-toolbar-spacer" />
             <div className="graph-readout"><span>{nodes.length} 节点</span><span className="readout-separator">·</span><span>{edges.length} 连接</span></div>
-            <button className="icon-button run-button" onClick={runValidation} title="检查接口"><Check size={15} /></button>
             <button className="secondary-button auto-size-button" onClick={autoSizeNodes} title="让所有节点按内容自适应长宽"><Maximize2 size={15} /><span>自适应</span></button>
             <button className="icon-button" onClick={() => fitView({ padding: 0.24, duration: 250 })} title="适配画布"><Expand size={15} /></button>
+            <button className="icon-button sidebar-toggle" onClick={() => setInspectorCollapsed((value) => !value)} title={inspectorCollapsed ? '展开节点属性' : '收起节点属性'} aria-label={inspectorCollapsed ? '展开节点属性' : '收起节点属性'} aria-expanded={!inspectorCollapsed}>{inspectorCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}</button>
           </div>
-          <div className="canvas-wrap">
+          <div className="canvas-wrap" ref={canvasRef}>
             <div className="canvas-caption"><span className="caption-chip">GRAPH V2</span><span>能力模块通过类型化接口连接到运行时</span></div>
             <div className="workflow-run-controls" role="group" aria-label="工作流运行控制">
-              <button className={`workflow-control-button start-control ${agentRunning ? 'is-running' : ''}`} disabled={agentRunning || agentStarting} onClick={startAgent} title={agentRunning ? '当前工作流正在运行' : '启动当前工作流并加载模型'}>
-                {agentStarting ? <span className="spinner" /> : <Play size={15} fill="currentColor" />}{agentRunning ? '运行中' : agentStarting ? '启动中' : '启动'}
+              <button className={`workflow-control-button start-control ${agentRunning && serverWorkflowId === workflow.id ? 'is-running' : ''}`} disabled={!runtimeStatusLoaded || agentRunning || agentStarting} onClick={startAgent} title={agentRunning ? `正在运行：${serverWorkflowId}` : '启动当前工作流'}>
+                {agentStarting ? <span className="spinner" /> : <Play size={15} fill="currentColor" />}{agentRunning ? serverWorkflowId === workflow.id ? '运行中' : '其他运行中' : agentStarting ? '启动中' : '启动'}
               </button>
               <button className="workflow-control-button stop-control" disabled={(!agentRunning && !agentModelLoaded) || agentStopping} onClick={stopAgent} title="停止工作流并卸载模型">
                 {agentStopping ? <span className="spinner" /> : <Square size={14} fill="currentColor" />}{agentStopping ? '停止中' : '停止'}
@@ -763,11 +832,10 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
               onNodeClick={(_, node) => setSelectedId(node.id)}
-              onPaneClick={() => setSelectedId(null)}
+              onPaneClick={(event) => event.detail === 2 ? openNodePicker(event) : setSelectedId(null)}
+              zoomOnDoubleClick={false}
               onNodesDelete={(deleted) => { if (deleted.some((node) => node.id === selectedId)) setSelectedId(null); }}
               isValidConnection={() => true}
-              fitView
-              fitViewOptions={{ padding: 0.24 }}
               minZoom={0.25}
               maxZoom={1.6}
               deleteKeyCode={['Backspace', 'Delete']}
@@ -780,31 +848,42 @@ function WorkflowEditor({ initialDocument, onNavigate }) {
                 return ({ mint: '#62b9a1', coral: '#e48571', blue: '#719ad0', amber: '#d3aa61', green: '#72a97c', violet: '#9681bf' })[group.color] ?? '#90a09a';
               }} />
             </ReactFlow>
+            {nodePicker && <div className="node-picker-backdrop" onMouseDown={() => setNodePicker(null)}>
+              <section className="node-picker" role="dialog" aria-label="添加节点" style={{ left: nodePicker.x, top: nodePicker.y }} onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') setNodePicker(null); }}>
+                <label className="node-picker-search"><Search size={16} /><input autoFocus value={nodePickerSearch} onChange={(event) => setNodePickerSearch(event.target.value)} placeholder="搜索节点名称或类型" /></label>
+                <div className="node-picker-list">{pickerGroups.map((group) => <section key={group.category}><span className="node-picker-category">{categoryMeta[group.category]?.label || group.category}</span>{group.items.map((definition) => {
+                  const meta = categoryMeta[definition.category] || categoryMeta.control;
+                  const Icon = meta.icon;
+                  return <button key={definition.type} onClick={() => { addNode(definition, nodePicker.position); setNodePicker(null); }}><span className={`palette-icon ${meta.color}`}><Icon size={16} /></span><span><strong>{definition.label}</strong><small>{definition.type}</small></span><Plus size={15} /></button>;
+                })}</section>)}{pickerGroups.length === 0 && <div className="no-results">没有匹配的节点</div>}</div>
+              </section>
+            </div>}
             {runPanel && <div className="run-drawer">
               <div className="run-drawer-heading"><div><span className="eyebrow">WORKFLOW RUN</span><strong>试运行</strong></div><span className="transparent-mode-label">透明模式</span><button className="icon-button" onClick={() => setRunPanel(false)} title="关闭试运行"><X size={15} /></button></div>
               <textarea value={runInput} onChange={(event) => setRunInput(event.target.value)} placeholder="输入一条消息…" />
-              <div className="run-drawer-actions"><span>{issues[0] || '将使用当前画布配置运行 Agent'}</span><button className="run-top-button" disabled={running || issues.length > 0} onClick={runWorkflow}>{running ? <span className="spinner" /> : <Play size={13} fill="currentColor" />}{running ? '运行中…' : '运行工作流'}</button></div>
+              <div className="run-drawer-actions"><span>{agentRunning && serverWorkflowId !== workflow.id ? `请先停止运行中的工作流：${serverWorkflowId}` : issues[0] || '将使用当前画布配置运行工作流'}</span><button className="run-top-button" disabled={!runtimeStatusLoaded || running || issues.length > 0 || (agentRunning && serverWorkflowId !== workflow.id)} onClick={runWorkflow}>{running ? <span className="spinner" /> : <Play size={13} fill="currentColor" />}{running ? '运行中…' : '运行工作流'}</button></div>
               {running && liveEvents.length > 0 && <TraceView events={liveEvents} />}
-              {runResult && <div className={`run-output ${runResult.error ? 'has-error' : ''}`}><strong>{runResult.error ? '运行失败' : 'Agent 回复'}</strong><p>{runResult.error || runResult.answer}</p>{runResult.events?.length > 0 && <TraceView events={runResult.events} />}</div>}
+              {runResult && <div className={`run-output ${runResult.error ? 'has-error' : ''}`}><strong>{runResult.error ? '运行失败' : '工作流输出'}</strong><p>{runResult.error || runResult.answer}</p>{runResult.events?.length > 0 && <TraceView events={runResult.events} />}</div>}
             </div>}
             {notice && <div className={`toast ${notice.startsWith('发现') || notice.startsWith('JSON 错误') ? 'warning' : ''}`}>{notice}</div>}
           </div>
           <div className="canvas-status"><div className="status-left"><span className={`status-light ${issues.length ? 'warn' : 'ok'}`} />{issues.length ? `${issues.length} 项待检查` : '接口连接正常'}<span className="status-sep">|</span><span>自动布局关闭</span></div><button onClick={runValidation}><Check size={13} />验证图结构</button></div>
         </section>
 
-        <Inspector node={selectedNode} modelOptions={modelOptions} promptFiles={promptFiles} credentialConfigured={credentialConfigured} onSaveCredential={saveCredential} onChange={updateNode} onDelete={deleteNode} onClose={() => setSelectedId(null)} />
+        <Inspector node={selectedNode} modelOptions={modelOptions} promptFiles={promptFiles} credentialConfigured={credentialConfigured} onSaveCredential={saveCredential} onChange={updateNode} onDelete={deleteNode} />
       </main>
 
       <footer className="app-footer"><span>ATRI · LOCAL WORKSPACE</span><span className="execution-note"><span className="note-dot" />试运行调用当前 Agent · 应用后在对话页使用</span></footer>
 
       {jsonOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setJsonOpen(false); }}><section className="json-modal"><header><div><span className="eyebrow">WORKFLOW DOCUMENT</span><h2>工作流 JSON</h2></div><button className="icon-button" onClick={() => setJsonOpen(false)} title="关闭"><X size={17} /></button></header><textarea spellCheck="false" value={jsonText} onChange={(event) => { setJsonText(event.target.value); setJsonCopied(false); }} /><div className="modal-footer"><span>版本 2 · 节点 {nodes.length} · 连接 {edges.length}</span><div><button className="secondary-button" onClick={copyJson}>{jsonCopied ? <Check size={14} /> : <Copy size={14} />}{jsonCopied ? '已复制' : '复制'}</button><button className="primary-button" onClick={applyJson}><Check size={14} />应用到画布</button></div></div></section></div>}
+      {saveDialog && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setSaveDialog(null); }}><form className="workflow-save-modal" onSubmit={submitSaveDialog} role="dialog" aria-label={saveDialog.mode === 'new' ? '保存新工作流' : '重命名工作流'}><header><h2>{saveDialog.mode === 'new' ? '保存新工作流' : '重命名工作流'}</h2><button type="button" className="icon-button" onClick={() => setSaveDialog(null)} disabled={saving} title="关闭"><X size={17} /></button></header><label>显示名称<input autoFocus value={saveDialog.name} onChange={(event) => setSaveDialog((current) => ({ ...current, name: event.target.value }))} placeholder="工作流名称" /></label><label>文件名<input value={saveDialog.id} onChange={(event) => setSaveDialog((current) => ({ ...current, id: event.target.value }))} placeholder="my_workflow" spellCheck="false" /><small>保存在 workflows/ 目录，自动添加 .json</small></label><footer><button type="button" className="secondary-button" onClick={() => setSaveDialog(null)} disabled={saving}>取消</button><button type="submit" className="primary-button" disabled={saving}><Save size={15} />{saving ? '保存中' : '保存'}</button></footer></form></div>}
       {configKind && <CapabilityPanel kind={configKind} onClose={() => setConfigKind(null)} onChanged={() => setPreviewRevision((value) => value + 1)} />}
     </div>
   );
 }
 
-function EditorFrame({ initialDocument, onNavigate }) {
-  return <WorkflowEditor initialDocument={initialDocument} onNavigate={onNavigate} />;
+function EditorFrame(props) {
+  return <WorkflowEditor {...props} />;
 }
 
 function isLegacyDefault(document) {
@@ -812,25 +891,85 @@ function isLegacyDefault(document) {
 }
 
 export default function WorkflowApp({ onNavigate }) {
-  const [document, setDocument] = useState(null);
+  const [workspaceState, setWorkspaceState] = useState(null);
   useEffect(() => {
     Promise.all([
       fetch('/api/nodes').then((response) => response.ok ? response.json() : Promise.reject()).catch(() => null),
       fetch('/api/workflows').then((response) => response.ok ? response.json() : Promise.reject()).catch(() => null),
     ]).then(([nodePayload, workflowPayload]) => {
       if (Array.isArray(nodePayload?.nodes) && nodePayload.nodes.length) hydrateNodeCatalog(nodePayload.nodes);
-      const diskWorkflow = workflowPayload?.workflows?.[0]?.document;
+      const available = workflowPayload?.workflows || [];
+      if (workspaceSession) {
+        setWorkspaceState({ ...workspaceSession, available });
+        return;
+      }
+      const openInitial = (document) => setWorkspaceState({ tabs: [{ id: document.id, document, savedDocument: document, persisted: true }], activeId: document.id, available });
+      try {
+        const previous = JSON.parse(localStorage.getItem('atri.open.workflow.tabs') || 'null');
+        const tabs = previous?.ids?.map((id) => available.find((item) => item.id === id)).filter(Boolean).map((item) => ({ id: item.id, document: item.document, savedDocument: item.document, persisted: true }));
+        if (tabs?.length) {
+          setWorkspaceState({ tabs, activeId: tabs.some((tab) => tab.id === previous.activeId) ? previous.activeId : tabs[0].id, available });
+          return;
+        }
+      } catch { /* Fall back to the newest workflow on disk. */ }
+      const diskWorkflow = available[0]?.document;
       if (diskWorkflow) {
-        setDocument(diskWorkflow);
+        openInitial(diskWorkflow);
         return;
       }
       try {
         const saved = JSON.parse(localStorage.getItem('atri.workflow.v2') || 'null');
-        if (saved && !isLegacyDefault(saved)) { setDocument(saved); return; }
+        if (saved && !isLegacyDefault(saved)) { openInitial(saved); return; }
       } catch { /* Fall back to the bundled graph when no local workflow is readable. */ }
-      fetch('/companion_graph.json').then((response) => response.json()).then(setDocument);
+      fetch('/companion_graph.json').then((response) => response.json()).then(openInitial);
     });
   }, []);
-  if (!document) return <div className="loading-screen">ATRI WORKFLOW STUDIO</div>;
-  return <ReactFlowProvider><EditorFrame initialDocument={document} onNavigate={onNavigate} /></ReactFlowProvider>;
+  useEffect(() => {
+    if (!workspaceState) return;
+    try { localStorage.setItem('atri.open.workflow.tabs', JSON.stringify({ ids: workspaceState.tabs.map((tab) => tab.id), activeId: workspaceState.activeId })); } catch { /* Tab restoration is optional. */ }
+  }, [workspaceState?.tabs, workspaceState?.activeId]);
+  const rememberActive = (tabs, activeId, snapshot) => tabs.map((tab) => tab.id === activeId ? { ...tab, document: snapshot } : tab);
+  const switchWorkflow = (id, snapshot) => setWorkspaceState((current) => current && current.tabs.some((tab) => tab.id === id)
+    ? { ...current, tabs: rememberActive(current.tabs, current.activeId, snapshot), activeId: id }
+    : current);
+  const openDocument = (document, snapshot, persisted = false) => setWorkspaceState((current) => {
+    if (!current) return current;
+    const tabs = rememberActive(current.tabs, current.activeId, snapshot);
+    if (!tabs.some((tab) => tab.id === document.id)) tabs.push({ id: document.id, document, savedDocument: document, persisted });
+    return { ...current, tabs, activeId: document.id };
+  });
+  const closeWorkflow = (id, snapshot) => {
+    const tab = workspaceState?.tabs.find((item) => item.id === id);
+    if (!tab || workspaceState.tabs.length < 2) return;
+    const document = id === workspaceState.activeId ? snapshot : tab.document;
+    const comparable = (value) => {
+      const graph = fromDocument(value);
+      const { viewport, ...persisted } = toDocument(value, graph.nodes, graph.edges);
+      return JSON.stringify(persisted);
+    };
+    if ((!tab.persisted || comparable(document) !== comparable(tab.savedDocument)) && !window.confirm(`关闭“${document.name}”？未保存的修改会丢失。`)) return;
+    setWorkspaceState((current) => {
+      const tabs = rememberActive(current.tabs, current.activeId, snapshot).filter((item) => item.id !== id);
+      return { ...current, tabs, activeId: current.activeId === id ? tabs[Math.max(0, current.tabs.findIndex((item) => item.id === id) - 1)].id : current.activeId };
+    });
+  };
+  const refreshWorkflows = async () => {
+    const response = await fetch('/api/workflows');
+    if (!response.ok) throw new Error('无法读取工作流文件夹');
+    const payload = await response.json();
+    setWorkspaceState((current) => current ? { ...current, available: payload.workflows || [] } : current);
+  };
+  const savedWorkflow = (document, previousId) => setWorkspaceState((current) => current ? {
+    ...current,
+    activeId: document.id,
+    tabs: current.tabs.map((tab) => tab.id === current.activeId ? { ...tab, id: document.id, document, savedDocument: document, persisted: true } : tab),
+    available: current.available.filter((item) => item.id !== previousId && item.id !== document.id).concat({ id: document.id, name: document.name, document }),
+  } : current);
+  const leaveWorkspace = (snapshot) => {
+    workspaceSession = { ...workspaceState, tabs: rememberActive(workspaceState.tabs, workspaceState.activeId, snapshot) };
+    onNavigate('chat');
+  };
+  if (!workspaceState) return <div className="loading-screen">ATRI WORKFLOW STUDIO</div>;
+  const activeTab = workspaceState.tabs.find((tab) => tab.id === workspaceState.activeId);
+  return <ReactFlowProvider key={activeTab.id}><EditorFrame initialDocument={activeTab.document} savedDocument={activeTab.savedDocument} persisted={activeTab.persisted} openTabs={workspaceState.tabs} availableWorkflows={workspaceState.available} onNavigate={onNavigate} onLeave={leaveWorkspace} onRefreshWorkflows={refreshWorkflows} onOpenDocument={openDocument} onSwitchWorkflow={switchWorkflow} onCloseWorkflow={closeWorkflow} onSaved={savedWorkflow} /></ReactFlowProvider>;
 }
