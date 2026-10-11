@@ -1,179 +1,93 @@
-# MyDearATRI-Agent 全面改造优化，正在施工ing
+# MyDearATRI-Agent
 
-一个面向陪伴与学习的大模型 Agent 项目。系统把 Agent 运行时、能力模块和工作流配置分开：日常对话使用当前 Agent 配置，工作流编辑器用于查看和调整底层数据流，也可以在编辑页试运行。
+一个用于日常对话和学习 Agent 工作原理的模块化项目。对话页负责使用当前 Agent；工作流页用于编辑它的数据流，也可以直接试运行工作流。两种页面共用同一套工作流配置。
 
-项目目前提供两种显示模式：`normal` 只显示最终回答和错误；`transparent` 显示可验证的模型请求、工具调用、结果和运行轨迹。模型推理文本不作为工具执行依据。
+项目仍在开发中。当前的可视化执行器支持内置的 ReAct 工作流和部分简单数据流；自定义节点可以被发现并显示在编辑器中，但并非都能直接参与执行。
 
-## 当前能力
+## 功能
 
-- 通过 `config/modules.json` 动态创建提示词、LLM、工具、技能、记忆和 Reviewer 模块。
-- 通过 `workflows/default_react.json` 配置 CLI 使用的 ReAct runtime 与模块绑定。
-- 支持 OpenAI 兼容 API 和本地 GGUF（`llama-cpp-python`）模型。
-- 工具调用使用结构化 Tool Call 协议；不支持原生工具调用的模型仍可使用旧式 ReAct 文本解析。
-- 工具根据类型注解和文档生成 JSON Schema，并按风险级别要求批准高风险操作。
-- 工作流页面从项目目录动态读取图文件和节点目录，可编辑、保存、启动或停止当前 Agent，并试运行和查看 trace。
+- 普通模式显示回答，透明模式展示可观察的执行步骤、模型交互和工具结果。
+- 在工作流页面编辑、保存和同时打开多个 JSON 工作流；同一时间只运行其中一个。
+- 支持 OpenAI 兼容 API 模型，以及通过 `llama-cpp-python` 加载本地 GGUF 模型。
+- 提示词、记忆、技能、工具和模型按模块组织，可通过配置更换实现。
+- 可从扩展目录发现新节点；界面支持主题配色和自定义背景。
 
-当前图执行器将支持的数据流适配到 ReAct runtime。节点接口和扩展发现已经具备，但尚不是所有自定义节点都能独立执行；通用任意图执行器仍在后续开发中。
+透明模式展示的是系统实际取得的输入、输出和运行事件，不代表能读取模型内部未输出的推理过程。
 
-## 项目结构
+## 安装
 
-```text
-.
-├── agent/                  # Agent runtime、工作流、节点接口和注册表
-│   └── nodes/extensions/   # 可动态发现的 Python 节点扩展
-├── bus/                    # 模块间事件总线
-├── config/
-│   ├── modules.json        # 模块实现与初始化配置
-│   └── models.json         # CLI/Web 可选择的模型目录
-├── docs/                   # 架构说明与扩展约定
-├── modules/                # LLM、提示词、工具、技能、记忆等能力实现
-├── web/                    # React + Vite 对话页和工作流编辑器
-├── workflows/              # CLI v1 与网页 v2 工作流 JSON
-├── myagent.py              # 命令行入口
-├── web_server.py           # 本地 API 服务
-└── requirements.txt        # Python 依赖
-```
-
-## 环境搭建
-
-需要 Conda/Miniconda、Python 3.12 和 Node.js。Windows、Linux 和 WSL 均可运行基础功能。
+需要 Python 3.12、Node.js 18+ 和 npm。推荐使用 Conda 创建独立环境：
 
 ```bash
 conda create -n atri python=3.12 -y
 conda activate atri
+python -m pip install -r requirements.txt
+cd web
+npm install
+cd ..
 ```
 
-CPU 用户直接安装项目依赖：
+在国内安装 Python 依赖时，可以给 `pip install` 加上 `-i https://pypi.tuna.tsinghua.edu.cn/simple`。
+
+`requirements.txt` 包含 `llama-cpp-python`。如需 GPU 加速，请先根据系统、Python 版本和 CUDA 环境安装匹配的预编译 wheel，再安装其余依赖。可参考 [llama-cpp-python CUDA 构建发布页](https://github.com/JamePeng/llama-cpp-python/releases)。CPU 或 API 模型不需要 CUDA 构建。
+
+## 启动 Web 界面
+
+Linux/WSL 可在项目根目录运行：
 
 ```bash
-python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+./start.sh
 ```
 
-GPU 用户需按 Python 版本、操作系统和 CUDA 构建选择 `llama-cpp-python` wheel。先安装匹配的 JamePeng CUDA wheel，再安装项目依赖；已安装版本满足 `requirements.txt` 时 pip 会保留该构建。CUDA 12.5 驱动可尝试 CUDA 12.4 构建的 wheel。发布页：[llama-cpp-python Releases](https://github.com/JamePeng/llama-cpp-python/releases)。
+脚本会启动前后端，并在退出时一起停止。它会尝试结束占用 `8765` 和 `5173` 端口的进程；如果这些端口用于其他服务，请改用下面的手动启动方式。
 
-Linux/WSL 使用预编译 wheel 的示例：
+Windows PowerShell、Linux 和 WSL 也可以在两个终端分别运行：
 
 ```bash
-python -m pip install ./WHEEL_FILE.whl
-python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+python web_server.py
 ```
-
-Windows PowerShell 使用匹配当前 Python 和 CUDA 构建的 wheel：
-
-```powershell
-python -m pip install .\path\to\WHEEL_FILE.whl
-python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
-```
-
-如需从源码编译 CUDA 后端，请先安装匹配的 CUDA Toolkit 和 C++ 构建工具，再设置 `CMAKE_ARGS`。Linux/WSL 示例：
 
 ```bash
-export CMAKE_ARGS="-DGGML_CUDA=on"
-export FORCE_CMAKE=1
-python -m pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple "llama-cpp-python>=0.3.16"
+cd web
+npm run dev
 ```
 
-Windows PowerShell 可在安装前设置：
+打开 `http://localhost:5173`。后端 API 默认监听 `127.0.0.1:8765`；本地模型由后端进程加载，无需单独启动模型服务。
 
-```powershell
-$env:CMAKE_ARGS = "-DGGML_CUDA=on"
-$env:FORCE_CMAKE = "1"
-python -m pip install --no-cache-dir "llama-cpp-python>=0.3.16"
-```
+## 接入模型
 
-CUDA wheel 和驱动的兼容性取决于具体构建。安装后可检查 Python 后端：
+**本地 GGUF：**将模型文件放入项目根目录的 `models/`。刷新工作流页面后，在 GGUF 模型节点的下拉框中选择文件。多模态模型如果需要单独的 `mmproj`，可在第二个下拉框选择；纯文本模型留空。`models/` 下的 GGUF 文件已被 Git 忽略。
 
-```bash
-python -c "import llama_cpp; print(llama_cpp.__version__)"
-```
+**OpenAI 兼容 API：**在 API 模型节点选择模型，并填写服务端点和 API Key。如果模型不在下拉框，先在 `config/models.json` 增加包含 `base_url` 和 `model_name` 的条目，再刷新页面。密钥保存在本机后端，不写入工作流 JSON；请勿把密钥提交到仓库。
 
-## 配置模型
-
-模型目录在 `config/models.json`。每个条目可以配置 OpenAI 兼容服务的 `base_url`、`model_name`，或本地 GGUF 后端的 `class`、`model_path` 和推理参数。远程模型通常还需要在 `config/.env` 中提供 `OPENAI_API_KEY`；该本地文件已被 Git 忽略，不要提交密钥。
-
-GGUF 示例配置：
+命令行使用的模型可以在 `config/models.json` 中配置。例如：
 
 ```json
 {
-  "local-qwen": {
+  "local-model": {
     "class": "modules.llm.gguf_llm.GGUFLLM",
-    "model_path": "${PROJECT_ROOT}/models/your-model.gguf",
+    "model_path": "${PROJECT_ROOT}/models/model.gguf",
     "n_ctx": 4096,
-    "n_gpu_layers": -1
+    "n_gpu_layers": 0
   }
 }
 ```
 
-将模型文件放在 `models/`，网页工作流会自动发现该目录下的 GGUF 文件并加入模型下拉框，权重文件不会提交到仓库。若模型含有单独的多模态投影文件（例如 `mmproj`），网页 GGUF 模型节点可在第二个下拉框选择；纯文本模型留空即可。当前后端需要安装带对应多模态 chat handler 的 `llama-cpp-python` 构建才能使用投影文件。`n_gpu_layers: -1` 表示尽可能将层卸载到 GPU，显存不足时可调低或设为 `0`。
-
-仓库不包含模型权重。Qwen GGUF 可从模型发布页下载，例如 [Qwen3-1.7B Q4_K_M](https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF)。请确认模型许可、文件名和后端兼容性后再使用。
+使用 GPU 构建时，可将 `n_gpu_layers` 调高；`-1` 表示尽可能将模型层卸载到 GPU。API 模型所需的 `OPENAI_API_KEY` 也可以写入本地的 `config/.env`。该文件已被 Git 忽略。
 
 ## 命令行
 
 在项目根目录运行：
 
 ```bash
-python myagent.py
+python myagent.py --list-models
+python myagent.py --select-model --mode transparent
 ```
 
-可用参数：
+不指定工作流时，CLI 使用 `workflows/default_react.json`。通过 `--workflow PATH`、`--model KEY` 和 `--modules-config PATH` 可更换工作流、模型与模块配置。完整参数见 `python myagent.py --help`。
 
-```text
---model KEY             使用 config/models.json 中指定的模型
---select-model          启动时交互选择模型
---list-models           列出模型配置
---mode normal           仅显示最终回答
---mode transparent      显示模型与工具运行轨迹
---workflow PATH         指定 CLI v1 工作流 JSON
---modules-config PATH   指定模块清单 JSON
---trace-jsonl PATH      将运行轨迹追加写入 JSONL
---disable-module ID     禁用模块，可重复使用
---enable-module ID      启用模块，可重复使用
-```
+## 工作流与扩展
 
-其他内置开关可通过 `python myagent.py --help` 查看。CLI 默认加载 `workflows/default_react.json` 和 `config/modules.json`。
+网页工作流保存在 `workflows/`，刷新页面会重新读取目录中的文件。工作流 JSON 描述节点、连线和配置；节点实现与模块实现分别放在 `agent/nodes/` 和 `modules/`。工作流页面可以打开多个编辑标签，但同一时间只能启动一个工作流。
 
-## Web 工作区
-
-安装完前端依赖后，可以在项目根目录运行启动脚本；脚本会优先激活 Conda `atri` 环境，并同时启动后端和前端，按 `Ctrl+C` 会一起停止：
-
-```bash
-cd web && npm install
-cd ..
-./start.sh
-```
-
-也可以手动在两个终端分别启动：
-
-```bash
-# 终端一：项目根目录，已激活 atri 环境
-python web_server.py
-```
-
-```bash
-# 终端二
-cd web && npm run dev
-```
-
-浏览器打开 `http://localhost:5173`。前端固定使用 5173；端口被占用时启动会报错，不会自动回退到 5174。后端 API 默认使用 `127.0.0.1:8765`；模型由后端进程直接加载，不会单独启动模型端口。后端端口可通过 `ATRI_WEB_API_PORT` 设置。
-
-已知问题（未解决）：部分环境中点击终端输出的 `http://localhost:5173/` 后，浏览器地址会变成 5174。当前启动日志、Vite 进程参数和监听端口尚未确认该跳转来源；5174 不是预期端口，仍需继续排查。
-
-日常对话页使用已启动的工作流。工作流页可通过“打开工作流”将 `workflows/` 中的图工作流放入多个标签，也可新建空白工作流；双击画布空白处可搜索并添加节点。首次保存新工作流时填写显示名称和文件名，之后可点击顶部工作流名称同时修改名称和文件名。文件名只能包含英文字母、数字、下划线和连字符，文件写入 `workflows/<文件名>.json`，因此需要对工作区有写权限。各标签独立保留未保存的编辑内容。后端同一时间只运行一个工作流：切换标签仅切换编辑画布，要运行另一个工作流需先停止当前运行的工作流。仅含“对话输入 → 回复输出”的直通工作流可以不加载模型直接启动和试运行，输出等于输入。
-
-## 工作流与模块扩展
-
-项目中的工作流是 JSON 配置，不是节点实现本身：
-
-- `workflows/default_react.json` 使用 `workflow_version: 1`，供 CLI 选择 runtime 和模块绑定。
-- `workflows/atri_companion_graph.json` 使用 `workflow_version: 2`，描述网页编辑器中的节点、端口、连线和布局。
-
-模块是可替换的能力实现，继承 `BaseModule`，并在 `config/modules.json` 声明；新增模块后可在配置中绑定，而不需要把具体模块写进 Agent 主循环。模块构造函数遵循 `(module_id, bus, **kwargs)`，生命周期由 Agent 管理。模块配置中的 `{"$env": "NAME"}` 可读取环境变量，`{"$path": "relative/path"}` 可解析相对项目根目录的路径。
-
-节点描述工作流数据流，继承 `BaseNode`，声明类型化输入/输出，并在 `agent/nodes/extensions/*.py` 中导出 `NODES = [MyNode]`。后端在节点目录请求和节点实例化时扫描扩展；新增或修改后刷新网页即可更新节点面板。接口示例和执行限制见 [节点扩展说明](agent/nodes/extensions/README.md)。
-
-工具添加到 `modules/tools/system_tools/`，使用 `@system_tool` 注册；技能以 `SKILL.md` 放在 `modules/skills/` 下；人格与行为提示词在 `modules/prompt/SystemPrompt/` 中维护。架构和工具调用细节见 [架构说明](docs/architecture.md)。
-
-## 安全与仓库内容
-
-`.env`、`config/.env`、本地 GGUF 权重、前端依赖和构建产物已加入忽略规则。提交前请检查变更列表，避免提交密钥、个人数据或大型模型文件。
+新增 Python 节点的接口与示例见 [节点扩展说明](agent/nodes/extensions/README.md)，运行时、模块和工具调用的设计见 [架构说明](docs/architecture.md)。目前编辑器能动态发现扩展节点，通用的任意图执行仍未完成；编写扩展时应先确认目标工作流是否受当前执行器支持。
