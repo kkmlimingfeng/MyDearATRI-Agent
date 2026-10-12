@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { startTransition, useCallback, useRef, useState } from 'react';
 import WorkflowApp from './workflow/WorkflowEditor';
 import ChatHome from './chat/ChatHome';
 import ParticleTransition from './ParticleTransition';
@@ -8,16 +8,17 @@ export default function App() {
   useTheme();
   const [page, setPage] = useState('chat');
   const [workflowVisited, setWorkflowVisited] = useState(false);
-  const [transition, setTransition] = useState(null);
-  const switching = useRef(false);
+  const [transition, setTransition] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches ? null : { target: 'chat', id: 'intro', intro: true });
+  const switching = useRef(Boolean(transition));
 
   const navigate = useCallback((target) => {
     if (target === page || switching.current) return;
-    if (target === 'workflow') setWorkflowVisited(true);
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      if (target === 'workflow') setWorkflowVisited(true);
       setPage(target);
       return;
     }
+    if (target === 'workflow') startTransition(() => setWorkflowVisited(true));
     switching.current = true;
     setTransition({ target, id: Date.now() });
   }, [page]);
@@ -33,6 +34,6 @@ export default function App() {
     {workflowVisited && <div className={`app-page ${page === 'workflow' ? 'is-active' : ''}`} aria-hidden={page !== 'workflow'} inert={page !== 'workflow' ? '' : undefined}>
       <WorkflowApp />
     </div>}
-    {transition && <ParticleTransition key={transition.id} onReveal={() => setPage(transition.target)} onComplete={() => { switching.current = false; setTransition(null); }} />}
+    {transition && <ParticleTransition key={transition.id} intro={transition.intro} onReveal={() => { if (!transition.intro) startTransition(() => setPage(transition.target)); }} onComplete={() => { if (transition.target === 'workflow') setWorkflowVisited(true); setPage(transition.target); switching.current = false; setTransition(null); }} />}
   </div>;
 }

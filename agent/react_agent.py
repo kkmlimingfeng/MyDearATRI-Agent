@@ -10,6 +10,8 @@ from typing import Dict, List, Tuple, Optional, Any
 from .base_agent import BaseAgent, Colors
 from .protocol import TraceEvent, ToolCall, ToolResult
 from .tool_executor import ToolExecutor
+from .tool_call_parser import parse_embedded_tool_calls
+from .tool_discovery import GET_TOOL_USAGE, LIST_TOOLS, TOOL_DISCOVERY_TEXT, discovery_schemas, merge_schemas
 from .trace import MemoryTraceSink, TraceSink
 
 
@@ -89,10 +91,10 @@ class ReactAgent(BaseAgent):
         return base_prompt + '\n\n' + descriptions
 
     def _inject_tool_descriptions(self, base_prompt: str, tools_id: str) -> str:
-        """注入工具描述到系统提示词（{{TOOLS}} 占位符）"""
-        return self._inject_module_descriptions(
-            base_prompt, tools_id, '{{TOOLS}}', 'format_tool_descriptions'
-        )
+        """Expose the discovery protocol without copying every tool schema into the prompt."""
+        if '{{TOOLS}}' in base_prompt:
+            return base_prompt.replace('{{TOOLS}}', TOOL_DISCOVERY_TEXT)
+        return base_prompt + '\n\n' + TOOL_DISCOVERY_TEXT
 
     def _inject_skill_overview(self, base_prompt: str, skills_id: str) -> str:
         """注入技能目录简介到系统提示词（{{SKILLS}} 占位符）"""
@@ -292,8 +294,23 @@ class ReactAgent(BaseAgent):
         tool_name: str,
         arguments: Dict[str, Any],
         tools_module_id: str,
+        available_schemas: List[Dict[str, Any]],
     ) -> ToolResult:
         """Execute one structured model tool call through the shared executor."""
+        if tool_name == LIST_TOOLS:
+            reply = self.bus.request(source='agent', target=tools_module_id, payload={'action': 'get_tool_descriptions'})
+            catalog = [{'name': item['name'], 'description': item.get('description', '')} for item in reply.payload.get('descriptions', [])]
+            return ToolResult(call_id=call_id, name=tool_name, status='success', output=catalog)
+        if tool_name == GET_TOOL_USAGE:
+            requested = arguments.get('tool_name')
+            if not isinstance(requested, str) or not requested:
+                return ToolResult(call_id=call_id, name=tool_name, status='error', error='缺少 tool_name')
+            reply = self.bus.request(source='agent', target=tools_module_id, payload={'action': 'get_tool_usage', 'tool_name': requested})
+            schema = reply.payload.get('schema')
+            return ToolResult(call_id=call_id, name=tool_name, status='success' if schema else 'error',
+                              output=schema, error=None if schema else reply.payload.get('error', '工具不可用'))
+        if tool_name not in {item.get('function', {}).get('name') for item in available_schemas}:
+            return ToolResult(call_id=call_id, name=tool_name, status='error', error='请先读取该工具的使用方式')
         return self._get_tool_executor().execute(
             ToolCall(call_id=call_id, name=tool_name, arguments=arguments),
             tools_module_id,
@@ -312,44 +329,7 @@ class ReactAgent(BaseAgent):
 
     def _parse_embedded_tool_calls(self, content: str) -> List[Dict[str, Any]]:
         """Adapt Qwen/llama.cpp XML tool-call text to the native call shape."""
-        calls = []
-        for index, match in enumerate(
-            re.finditer(r"<tool_call>\s*(.*?)\s*</tool_call>", content, re.DOTALL)
-        ):
-            body = match.group(1).strip()
-            function_match = re.fullmatch(
-                r"<function=([\w.-]+)>\s*(.*?)\s*</function>", body, re.DOTALL
-            )
-            if function_match:
-                name = function_match.group(1)
-                argument_text = function_match.group(2).strip()
-                try:
-                    arguments = json.loads(argument_text) if argument_text else {}
-                except json.JSONDecodeError:
-                    arguments = {}
-            else:
-                try:
-                    payload = json.loads(body)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                name = payload.get("name")
-                arguments = payload.get("arguments", {})
-                if isinstance(arguments, str):
-                    try:
-                        arguments = json.loads(arguments)
-                    except json.JSONDecodeError:
-                        arguments = {}
-            if not isinstance(name, str) or not name:
-                continue
-            if not isinstance(arguments, dict):
-                arguments = {}
-            calls.append({
-                "id": f"embedded_{self._active_run_id}_{index}",
-                "type": "function",
-                "function": {"name": name, "arguments": arguments},
-            })
+        calls = parse_embedded_tool_calls(content, self._active_run_id)
         if calls:
             self._trace("tool_call_adapted", {"calls": calls}, "llm")
         return calls
@@ -453,6 +433,8 @@ class ReactAgent(BaseAgent):
         self._show(f"\n{Colors.MAGENTA}{Colors.BOLD}用户输入:{Colors.RESET} {user_input}")
         self._show(f"{Colors.DIM}{'='*50}{Colors.RESET}")
 
+        available_schemas = discovery_schemas() if self._enabled.get(tools_id, False) else []
+
         # 开始ReAct循环
         for i in range(self.max_iterations):
             # 青色输出：循环开始
@@ -465,21 +447,13 @@ class ReactAgent(BaseAgent):
 
             # 通过总线调用LLM
             try:
-                tool_schemas = []
-                if self._enabled.get(tools_id, False):
-                    schema_response = self.bus.request(
-                        source='agent',
-                        target=tools_id,
-                        payload={'action': 'get_tool_schemas'}
-                    )
-                    tool_schemas = schema_response.payload.get('tools', [])
                 llm_response = self.bus.request(
                     source='agent',
                     target=llm_id,
                     payload={
                         'action': 'generate',
                         'messages': messages,
-                        'tools': tool_schemas,
+                        'tools': available_schemas,
                     }
                 )
                 output = llm_response.payload.get('response', '')
@@ -531,6 +505,7 @@ class ReactAgent(BaseAgent):
                 }
                 messages.append(assistant_message)
                 tool_observations = []
+                newly_available = []
                 for call in tool_calls:
                     function = call.get("function", {})
                     call_id = call.get("id", "")
@@ -542,14 +517,17 @@ class ReactAgent(BaseAgent):
                         except json.JSONDecodeError:
                             arguments = {}
                     result = self._execute_tool_call(
-                        call_id, tool_name, arguments, tools_id
+                        call_id, tool_name, arguments, tools_id, available_schemas
                     )
                     tool_observations.append(result)
+                    if tool_name == GET_TOOL_USAGE and result.status == 'success' and result.output:
+                        newly_available.append(result.output)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call_id,
                         "content": json.dumps(result.as_dict(), ensure_ascii=False, default=str),
                     })
+                available_schemas = merge_schemas(available_schemas, newly_available)
                 self._trace("tool_results_added", {
                     "results": [item.as_dict() for item in tool_observations]
                 }, "tools")

@@ -74,6 +74,8 @@ def validate_graph_workflow(config: Any) -> GraphWorkflow:
         target = edge.get("target")
         if not isinstance(edge_id, str) or not edge_id:
             raise GraphWorkflowError("每条连接必须包含非空 id")
+        if edge.get("data") is not None and not isinstance(edge["data"], dict):
+            raise GraphWorkflowError(f"连接 {edge_id} 的 data 必须是对象")
         if edge_id in edge_ids:
             raise GraphWorkflowError(f"连接 ID 重复: {edge_id}")
         edge_ids.add(edge_id)
@@ -97,9 +99,12 @@ def validate_graph_workflow(config: Any) -> GraphWorkflow:
         )
         if source_port is None or target_port is None:
             raise GraphWorkflowError(f"连接 {edge_id} 引用了不存在的节点接口")
-        if source_port["type"] != target_port["type"]:
+        if source_port["type"] != target_port["type"] and "any" not in {source_port["type"], target_port["type"]}:
             raise GraphWorkflowError(f"连接 {edge_id} 的接口类型不匹配")
-        incoming_ports.add((target, edge.get("targetHandle")))
+        input_key = (target, edge.get("targetHandle"))
+        if input_key in incoming_ports:
+            raise GraphWorkflowError(f"节点 {target} 的 {edge.get('targetHandle')} 输入只能连接一条线")
+        incoming_ports.add(input_key)
 
     for node_id, node in node_map.items():
         description = node_descriptions.get(node["type"])

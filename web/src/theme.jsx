@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Palette, RotateCcw, Upload, X } from 'lucide-react';
 
 export const themePresets = {
@@ -150,5 +150,5 @@ export function ThemePicker() {
 }
 
 export function useTheme() {
-  useEffect(() => { applyTheme(readTheme()); }, []);
+  useLayoutEffect(() => { applyTheme(readTheme()); }, []);
 }

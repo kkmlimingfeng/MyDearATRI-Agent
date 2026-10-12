@@ -3,6 +3,7 @@ import { Activity, ArrowUp, Bot, ChevronDown, FileClock, MessageSquarePlus, Pane
 import { ThemePicker } from '../theme.jsx';
 import { modelChoices } from '../workflow/catalog';
 import TraceView from '../workflow/TraceView';
+import { useInterfaceLanguage } from '../workflow/interfaceLanguage';
 import { runWorkflowRequest } from '../workflow/runApi';
 
 const CHAT_STORAGE_KEY = 'atri.chat.sessions.v1';
@@ -56,7 +57,14 @@ function readChatState() {
   }
 }
 
+function MessageTrace({ events, mode, language }) {
+  const [open, setOpen] = useState(mode === 'transparent');
+  useEffect(() => setOpen(mode === 'transparent'), [mode]);
+  return <div className="trace-details"><button type="button" className="trace-details-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}><Activity size={13} />{language === 'en' ? 'Execution trace' : '执行轨迹'} <span>{events.length} {language === 'en' ? 'steps' : '步'}</span></button><div className={`motion-collapse ${open ? 'is-open' : ''}`} inert={!open ? '' : undefined}><div><TraceView events={events} /></div></div></div>;
+}
+
 export default function ChatHome({ onNavigate, active = true }) {
+  const [interfaceLanguage] = useInterfaceLanguage();
   const [workflow, setWorkflow] = useState(null);
   const [runtimeStatus, setRuntimeStatus] = useState({ loading: true, running: false, workflow_id: null });
   const [chatState, setChatState] = useState(readChatState);
@@ -67,6 +75,7 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [liveEvents, setLiveEvents] = useState([]);
   const liveEventsRef = useRef([]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileText, setProfileText] = useState('');
   const [profileLoading, setProfileLoading] = useState(false);
@@ -190,7 +199,10 @@ export default function ChatHome({ onNavigate, active = true }) {
     liveEventsRef.current = [];
     try {
       const onProgress = mode === 'transparent' ? (events) => { liveEventsRef.current = events; setLiveEvents(events); } : null;
-      const result = await runWorkflowRequest({ workflow, input: text, mode, require_started: true }, onProgress);
+      const history = activeSession.messages
+        .filter((message) => !message.error && typeof message.content === 'string' && ['user', 'assistant'].includes(message.role))
+        .map(({ role, content }) => ({ role, content }));
+      const result = await runWorkflowRequest({ workflow, input: text, mode, require_started: true, history }, onProgress);
       if (!result.answer && result.error) throw new Error(result.error);
       liveEventsRef.current = result.events || liveEventsRef.current;
       appendMessage(sessionId, { role: 'assistant', content: result.answer, events: result.events });
@@ -208,9 +220,14 @@ export default function ChatHome({ onNavigate, active = true }) {
     setChatState((current) => ({ sessions: [session, ...current.sessions], activeSessionId: session.id }));
   };
 
-  const deleteConversation = (event, sessionId) => {
+  const requestDeleteConversation = (event, sessionId) => {
     event.stopPropagation();
-    if (!window.confirm('确定删除这条对话吗？删除后无法恢复。')) return;
+    setPendingDeleteSessionId(sessionId);
+  };
+
+  const deleteConversation = () => {
+    const sessionId = pendingDeleteSessionId;
+    if (!sessionId) return;
     setChatState((current) => {
       const remaining = current.sessions
         .filter((session) => session.id !== sessionId)
@@ -224,6 +241,7 @@ export default function ChatHome({ onNavigate, active = true }) {
         activeSessionId: current.activeSessionId === sessionId ? remaining[0].id : current.activeSessionId,
       };
     });
+    setPendingDeleteSessionId(null);
   };
 
   const openUserProfile = async () => {
@@ -271,11 +289,13 @@ export default function ChatHome({ onNavigate, active = true }) {
     setChatState((current) => ({ ...current, activeSessionId: sessionId }));
   };
 
-  const recentSessions = [...sessions].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const recentSessions = sessions.filter((session) => session.messages.length > 0)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const pendingDeleteSession = sessions.find((session) => session.id === pendingDeleteSessionId);
 
   return (
     <div className={`chat-shell ${sidebarOpen ? '' : 'sidebar-collapsed'}`}>
-      {sidebarOpen && <aside className="chat-sidebar">
+      <aside className="chat-sidebar" aria-hidden={!sidebarOpen} inert={!sidebarOpen ? '' : undefined}>
         <div className="chat-brand"><div className="brand-mark">A</div><div><strong>ATRI <span>AGENT</span></strong><small>LOCAL WORKSPACE</small></div><button className="icon-button" title="收起侧栏" onClick={() => setSidebarOpen(false)}><PanelLeftClose size={15} /></button></div>
         <button className="new-chat-button" onClick={clearConversation}><MessageSquarePlus size={15} />新对话<span>Ctrl/⌘ K</span></button>
         <div className="sidebar-section-title">最近对话</div>
@@ -283,13 +303,13 @@ export default function ChatHome({ onNavigate, active = true }) {
           <button className={`conversation-item ${session.id === activeSessionId ? 'active' : ''}`} onClick={() => selectConversation(session.id)} title={session.title}>
             {index === 0 ? <MessageSquarePlus size={14} /> : <FileClock size={14} />}<span>{session.title || '新的对话'}</span>
           </button>
-          <button className="conversation-delete" onClick={(event) => deleteConversation(event, session.id)} title={`删除对话：${session.title || '新的对话'}`} aria-label={`删除对话：${session.title || '新的对话'}`}><Trash2 size={14} /></button>
+          <button className="conversation-delete" onClick={(event) => requestDeleteConversation(event, session.id)} title={`删除对话：${session.title || '新的对话'}`} aria-label={`删除对话：${session.title || '新的对话'}`}><Trash2 size={14} /></button>
         </div>)}
         <div className="sidebar-bottom">
           <button className="sidebar-workflow-link" onClick={() => onNavigate('workflow')}><Workflow size={16} /><span><strong>工作流编辑器</strong><small>调整 Agent 的底层逻辑</small></span><ChevronDown size={14} className="side-link-chevron" /></button>
           <button className="profile-row" onClick={openUserProfile} title="编辑 modules/prompt/SystemPrompt/USER.md"><div className="profile-avatar">W</div><span><strong>编辑用户信息</strong><small>USER.md</small></span><Pencil size={15} /></button>
         </div>
-      </aside>}
+      </aside>
       <main className="chat-main">
         <header className="chat-topbar">
           {!sidebarOpen && <button className="icon-button" onClick={() => setSidebarOpen(true)} title="展开侧栏"><PanelLeftClose size={15} /></button>}
@@ -306,7 +326,7 @@ export default function ChatHome({ onNavigate, active = true }) {
             {message.role === 'assistant' && <div className="message-avatar"><Bot size={16} /></div>}
             <div className="message-content">
               {message.error ? <div className="message-error">{message.error}</div> : <div className="message-bubble">{message.content}</div>}
-              {message.events?.length > 0 && <details className="trace-details" open={mode === 'transparent'}><summary><Activity size={13} />执行轨迹 <span>{message.events.length} steps</span></summary><TraceView events={message.events} /></details>}
+              {message.events?.length > 0 && <MessageTrace events={message.events} mode={mode} language={interfaceLanguage} />}
               {message.role === 'assistant' && index === 0 && <div className="message-meta"><span>ATRI</span><span>·</span><span>刚刚</span></div>}
             </div>
             {message.role === 'user' && <div className="user-avatar">W</div>}
@@ -322,6 +342,11 @@ export default function ChatHome({ onNavigate, active = true }) {
         <header><div><span className="eyebrow">USER PROFILE</span><h2 id="profile-editor-title">编辑用户信息</h2><span className="profile-file-path">modules/prompt/SystemPrompt/USER.md</span></div><button className="icon-button" disabled={profileSaving} onClick={() => setProfileOpen(false)} title="关闭"><X size={17} /></button></header>
         <textarea spellCheck="false" value={profileText} onChange={(event) => { setProfileText(event.target.value); setProfileSaved(false); }} disabled={!profileLoaded || profileLoading || profileSaving} placeholder={profileLoading ? '正在读取 USER.md…' : ''} />
         <footer><div className={profileError ? 'profile-editor-error' : 'profile-editor-status'}>{profileError || (profileSaved ? '已保存到项目中的 USER.md' : '修改将直接写入项目文件')}</div><button className="primary-button" onClick={saveUserProfile} disabled={!profileLoaded || profileLoading || profileSaving}>{profileSaving ? <span className="spinner" /> : <Save size={15} />}{profileSaving ? '保存中…' : '保存'}</button></footer>
+      </section></div>}
+      {pendingDeleteSession && <div className="chat-delete-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingDeleteSessionId(null); }}><section className="chat-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="chat-delete-title" aria-describedby="chat-delete-description" onKeyDown={(event) => { if (event.key === 'Escape') setPendingDeleteSessionId(null); }}>
+        <h2 id="chat-delete-title">删除对话</h2>
+        <p id="chat-delete-description">确定删除“{pendingDeleteSession.title || '新的对话'}”吗？删除后无法恢复。</p>
+        <div className="chat-delete-actions"><button className="secondary-button" autoFocus onClick={() => setPendingDeleteSessionId(null)}>取消</button><button className="danger-button" onClick={deleteConversation}><Trash2 size={15} />删除</button></div>
       </section></div>}
     </div>
   );

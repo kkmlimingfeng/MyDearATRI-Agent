@@ -16,8 +16,11 @@ from pathlib import Path
 from typing import Any, Dict
 
 from agent.graph_workflow import GraphWorkflowError, validate_graph_workflow
+from agent.graph_executor import GraphExecutor
+from agent.workflow_runtime import WorkflowRuntime
 from agent.nodes import node_registry
 from agent.protocol import TraceEvent
+from agent.tool_discovery import TOOL_DISCOVERY_TEXT, discovery_schemas
 from agent.workflow import load_workflow
 from modules.module_loader import (
     ModuleConfigError,
@@ -56,14 +59,24 @@ def _graph_workflow_documents() -> list[dict]:
             document = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(document, dict) or document.get("workflow_version") != 2:
                 continue
-            validate_graph_workflow(document)
-        except (OSError, json.JSONDecodeError, GraphWorkflowError):
+            if not isinstance(document.get("id"), str) or not isinstance(document.get("name"), str):
+                continue
+            if not isinstance(document.get("nodes"), list) or not isinstance(document.get("edges"), list):
+                continue
+            try:
+                validate_graph_workflow(document)
+                validation_error = None
+            except GraphWorkflowError as exc:
+                validation_error = str(exc)
+            modified = path.stat().st_mtime
+        except (OSError, json.JSONDecodeError):
             continue
         documents.append({
             "id": document["id"],
             "name": document["name"],
             "document": document,
-            "modified": path.stat().st_mtime,
+            "validation_error": validation_error,
+            "modified": modified,
         })
     documents.sort(key=lambda item: item["modified"], reverse=True)
     return [{key: value for key, value in item.items() if key != "modified"} for item in documents]
@@ -284,7 +297,7 @@ def _graph_previews(graph: dict, user_input: str = "") -> dict:
         elif kind in {"skills.provider", "tools.provider"}:
             value = _capability_catalog(kind.split(".")[0])["text"]
         elif kind == "context.merge":
-            parts = [resolve(incoming[(node_id, port)]) for port in ("tools", "skills", "memory") if (node_id, port) in incoming]
+            parts = [resolve(incoming[(node_id, port)]) for port in ("tools", "skills", "memory", "tool_results", "context_a", "context_b") if (node_id, port) in incoming]
             value = "\n\n".join(filter(None, parts))
         else:
             value = ""
@@ -373,8 +386,8 @@ def _load_env_file() -> None:
 def _graph_bindings(graph: dict) -> tuple[dict, dict]:
     node_map = {node["id"]: node for node in graph["nodes"]}
     runtime_nodes = [node for node in graph["nodes"] if node["type"] in {"agent.react_runtime", "llm.chat"}]
-    if len(runtime_nodes) != 1:
-        raise GraphWorkflowError("当前运行器要求工作流中恰有一个 ReAct Runtime")
+    if not runtime_nodes:
+        raise GraphWorkflowError("工作流缺少模型对话节点")
     runtime_node = runtime_nodes[0]
     config = runtime_node.get("data", {}).get("config", {})
     bindings = {
@@ -407,14 +420,17 @@ def _graph_bindings(graph: dict) -> tuple[dict, dict]:
         bindings[binding_key] = module_id
         providers[handle] = source
 
-    def resolve_context(source: dict) -> None:
-        if source.get("type") != "context.merge":
-            raise GraphWorkflowError("模型对话的上下文输入必须连接到上下文联结节点")
-        for context_edge in incoming.get(source["id"], []):
-            capability = context_edge.get("targetHandle")
-            if capability not in {"memory", "skills", "tools"}:
+    def resolve_capabilities(source: dict, seen: set[str]) -> None:
+        if source["id"] in seen:
+            return
+        seen.add(source["id"])
+        capability = source["type"].split(".", 1)[0]
+        if capability in {"memory", "skills", "tools"}:
+            register_provider(capability, source)
+        for upstream in incoming.get(source["id"], []):
+            if (upstream.get("data") or {}).get("feedback"):
                 continue
-            register_provider(capability, node_map[context_edge["source"]])
+            resolve_capabilities(node_map[upstream["source"]], seen)
 
     for edge in graph["edges"]:
         if edge.get("target") != runtime_node["id"]:
@@ -422,12 +438,21 @@ def _graph_bindings(graph: dict) -> tuple[dict, dict]:
         source = node_map[edge["source"]]
         handle = edge.get("targetHandle")
         if handle == "context":
-            resolve_context(source)
+            resolve_capabilities(source, set())
         elif handle in {"llm", "prompt", "memory", "skills", "tools"}:
             register_provider(handle, source)
+    for node in graph["nodes"]:
+        if node["type"] in {"capability.dispatch", "tools.dispatch"}:
+            for edge in incoming.get(node["id"], []):
+                provider_handle = {
+                    "tools": "tools", "tool_executor": "tools",
+                    "skills": "skills", "skill_executor": "skills",
+                }.get(edge.get("targetHandle"))
+                if provider_handle:
+                    register_provider(provider_handle, node_map[edge["source"]])
     for required in ("llm", "prompt"):
         if required not in providers:
-            raise GraphWorkflowError(f"ReAct Runtime 缺少 {required} 能力连接")
+            raise GraphWorkflowError(f"模型节点缺少 {required} 能力连接")
     return bindings, providers
 
 
@@ -444,10 +469,15 @@ def _make_agent(graph: dict):
     loop_edge = next((edge for edge in graph["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "loop"), None)
     if loop_edge:
         loop_node = next(node for node in graph["nodes"] if node["id"] == loop_edge["source"])
-        if loop_node["type"] != "react.loop":
-            raise GraphWorkflowError("循环输入必须连接 ReAct 循环节点")
-        runtime_kwargs["max_iterations"] = max(1, min(100, int(loop_node.get("data", {}).get("config", {}).get("max_iterations", 5))))
-    agent = base_workflow.runtime_class(**runtime_kwargs)
+        if loop_node["type"] == "context.merge":
+            loop_edge = next((edge for edge in graph["edges"] if edge["target"] == loop_node["id"] and edge.get("targetHandle") == "loop"), None)
+            if loop_edge:
+                loop_node = next(node for node in graph["nodes"] if node["id"] == loop_edge["source"])
+        if loop_node["type"] not in {"control.loop", "react.loop"}:
+            raise GraphWorkflowError("循环输入必须连接循环控制节点或上下文联结节点")
+        runtime_kwargs["max_iterations"] = max(1, min(500, int(loop_node.get("data", {}).get("config", {}).get("max_iterations", 5))))
+    runtime_class = base_workflow.runtime_class if any(node["type"] == "agent.react_runtime" for node in graph["nodes"]) else WorkflowRuntime
+    agent = runtime_class(**runtime_kwargs)
 
     specs = load_module_specs(str(ROOT / "config" / "modules.json"))
     models = _load_models()
@@ -543,12 +573,8 @@ def _validate_runtime_graph(graph_data: Any):
     graph = validate_graph_workflow(graph_data)
     if _is_direct_chat_graph(graph):
         return graph, {}
-    supported_types = {
-        "core.chat_input", "agent.react_runtime", "llm.chat", "react.response_router", "tools.dispatch", "llm.provider", "llm.gguf_loader", "llm.openai_loader",
-        "prompt.provider", "prompt.markdown_file", "prompt.text", "prompt.join", "context.merge", "memory.provider", "skills.provider",
-        "tools.provider", "core.chat_output", "react.loop",
-    }
-    unsupported = sorted({node["type"] for node in graph.nodes} - supported_types)
+    registered_types = {item["type"] for item in node_registry.describe()}
+    unsupported = sorted({node["type"] for node in graph.nodes} - registered_types)
     if unsupported:
         raise GraphWorkflowError(
             "当前运行器暂不支持这些节点: " + ", ".join(unsupported)
@@ -712,6 +738,7 @@ def run_graph(
     mode: str = "normal",
     require_started: bool = False,
     job_id: str | None = None,
+    history: Any = None,
 ) -> dict:
     global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started, _runtime_workflow_id
     graph, bindings = _validate_runtime_graph(graph_data)
@@ -742,8 +769,12 @@ def run_graph(
             timestamp = datetime.now().astimezone().isoformat()
             events = [
                 TraceEvent("workflow_started", run_id, data={"user_input": user_input}, timestamp=timestamp),
+                TraceEvent("node_started", run_id, input_id, {"iteration": 1}, timestamp),
                 TraceEvent("node_output", run_id, input_id, {"content": user_input}, timestamp),
+                TraceEvent("node_completed", run_id, input_id, {"duration_ms": 0, "iteration": 1}, timestamp),
+                TraceEvent("node_started", run_id, output_id, {"iteration": 1}, timestamp),
                 TraceEvent("node_output", run_id, output_id, {"content": user_input}, timestamp),
+                TraceEvent("node_completed", run_id, output_id, {"duration_ms": 0, "iteration": 1}, timestamp),
                 TraceEvent("workflow_completed", run_id, output_id, {"answer": user_input}, timestamp),
             ]
             return {"answer": user_input, "run_id": run_id, "events": [event.as_dict() for event in events],
@@ -756,6 +787,53 @@ def run_graph(
             _runtime_agent, _runtime_bindings = _make_agent(graph_data)
             _runtime_execution_key = execution_key
         _runtime_graph_key = serialized_graph
+        if history is not None:
+            if not isinstance(history, list):
+                raise GraphWorkflowError("对话历史必须是数组")
+            _runtime_agent._history = [
+                {"role": item["role"], "content": item["content"]}
+                for item in history
+                if isinstance(item, dict)
+                and item.get("role") in {"user", "assistant"}
+                and isinstance(item.get("content"), str)
+            ][-_runtime_agent.max_history_turns * 2:]
+        if not any(node["type"] == "agent.react_runtime" for node in graph.nodes):
+            agent = _runtime_agent
+            agent.display_mode = mode
+            agent.trace_sink.clear()
+            run_id = uuid.uuid4().hex
+            agent._active_run_id = run_id
+            tool_schemas = []
+            tools_id = _runtime_bindings.get("tools_id")
+            if tools_id and agent._enabled.get(tools_id, False):
+                tool_schemas = discovery_schemas()
+            def capability_text(module_id: str | None, action: str) -> str:
+                if not module_id or not agent._enabled.get(module_id, False):
+                    return ""
+                response = agent.bus.request(source="agent", target=module_id, payload={"action": action})
+                return response.payload.get("text", "")
+            services = {
+                "agent": agent,
+                "read_prompt": lambda filename: _safe_markdown(PROMPT_DIR, filename).read_text(encoding="utf-8"),
+                "tools_text": TOOL_DISCOVERY_TEXT if tool_schemas else "",
+                "skills_text": capability_text(_runtime_bindings.get("skills_id"), "format_skill_overview"),
+                "tool_schemas": tool_schemas,
+                "tools_id": tools_id,
+                "skills_id": _runtime_bindings.get("skills_id"),
+            }
+            executor = GraphExecutor(graph, agent._modules, services, agent._trace)
+            executor.run_id = run_id
+            if job_id:
+                with _jobs_lock:
+                    _run_jobs[job_id]["trace_ready"] = True
+            try:
+                result = executor.run(user_input)
+            except Exception as exc:
+                agent._trace("workflow_failed", {"error": str(exc)})
+                raise
+            agent._add_to_history(user_input, result["answer"])
+            result["events"] = [event.as_dict() for event in agent.get_trace_events()]
+            return result
         previews = _graph_previews(graph_data, user_input)
         runtime_node = next(node for node in graph_data["nodes"] if node["type"] in {"llm.chat", "agent.react_runtime"})
         prompt_edge = next((edge for edge in graph_data["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "prompt"), None)
@@ -803,12 +881,13 @@ def _start_run_job(payload: dict) -> dict:
 
     def worker() -> None:
         try:
-            result = run_graph(payload.get("workflow"), payload.get("input", "").strip(), payload.get("mode", "transparent"), bool(payload.get("require_started", False)), job_id)
+            result = run_graph(payload.get("workflow"), payload.get("input", "").strip(), payload.get("mode", "transparent"), bool(payload.get("require_started", False)), job_id, payload.get("history"))
             with _jobs_lock:
                 _run_jobs[job_id].update(done=True, result=result)
         except Exception as exc:
             with _jobs_lock:
-                _run_jobs[job_id].update(done=True, error=str(exc))
+                events = [event.as_dict() for event in _runtime_agent.get_trace_events()] if _runtime_agent is not None else []
+                _run_jobs[job_id].update(done=True, error=str(exc), events=events)
 
     threading.Thread(target=worker, daemon=True, name=f"atri-run-{job_id[:8]}").start()
     return {"job_id": job_id}
@@ -988,6 +1067,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 user_input,
                 payload.get("mode", "normal"),
                 require_started=bool(payload.get("require_started", False)),
+                history=payload.get("history"),
             )
             self._send(200, result)
         except (GraphWorkflowError, ModuleConfigError, ValueError, KeyError) as exc:

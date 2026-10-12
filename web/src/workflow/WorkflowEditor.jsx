@@ -6,17 +6,21 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  ConnectionLineType,
   useEdgesState,
   useNodesState,
   useNodesInitialized,
   useReactFlow,
 } from '@xyflow/react';
-import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronDown, Code2, Copy, Expand, FilePlus2, FolderOpen, Maximize2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Plus, Save, Search, Square, Trash2, Workflow as WorkflowIcon, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronDown, Code2, Copy, Expand, FilePlus2, FolderOpen, Maximize2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Plus, Save, Search, Spline, Square, Trash2, Waypoints, Workflow as WorkflowIcon, X } from 'lucide-react';
 import WorkflowNode from './WorkflowNode';
 import { categoryMeta, getNodeDefinition, hydrateNodeCatalog, modelChoices, nodeCatalog } from './catalog';
+import { getPortTypeColor, portsCompatible } from './portTypes';
+import { portLabel, useInterfaceLanguage } from './interfaceLanguage';
 import { ThemePicker } from '../theme.jsx';
 import CapabilityPanel from './CapabilityPanel';
 import TraceView from './TraceView';
+import IterationStepper from './IterationStepper';
 import { runWorkflowRequest } from './runApi';
 
 const nodeTypes = { workflow: WorkflowNode };
@@ -46,13 +50,17 @@ function fromDocument(document) {
         : cleanNode;
     }),
     edges: document.edges.map((edge) => {
-      const color = edgeColors[edge.sourceHandle] || '#667d72';
-      return { ...edge, label: undefined, type: 'smoothstep', animated: false, style: { stroke: color, strokeWidth: 2 }, markerEnd: { type: 'arrowclosed', color, width: 15, height: 15 } };
+      const source = document.nodes.find((node) => node.id === edge.source);
+      const target = document.nodes.find((node) => node.id === edge.target);
+      const legacyExecutor = target?.type === 'capability.dispatch' && ((source?.type === 'tools.provider' && edge.targetHandle === 'tools') || (source?.type === 'skills.provider' && edge.targetHandle === 'skills'));
+      const sourceHandle = legacyExecutor ? 'executor' : source?.type === 'llm.chat' && edge.sourceHandle === 'trace' ? 'response' : edge.sourceHandle;
+      const targetHandle = legacyExecutor ? (edge.targetHandle === 'tools' ? 'tool_executor' : 'skill_executor') : ['control.loop', 'react.loop'].includes(target?.type) && edge.targetHandle === 'trace' ? 'response' : edge.targetHandle;
+      const color = getPortTypeColor(getNodeDefinition(source?.type).outputs.find((port) => port.id === sourceHandle)?.type);
+      const { strokeDasharray, ...style } = edge.style || {};
+      return { ...edge, sourceHandle, targetHandle, label: undefined, animated: false, style: { ...style, stroke: color, strokeWidth: 2 }, markerEnd: { type: 'arrowclosed', color, width: 15, height: 15 } };
     }),
   };
 }
-
-const edgeColors = { message: '#4386a5', llm: '#7467a8', prompt: '#a66f4e', memory: '#368a74', skills: '#718e43', tools: '#bd7650', tool_calls: '#bd7650', tool_results: '#bd7650', answer: '#3f8b69', response: '#a078b5', model_response: '#a078b5', trace: '#667d72', loop: '#667d72' };
 
 function toDocument(workflow, nodes, edges) {
   return {
@@ -60,10 +68,9 @@ function toDocument(workflow, nodes, edges) {
     id: workflow.id,
     name: workflow.name,
     description: workflow.description ?? '',
-    nodes: nodes.map(({ type, width, height, measured, selected, dragging, resizing, ...node }) => {
-      const { kind, executionStatus, onDataChange, onPreviewToggle, onContentSize, onResizeStart, onResizeEnd, onOpenConfig, onSaveCredential, credentialConfigured, modelOptions, promptFiles, outputPreview, previewUsage, ...data } = node.data;
+    nodes: nodes.map(({ type, width, height, measured, selected, dragging, resizing, dragHandle, ...node }) => {
+      const { kind, connectionState, connectedPorts, executionStatus, executionDurationMs, interfaceLanguage, onDataChange, onPreviewToggle, onContentSize, onResizeStart, onResizeEnd, onOpenConfig, onSaveCredential, credentialConfigured, modelOptions, promptFiles, outputPreview, previewUsage, ...data } = node.data;
       const { api_key, ...config } = data.config || {};
-      delete config.debug_input;
       return { ...node, ...(data.sizeMode === 'manual' ? { width, height } : {}), type: kind, data: { ...data, config } };
     }),
     edges: edges.map(({ type, animated, selected, ...edge }) => edge),
@@ -78,27 +85,42 @@ function findPort(node, handle, direction) {
   return list.find((port) => port.id === handle);
 }
 
-function validateExecutionLayout(nodes, edges, nodeMap) {
-  const types = new Set(nodes.map((node) => node.data.kind));
-  const hasRouter = types.has('react.response_router');
-  const hasDispatch = types.has('tools.dispatch');
-  if (!hasRouter && !hasDispatch) return [];
-  const issues = [];
-  const edgeExists = (sourceType, sourceHandle, targetType, targetHandle) => edges.some((edge) => (
-    nodeMap[edge.source]?.data.kind === sourceType
-    && edge.sourceHandle === sourceHandle
-    && nodeMap[edge.target]?.data.kind === targetType
-    && edge.targetHandle === targetHandle
-  ));
-  if (hasRouter && !edgeExists('llm.chat', 'response', 'react.response_router', 'response')) issues.push('响应解析节点必须接收模型结构化响应');
-  if (hasRouter && !edgeExists('react.response_router', 'answer', 'core.chat_output', 'answer')) issues.push('响应解析节点的回答出口必须连接回复输出');
-  if (hasRouter && hasDispatch && !edgeExists('react.response_router', 'tool_calls', 'tools.dispatch', 'tool_calls')) issues.push('响应解析节点的工具出口必须连接工具 / 技能执行');
-  if (hasDispatch && !edgeExists('tools.dispatch', 'tool_results', 'react.loop', 'tool_results')) issues.push('工具执行结果必须反馈到 ReAct 循环');
-  if (hasDispatch && !edgeExists('react.loop', 'loop', 'llm.chat', 'loop')) issues.push('ReAct 循环必须回接模型对话节点');
-  return issues;
+function connectionIssue(connection, nodes, edges, excludedEdgeId = null) {
+  const sourcePort = findPort(nodes.find((node) => node.id === connection.source), connection.sourceHandle, 'source');
+  const targetPort = findPort(nodes.find((node) => node.id === connection.target), connection.targetHandle, 'target');
+  if (!portsCompatible(sourcePort?.type, targetPort?.type)) return '接口类型不匹配，连接未建立';
+  if (edges.some((edge) => edge.id !== excludedEdgeId && edge.target === connection.target && edge.targetHandle === connection.targetHandle)) return '这个输入接口已有连线';
+  return null;
 }
 
-function validateGraph(nodes, edges, modelOptions = []) {
+function isFeedbackConnection(connection, nodes, edges) {
+  const sourceNode = nodes.find((node) => node.id === connection.source);
+  if (['control.loop', 'react.loop'].includes(sourceNode?.data.kind) && connection.sourceHandle === 'loop') return true;
+  const visited = new Set();
+  const pending = [connection.target];
+  while (pending.length) {
+    const id = pending.pop();
+    if (id === connection.source) return true;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    pending.push(...edges.filter((edge) => edge.source === id && !edge.data?.feedback).map((edge) => edge.target));
+  }
+  return false;
+}
+
+function styleConnection(connection, feedback, nodes) {
+  const source = nodes.find((node) => node.id === connection.source);
+  const color = getPortTypeColor(findPort(source, connection.sourceHandle, 'source')?.type);
+  const { strokeDasharray, ...existingStyle } = connection.style || {};
+  return {
+    ...connection,
+    data: { ...(connection.data || {}), feedback },
+    style: { ...existingStyle, stroke: color, strokeWidth: 2 },
+    markerEnd: { type: 'arrowclosed', color, width: 15, height: 15 },
+  };
+}
+
+function validateGraph(nodes, edges, modelOptions = [], language = 'zh') {
   const issues = [];
   const incoming = new Set(edges.map((edge) => `${edge.target}:${edge.targetHandle}`));
   const nodeMap = Object.fromEntries(nodes.map((node) => [node.id, node]));
@@ -108,7 +130,7 @@ function validateGraph(nodes, edges, modelOptions = []) {
     const sourcePort = findPort(source, edge.sourceHandle, 'source');
     const targetPort = findPort(target, edge.targetHandle, 'target');
     if (!sourcePort || !targetPort) issues.push(`连接 ${edge.id} 引用了不存在的接口`);
-    else if (sourcePort.type !== targetPort.type) issues.push(`连接 ${edge.id} 的接口类型不匹配`);
+    else if (!portsCompatible(sourcePort.type, targetPort.type)) issues.push(`连接 ${edge.id} 的接口类型不匹配`);
   }
   for (const node of nodes) {
     const definition = nodeCatalog.find((item) => item.type === node.data.kind);
@@ -130,15 +152,27 @@ function validateGraph(nodes, edges, modelOptions = []) {
     }
     for (const port of definition.inputs) {
       if (!port.optional && !incoming.has(`${node.id}:${port.id}`)) {
-        issues.push(`${node.data.label}: 缺少 ${port.label} 输入`);
+        issues.push(`${node.data.label}: ${language === 'en' ? 'missing' : '缺少'} ${portLabel(node.data.kind, port, language)} ${language === 'en' ? 'input' : '输入'}`);
       }
     }
   }
   if (!nodes.some((node) => ['agent.react_runtime', 'llm.chat'].includes(node.data.kind)) && !isDirectChatGraph(nodes, edges)) issues.push('无模型工作流需要将对话输入直接连接到回复输出');
   if (!nodes.some((node) => node.data.kind === 'core.chat_input')) issues.push('工作流需要一个对话输入节点');
   if (!nodes.some((node) => node.data.kind === 'core.chat_output')) issues.push('工作流需要一个回复输出节点');
-  issues.push(...validateExecutionLayout(nodes, edges, nodeMap));
   return issues;
+}
+
+function applyExecutionEvents(current, events) {
+  const latest = new Map();
+  for (const event of events) {
+    if (!['node_started', 'node_completed', 'node_failed'].includes(event.event_type) || !event.node_id) continue;
+    const duration = event.data?.duration_ms;
+    latest.set(event.node_id, {
+      executionStatus: event.event_type === 'node_started' ? 'running' : event.event_type === 'node_failed' ? 'failed' : 'complete',
+      ...(event.event_type === 'node_completed' && Number.isFinite(duration) ? { executionDurationMs: duration } : {}),
+    });
+  }
+  return current.map((node) => latest.has(node.id) ? { ...node, data: { ...node.data, ...latest.get(node.id) } } : node);
 }
 
 function isDirectChatGraph(nodes, edges) {
@@ -174,7 +208,7 @@ function PaletteItem({ definition, onAdd }) {
   );
 }
 
-function Inspector({ node, modelOptions = modelChoices, promptFiles = [], credentialConfigured = [], onSaveCredential, onChange, onDelete }) {
+function Inspector({ node, edges = [], language, modelOptions = modelChoices, promptFiles = [], credentialConfigured = [], onSaveCredential, onChange, onDelete }) {
   if (!node) return (
     <aside className="inspector empty-inspector">
       <div className="panel-heading"><div><span className="eyebrow">属性</span><h2>节点设置</h2></div></div>
@@ -186,6 +220,9 @@ function Inspector({ node, modelOptions = modelChoices, promptFiles = [], creden
   const meta = categoryMeta[definition.category] || categoryMeta.control;
   const Icon = meta.icon;
   const config = node.data.config ?? {};
+  const visiblePorts = (ports, direction) => ports.filter((port) => !port.hidden || edges.some((edge) => direction === 'input'
+    ? edge.target === node.id && edge.targetHandle === port.id
+    : edge.source === node.id && edge.sourceHandle === port.id));
   const setData = (patch) => onChange(node.id, { ...node.data, ...patch });
   const setConfig = (key, value) => setData({ config: { ...config, [key]: value } });
   const saveCredential = () => {
@@ -213,12 +250,19 @@ function Inspector({ node, modelOptions = modelChoices, promptFiles = [], creden
           </>
         )}
         {Object.entries(config).filter(([key]) => !(node.data.kind === 'prompt.markdown_file' && key === 'source')).map(([key, value]) => (
-          <label className="field-label config-field" key={key}>
+          <div className="field-label config-field" key={key}>
             <span>{definition.configSchema?.properties?.[key]?.title || key.replaceAll('_', ' ')}</span>
             {typeof value === 'boolean' ? (
               <input type="checkbox" checked={value} onChange={(event) => setConfig(key, event.target.checked)} />
+            ) : key === 'max_iterations' && typeof value === 'number' ? (
+              <IterationStepper value={value} onChange={(next) => setConfig(key, next)} />
             ) : typeof value === 'number' ? (
-              <input type="number" value={value} onChange={(event) => setConfig(key, Number(event.target.value))} />
+              <input type="number" value={value} min={definition.configSchema?.properties?.[key]?.minimum} max={definition.configSchema?.properties?.[key]?.maximum} onChange={(event) => {
+                if (!event.target.value) return;
+                const field = definition.configSchema?.properties?.[key] || {};
+                const next = Number(event.target.value);
+                if (Number.isFinite(next)) setConfig(key, Math.min(field.maximum ?? Infinity, Math.max(field.minimum ?? -Infinity, field.type === 'integer' ? Math.trunc(next) : next)));
+              }} />
             ) : (key === 'model' && ['llm.gguf_loader', 'llm.openai_loader', 'llm.provider'].includes(node.data.kind)) || (key === 'mmproj' && node.data.kind === 'llm.gguf_loader') ? (
               (() => {
                 const isMmproj = key === 'mmproj';
@@ -248,15 +292,15 @@ function Inspector({ node, modelOptions = modelChoices, promptFiles = [], creden
             ) : (
               <textarea rows={key === 'text' ? 5 : 1} value={value ?? ''} onChange={(event) => setConfig(key, event.target.value)} />
             )}
-          </label>
+          </div>
         ))}
         {node.data.kind === 'llm.openai_loader' && <div className="api-key-field"><label htmlFor={`api-key-${node.id}`}>API Key {credentialConfigured.includes(node.id) ? '· 已配置' : '· 未配置'}</label><input id={`api-key-${node.id}`} type="password" autoComplete="off" placeholder="输入后点保存；不会写入工作流" /><div><button className="secondary-button" onClick={saveCredential}><Save size={14} />保存密钥</button><button className="secondary-button" onClick={() => onSaveCredential?.(node.id, '')}>清除</button></div></div>}
         <section className="port-section">
           <span className="eyebrow">接口定义</span>
-          {[['输入', definition.inputs], ['输出', definition.outputs]].map(([title, ports]) => (
+          {[[language === 'en' ? 'Inputs' : '输入', visiblePorts(definition.inputs, 'input')], [language === 'en' ? 'Outputs' : '输出', visiblePorts(definition.outputs, 'output')]].map(([title, ports]) => (
             <div className="port-group" key={title}>
               <strong>{title}</strong>
-              {ports.length ? ports.map((port) => <div className="port-inspector-row" key={port.id}><span>{port.label}</span><code>{port.type}</code></div>) : <span className="muted-line">无</span>}
+              {ports.length ? ports.map((port) => <div className="port-inspector-row" key={port.id}><span>{portLabel(node.data.kind, port, language)}</span><code>{port.type}</code></div>) : <span className="muted-line">{language === 'en' ? 'None' : '无'}</span>}
             </div>
           ))}
         </section>
@@ -268,9 +312,16 @@ function Inspector({ node, modelOptions = modelChoices, promptFiles = [], creden
 }
 
 function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, availableWorkflows, onRefreshWorkflows, onOpenDocument, onSwitchWorkflow, onCloseWorkflow, onSaved }) {
+  const [interfaceLanguage, setInterfaceLanguage] = useInterfaceLanguage();
   const initialGraph = fromDocument(initialDocument);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialGraph.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialGraph.edges);
+  const [connectionHint, setConnectionHint] = useState(null);
+  const reconnectingEdgeRef = useRef(null);
+  const [edgeMode, setEdgeMode] = useState(() => {
+    try { return localStorage.getItem('atri.workflow.edge-mode') === 'step' ? 'step' : 'curve'; }
+    catch { return 'curve'; }
+  });
   const [workflow, setWorkflow] = useState(initialDocument);
   const [selectedId, setSelectedId] = useState(null);
   const [search, setSearch] = useState('');
@@ -309,6 +360,10 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   const nodesInitialized = useNodesInitialized();
   const didInitialFit = useRef(false);
   const canvasRef = useRef(null);
+
+  useEffect(() => {
+    try { localStorage.setItem('atri.workflow.edge-mode', edgeMode); } catch { /* Canvas preference is optional. */ }
+  }, [edgeMode]);
 
   useEffect(() => {
     if (!nodesInitialized || didInitialFit.current) return;
@@ -399,7 +454,48 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   }, []);
 
   const selectedNode = nodes.find((node) => node.id === selectedId) ?? null;
-  const issues = useMemo(() => validateGraph(nodes, edges, modelOptions), [nodes, edges, modelOptions, nodeCatalog.length]);
+  const selectedEdge = edges.find((edge) => edge.selected) ?? null;
+  const connectionEligibility = useMemo(() => {
+    if (!connectionHint) return null;
+    const origin = nodes.find((node) => node.id === connectionHint.nodeId);
+    const originPort = findPort(origin, connectionHint.handleId, connectionHint.handleType);
+    if (!originPort) return null;
+    const targetIsInput = connectionHint.handleType === 'source';
+    const occupiedInputs = new Set(edges.filter((edge) => edge.id !== connectionHint.edgeId).map((edge) => `${edge.target}:${edge.targetHandle}`));
+    return new Map(nodes.map((node) => {
+      const definition = getNodeDefinition(node.data.kind);
+      const eligibleInputs = targetIsInput ? definition.inputs.filter((port) => !port.hidden && portsCompatible(originPort.type, port.type) && !occupiedInputs.has(`${node.id}:${port.id}`)).map((port) => port.id) : [];
+      const eligibleOutputs = targetIsInput || occupiedInputs.has(`${origin.id}:${originPort.id}`) ? [] : definition.outputs.filter((port) => !port.hidden && portsCompatible(port.type, originPort.type)).map((port) => port.id);
+      return [node.id, {
+        type: originPort.type,
+        origin: node.id === origin.id,
+        originHandle: node.id === origin.id ? connectionHint.handleId : null,
+        originDirection: connectionHint.handleType,
+        eligibleInputs,
+        eligibleOutputs,
+      }];
+    }));
+  }, [connectionHint, nodes, edges, nodeCatalog.length]);
+  const displayEdges = useMemo(() => {
+    const pairCounts = new Map();
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    return edges.map((edge) => {
+      const pair = `${edge.source}:${edge.target}`;
+      const lane = pairCounts.get(pair) || 0;
+      pairCounts.set(pair, lane + 1);
+      const source = nodeById.get(edge.source);
+      const color = getPortTypeColor(findPort(source, edge.sourceHandle, 'source')?.type);
+      const { strokeDasharray, ...style } = edge.style || {};
+      return {
+        ...edge,
+        type: edgeMode === 'curve' ? 'default' : 'smoothstep',
+        ...(edgeMode === 'curve' ? { pathOptions: { curvature: Math.min(0.75, 0.28 + lane * 0.12) } } : {}),
+        style: { ...style, stroke: color, strokeWidth: 2 },
+        markerEnd: { type: 'arrowclosed', color, width: 15, height: 15 },
+      };
+    });
+  }, [edges, nodes, edgeMode, nodeCatalog.length]);
+  const issues = useMemo(() => validateGraph(nodes, edges, modelOptions, interfaceLanguage), [nodes, edges, modelOptions, interfaceLanguage, nodeCatalog.length]);
   const groups = useMemo(() => {
     const filtered = nodeCatalog.filter((node) => !node.legacy && (node.label.toLowerCase().includes(search.toLowerCase()) || node.type.toLowerCase().includes(search.toLowerCase())));
     const categories = [...new Set([...Object.keys(categoryMeta), ...nodeCatalog.map((node) => node.category)])];
@@ -407,18 +503,41 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   }, [search]);
 
   const onConnect = useCallback((connection) => {
-    const sourceNode = nodes.find((node) => node.id === connection.source);
-    const targetNode = nodes.find((node) => node.id === connection.target);
-    const sourcePort = findPort(sourceNode, connection.sourceHandle, 'source');
-    const targetPort = findPort(targetNode, connection.targetHandle, 'target');
-    if (!sourcePort || !targetPort || sourcePort.type !== targetPort.type) {
-      setNotice('接口类型不匹配，连接未建立');
+    const issue = connectionIssue(connection, nodes, edges);
+    if (issue) {
+      setNotice(issue);
       window.setTimeout(() => setNotice(''), 2400);
       return;
     }
-    const color = edgeColors[connection.sourceHandle] || '#667d72';
-    setEdges((current) => addEdge({ ...connection, id: `e_${crypto.randomUUID().slice(0, 8)}`, type: 'smoothstep', style: { stroke: color, strokeWidth: 2 }, markerEnd: { type: 'arrowclosed', color, width: 15, height: 15 } }, current));
-  }, [nodes, setEdges]);
+    setEdges((current) => {
+      const feedback = isFeedbackConnection(connection, nodes, current);
+      return addEdge(styleConnection({ ...connection, id: `e_${crypto.randomUUID().slice(0, 8)}` }, feedback, nodes), current);
+    });
+  }, [nodes, edges, setEdges]);
+
+  const onReconnect = useCallback((oldEdge, connection) => {
+    const issue = connectionIssue(connection, nodes, edges, oldEdge.id);
+    if (issue) {
+      setNotice(issue);
+      window.setTimeout(() => setNotice(''), 2400);
+      return;
+    }
+    setEdges((current) => {
+      const others = current.filter((edge) => edge.id !== oldEdge.id);
+      const feedback = isFeedbackConnection(connection, nodes, others);
+      return current.map((edge) => edge.id === oldEdge.id
+        ? styleConnection({ ...edge, ...connection }, feedback, nodes)
+        : edge);
+    });
+  }, [nodes, edges, setEdges]);
+
+  const onConnectStart = useCallback((_, params) => {
+    setConnectionHint({ ...params, edgeId: reconnectingEdgeRef.current });
+  }, []);
+  const onConnectEnd = useCallback(() => setConnectionHint(null), []);
+  const isValidConnection = useCallback((connection) => !connectionIssue(connection, nodes, edges, reconnectingEdgeRef.current), [nodes, edges]);
+  const connectionSource = nodes.find((node) => node.id === connectionHint?.nodeId);
+  const connectionColor = getPortTypeColor(findPort(connectionSource, connectionHint?.handleId, connectionHint?.handleType)?.type);
 
   const addNode = (definition, position) => {
     const id = `${definition.type.split('.').at(-1)}_${crypto.randomUUID().slice(0, 5)}`;
@@ -501,7 +620,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     setNotice('所有节点已按内容自适应尺寸');
     window.setTimeout(() => setNotice(''), 2400);
   }, [setNodes]);
-  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, data: { ...node.data, modelOptions, promptFiles, credentialConfigured, onSaveCredential: saveCredential, onOpenConfig: setConfigKind, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, modelOptions, promptFiles, credentialConfigured, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
+  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, dragHandle: '.workflow-node-header', data: { ...node.data, interfaceLanguage, connectedPorts: { inputs: edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle), outputs: edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle) }, connectionState: connectionEligibility?.get(node.id) || null, modelOptions, promptFiles, credentialConfigured, onSaveCredential: saveCredential, onOpenConfig: setConfigKind, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, edges, interfaceLanguage, connectionEligibility, modelOptions, promptFiles, credentialConfigured, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
   const deleteNode = (id) => {
     setNodes((current) => current.filter((node) => node.id !== id));
     setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));
@@ -699,46 +818,34 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     setRunResult(null);
     setLiveEvents([]);
     lastEventsRef.current = [];
-    setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, executionStatus: undefined } })));
+    setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, executionStatus: undefined, executionDurationMs: undefined } })));
     try {
-      const payload = await runWorkflowRequest({ workflow: currentDocument(), input: runInput, mode: 'transparent' }, (events) => { setLiveEvents(events); lastEventsRef.current = events; });
+      const payload = await runWorkflowRequest({ workflow: currentDocument(), input: runInput, mode: 'transparent' }, (events) => {
+        setLiveEvents(events);
+        lastEventsRef.current = events;
+        setNodes((current) => applyExecutionEvents(current, events));
+      });
       setRunResult(payload);
       lastEventsRef.current = payload.events || [];
       setAgentModelLoaded(!isDirectChatGraph(nodes, edges));
       setNodes((current) => current.map((node) => {
         let data = node.data;
         if (Object.hasOwn(payload.previews || {}, node.id)) data = { ...node.data, outputPreview: payload.previews[node.id] };
-        if (node.data.kind === 'tools.dispatch') {
-          const results = payload.events.filter((event) => event.event_type === 'node_output' && event.node_id === 'tools.dispatch').map((event) => event.data.content);
+        if (['capability.dispatch', 'tools.dispatch'].includes(node.data.kind)) {
+          const results = payload.events.filter((event) => event.event_type === 'node_output' && ['capability.dispatch', 'tools.dispatch'].includes(event.node_id)).map((event) => event.data.content);
           if (results.length) data = { ...data, outputPreview: results.join('\n\n') };
         }
-        if (node.data.kind === 'core.chat_input') data = { ...data, config: { ...(data.config || {}), debug_input: runInput } };
         if (data === node.data) return node;
         return { ...node, data };
       }));
-      const providerByModule = Object.fromEntries(nodes.filter((node) => node.data.module_id).map((node) => [node.data.module_id, node.id]));
-      const nodeById = Object.fromEntries(nodes.map((node) => [node.id, node]));
-      setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, executionStatus: 'complete' } })));
+      setNodes((current) => applyExecutionEvents(current, payload.events || []));
       const failed = payload.events.some((event) => event.event_type === 'workflow_failed');
       if (failed) setNodes((current) => current.map((node) => ['agent.react_runtime', 'llm.chat'].includes(node.data.kind) ? { ...node, data: { ...node.data, executionStatus: 'failed' } } : node));
-      const router = nodes.find((node) => node.data.kind === 'react.response_router');
-      const dispatcher = nodes.find((node) => node.data.kind === 'tools.dispatch');
-      const outputNode = nodes.find((node) => node.data.kind === 'core.chat_output');
-      const setStatus = (id, status) => id && setNodes((current) => current.map((node) => node.id === id ? { ...node, data: { ...node.data, executionStatus: status } } : node));
-      for (const event of payload.events) {
-        const eventNode = nodeById[event.node_id];
-        const moduleId = ['llm', 'tools', 'skills', 'memory', 'prompt'].includes(event.node_id) ? event.node_id : null;
-        const nodeId = eventNode ? eventNode.id : moduleId ? providerByModule[moduleId] : null;
-        if (nodeId) setNodes((current) => current.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, executionStatus: event.event_type.includes('failed') ? 'failed' : 'complete' } } : node));
-        if (['response_parsed', 'response_routed_to_tools', 'response_routed_to_answer'].includes(event.event_type)) setStatus(router?.id, 'complete');
-        if (['tool_call_requested', 'tool_completed', 'node_output'].includes(event.event_type) && event.node_id === 'tools.dispatch') setStatus(dispatcher?.id, 'complete');
-        if (event.event_type === 'workflow_completed') setStatus(outputNode?.id, 'complete');
-      }
     } catch (error) {
       setRunResult({ error: error.message, events: lastEventsRef.current });
       setNodes((current) => current.map((node) => {
-        if (node.data.kind !== 'tools.dispatch') return node;
-        const results = lastEventsRef.current.filter((event) => event.event_type === 'node_output' && event.node_id === 'tools.dispatch').map((event) => event.data.content);
+        if (!['capability.dispatch', 'tools.dispatch'].includes(node.data.kind)) return node;
+        const results = lastEventsRef.current.filter((event) => event.event_type === 'node_output' && ['capability.dispatch', 'tools.dispatch'].includes(event.node_id)).map((event) => event.data.content);
         return results.length ? { ...node, data: { ...node.data, outputPreview: results.join('\n\n') } } : node;
       }));
     } finally {
@@ -768,7 +875,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
           <button className="workflow-open-button" onClick={openWorkflowMenu} disabled={running || agentStarting || agentStopping} aria-expanded={workflowMenuOpen} title="打开工作流"><FolderOpen size={16} /><span>打开工作流</span><ChevronDown size={14} /></button>
           {workflowMenuOpen && <div className="workflow-open-menu" onKeyDown={(event) => { if (event.key === 'Escape') setWorkflowMenuOpen(false); }}>
             <label><Search size={14} /><input autoFocus value={workflowSearch} onChange={(event) => setWorkflowSearch(event.target.value)} placeholder="搜索工作流" /></label>
-            <div className="workflow-open-list">{availableWorkflows.filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(workflowSearch.toLowerCase())).map((item) => <button key={item.id} onClick={() => { onOpenDocument(item.document, currentDocument(), true); setWorkflowMenuOpen(false); }}><WorkflowIcon size={15} /><span><strong>{item.name}</strong><small>{item.id}</small></span>{openTabs.some((tab) => tab.id === item.id) && <small>已打开</small>}</button>)}
+            <div className="workflow-open-list">{availableWorkflows.filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(workflowSearch.toLowerCase())).map((item) => <button key={item.id} onClick={() => { onOpenDocument(item.document, currentDocument(), true); setWorkflowMenuOpen(false); }} title={item.validation_error || item.id}><WorkflowIcon size={15} /><span><strong>{item.name}</strong><small>{item.validation_error ? `需要修复：${item.validation_error}` : item.id}</small></span>{openTabs.some((tab) => tab.id === item.id) && <small>已打开</small>}</button>)}
               {availableWorkflows.length === 0 && <span className="no-results">工作流文件夹为空</span>}
             </div>
             <button className="workflow-create-button" onClick={createWorkflow}><Plus size={16} />新建空白工作流</button>
@@ -793,7 +900,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
             {groups.map((group) => {
               const meta = categoryMeta[group.category] || categoryMeta.control;
               const collapsed = Boolean(collapsedGroups[group.category]);
-              return <section className="palette-group" key={group.category}><button className="group-heading" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((current) => ({ ...current, [group.category]: !current[group.category] }))}><span className={`group-indicator ${meta.color}`} /><span>{meta.label}</span><span className="group-count">{group.items.length}</span><ChevronDown size={13} /></button>{!collapsed && group.items.map((definition) => <PaletteItem key={definition.type} definition={definition} onAdd={addNode} />)}</section>;
+              return <section className="palette-group" key={group.category}><button className="group-heading" aria-expanded={!collapsed} onClick={() => setCollapsedGroups((current) => ({ ...current, [group.category]: !current[group.category] }))}><span className={`group-indicator ${meta.color}`} /><span>{meta.label}</span><span className="group-count">{group.items.length}</span><ChevronDown size={13} /></button><div className={`motion-collapse ${collapsed ? '' : 'is-open'}`} inert={collapsed ? '' : undefined}><div>{group.items.map((definition) => <PaletteItem key={definition.type} definition={definition} onAdd={addNode} />)}</div></div></section>;
             })}
             {groups.length === 0 && <div className="no-results">没有匹配的节点</div>}
           </div>
@@ -806,6 +913,15 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
             <div className="canvas-tab active"><WorkflowIcon size={15} />画布</div>
             <div className="canvas-toolbar-spacer" />
             <div className="graph-readout"><span>{nodes.length} 节点</span><span className="readout-separator">·</span><span>{edges.length} 连接</span></div>
+            <div className="interface-language-control" role="group" aria-label="接口语言" title="节点接口与执行轨迹语言">
+              <button className={interfaceLanguage === 'zh' ? 'active' : ''} onClick={() => setInterfaceLanguage('zh')} aria-pressed={interfaceLanguage === 'zh'}>中文</button>
+              <button className={interfaceLanguage === 'en' ? 'active' : ''} onClick={() => setInterfaceLanguage('en')} aria-pressed={interfaceLanguage === 'en'}>EN</button>
+            </div>
+            <div className="edge-mode-control" role="group" aria-label="连线形状">
+              <button className={edgeMode === 'curve' ? 'active' : ''} onClick={() => setEdgeMode('curve')} title="曲线连线" aria-label="曲线连线" aria-pressed={edgeMode === 'curve'}><Spline size={16} /></button>
+              <button className={edgeMode === 'step' ? 'active' : ''} onClick={() => setEdgeMode('step')} title="直角折线" aria-label="直角折线" aria-pressed={edgeMode === 'step'}><Waypoints size={16} /></button>
+            </div>
+            {selectedEdge && <button className="icon-button delete-edge-button" onClick={() => setEdges((current) => current.filter((edge) => edge.id !== selectedEdge.id))} title="删除选中的连线" aria-label="删除选中的连线"><Trash2 size={15} /></button>}
             <button className="secondary-button auto-size-button" onClick={autoSizeNodes} title="让所有节点按内容自适应长宽"><Maximize2 size={15} /><span>自适应</span></button>
             <button className="icon-button" onClick={() => fitView({ padding: 0.24, duration: 250 })} title="适配画布"><Expand size={15} /></button>
             <button className="icon-button sidebar-toggle" onClick={() => setInspectorCollapsed((value) => !value)} title={inspectorCollapsed ? '展开节点属性' : '收起节点属性'} aria-label={inspectorCollapsed ? '展开节点属性' : '收起节点属性'} aria-expanded={!inspectorCollapsed}>{inspectorCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}</button>
@@ -824,20 +940,30 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
             </div>
             <ReactFlow
               nodes={displayNodes}
-              edges={edges}
+              edges={displayEdges}
               nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
+              onConnectStart={onConnectStart}
+              onConnectEnd={onConnectEnd}
+              onReconnect={onReconnect}
+              onReconnectStart={(_, edge) => { reconnectingEdgeRef.current = edge.id; }}
+              onReconnectEnd={() => { reconnectingEdgeRef.current = null; setConnectionHint(null); }}
+              edgesReconnectable
+              reconnectRadius={20}
+              connectionLineType={edgeMode === 'curve' ? ConnectionLineType.Bezier : ConnectionLineType.SmoothStep}
+              connectionLineStyle={{ stroke: connectionColor, strokeWidth: 2.5 }}
+              onEdgeClick={() => setSelectedId(null)}
               onNodeClick={(_, node) => setSelectedId(node.id)}
               onPaneClick={(event) => event.detail === 2 ? openNodePicker(event) : setSelectedId(null)}
               zoomOnDoubleClick={false}
               onNodesDelete={(deleted) => { if (deleted.some((node) => node.id === selectedId)) setSelectedId(null); }}
-              isValidConnection={() => true}
+              isValidConnection={isValidConnection}
               minZoom={0.25}
               maxZoom={1.6}
               deleteKeyCode={['Backspace', 'Delete']}
-              defaultEdgeOptions={{ type: 'smoothstep', style: { strokeWidth: 2, stroke: '#667d72' }, markerEnd: { type: 'arrowclosed', color: '#667d72', width: 15, height: 15 } }}
+              defaultEdgeOptions={{ style: { strokeWidth: 2, stroke: '#667d72' }, markerEnd: { type: 'arrowclosed', color: '#667d72', width: 15, height: 15 } }}
             >
               <Background color="#b8c1bd" gap={22} size={1} />
               <Controls position="bottom-left" showInteractive={false} />
@@ -868,7 +994,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
           <div className="canvas-status"><div className="status-left"><span className={`status-light ${issues.length ? 'warn' : 'ok'}`} />{issues.length ? `${issues.length} 项待检查` : '接口连接正常'}<span className="status-sep">|</span><span>自动布局关闭</span></div><button onClick={runValidation}><Check size={13} />验证图结构</button></div>
         </section>
 
-        <Inspector node={selectedNode} modelOptions={modelOptions} promptFiles={promptFiles} credentialConfigured={credentialConfigured} onSaveCredential={saveCredential} onChange={updateNode} onDelete={deleteNode} />
+        <Inspector node={selectedNode} edges={edges} language={interfaceLanguage} modelOptions={modelOptions} promptFiles={promptFiles} credentialConfigured={credentialConfigured} onSaveCredential={saveCredential} onChange={updateNode} onDelete={deleteNode} />
       </main>
 
       <footer className="app-footer"><span>ATRI · LOCAL WORKSPACE</span><span className="execution-note"><span className="note-dot" />试运行调用当前 Agent · 应用后在对话页使用</span></footer>

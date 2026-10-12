@@ -15,9 +15,9 @@ capabilities; workflow JSON chooses implementations and bindings.
 ## Current execution path
 
 ```text
-Workflow JSON -> ReactAgent -> EventBus -> Prompt / LLM / Tools / Skills / Memory
-                                  ^                         |
-                                  +--- structured results --+
+Workflow JSON -> GraphExecutor -> workflow nodes -> WorkflowRuntime -> EventBus
+                      ^                |                         |
+                      +-- feedback ----+                model / tools / memory
 ```
 
 The runtime accepts provider-neutral `LLMResponse` values. Tool calls use
@@ -42,10 +42,13 @@ implementation. Initial port contracts live in `agent/nodes/`.
 
 The workflow editor is separate from everyday chat. Applying a workflow selects
 it as the active Agent configuration for the chat page. The workbench can also
-run the supported ReAct graph and inspect its trace. Graph documents use
-`workflow_version: 2`; the existing CLI continues to use v1. The current web
-runner adapts the ReAct runtime and connected module providers; arbitrary nodes
-need execution support before they can run.
+run the graph and inspect its trace. Graph documents use `workflow_version: 2`;
+the existing CLI continues to use v1. The web runner schedules registered node
+implementations by their connected inputs. An inactive branch omits its output
+port, so downstream nodes on that branch do not run. A connection marked
+`data.feedback: true` is delivered on the next iteration. The loop node
+enforces the iteration limit. The legacy `agent.react_runtime` still uses
+`ReactAgent.run()` for old documents.
 
 The web editor reads graph documents from `workflows/*.json` through the local
 API whenever the page loads, and its save action writes back to that directory.
@@ -59,17 +62,29 @@ extension is skipped and its error is included in `/api/nodes` diagnostics.
 
 The default visual graph uses explicit data-flow nodes: Markdown and text
 prompt nodes feed a prompt join node; memory, skills, and tools feed a context
-join node; a model loader feeds the model conversation node; and the answer
-ends at the chat output node. The legacy `agent.react_runtime` node remains a
-compatibility adapter for older documents. Nodes expose collapsed output
-previews, while input nodes can carry a debug value for workbench runs.
+join node; discovery schemas and skill schemas pass through the "能力使用方式"
+node into the model. Tool and skill executor references feed the dispatcher;
+they are distinct from catalog text and schemas. A model loader feeds the
+model conversation node. The response parser
+routes a final answer to chat output or sends calls to the capability
+dispatcher while passing the model response to loop control. Dispatch results
+reach loop control as structured tool results. Its next-context packet passes
+through the context join node before returning to the same model node. The
+context join and dispatcher also reserve typed MCP inputs for extensions.
+After a tool usage lookup, loop feedback adds that tool's schema to the next
+model request. Other tool schemas stay unloaded.
+The graph runner emits node start, output, completion, and failure events with
+the elapsed time for every completed node.
 
 ## Tool call lifecycle
 
-1. The tool module exposes enabled tools as JSON Schema function definitions.
-2. The runtime sends those definitions with the conversation to the LLM.
-3. The model returns a structured tool call; it does not execute the tool.
-4. The runtime dispatches the call through the configured ToolModule.
+1. The model initially receives only `atri_list_available_tools` and
+   `atri_get_tool_usage` definitions, plus any connected skill or MCP schemas.
+2. A list call returns enabled tool names and short descriptions. A usage call
+   returns one enabled tool's full schema and adds it to the next model request.
+3. The model returns a structured call to that tool; it does not execute it.
+4. The dispatcher checks that the tool was exposed and invokes the connected
+   tool executor or an extension handler.
 5. The result is appended as a `role=tool` message with its call ID.
 6. The model continues until it returns a normal response or the iteration cap
    is reached.
@@ -93,12 +108,10 @@ Transparent mode prints the same normalized events.
 
 ## Next architecture steps
 
-1. Implement a general graph executor using the node contracts and v2 format,
-   preserving v1 workflow support in the CLI.
-2. Persist trace events and run snapshots so CLI and the web workbench share
+1. Persist trace events and run snapshots so CLI and the web workbench share
    the same execution record.
-3. Add pause, resume, cancellation, retry, and node-level replay.
-4. Add dataset, experiment, evaluator, and result-store modules. Model tests are
+2. Add pause, resume, cancellation, retry, and node-level replay.
+3. Add dataset, experiment, evaluator, and result-store modules. Model tests are
    workflows that compose these modules, not a separate agent product.
 
 ## Transparency boundary

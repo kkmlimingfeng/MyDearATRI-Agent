@@ -34,6 +34,8 @@ class ToolModule(BaseTool):
             self._handle_get_openai_tool_schemas(message)
         elif action == 'get_tool_schemas':
             self._handle_get_tool_schemas(message)
+        elif action == 'get_tool_usage':
+            self._handle_get_tool_usage(message)
         elif action == 'get_tool_metadata':
             self._handle_get_tool_metadata(message)
         elif action == 'format_tool_descriptions':
@@ -132,6 +134,17 @@ class ToolModule(BaseTool):
         self.send(
             target=message.source,
             payload={'tools': self.get_tool_schemas()},
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )
+
+    def _handle_get_tool_usage(self, message: Message) -> None:
+        name = message.payload.get('tool_name')
+        schema = next((item for item in self.get_tool_schemas() if item['function']['name'] == name), None)
+        payload = {'schema': schema} if schema else {'error': f'工具 {name} 不存在或未启用'}
+        self.send(
+            target=message.source,
+            payload=payload,
             msg_type=MessageType.RESPONSE,
             correlation_id=message.correlation_id
         )

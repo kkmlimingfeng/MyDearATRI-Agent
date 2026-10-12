@@ -15,6 +15,9 @@ class PortDefinition:
     data_type: str = "any"
     required: bool = True
     description: str = ""
+    label_zh: str = ""
+    label_en: str = ""
+    hidden: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -22,6 +25,9 @@ class PortDefinition:
             "type": self.data_type,
             "required": self.required,
             "description": self.description,
+            "label_zh": self.label_zh,
+            "label_en": self.label_en,
+            "hidden": self.hidden,
         }
 
 

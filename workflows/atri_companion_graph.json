@@ -5,24 +5,6 @@
   "description": "用可观察的数据流连接输入、提示词、上下文、模型和回复输出。",
   "nodes": [
     {
-      "id": "chat_input",
-      "position": {
-        "x": 965.8931841587768,
-        "y": 110.0526936483362
-      },
-      "data": {
-        "label": "对话输入",
-        "category": "io",
-        "module_id": "",
-        "config": {
-          "placeholder": "说点什么…"
-        },
-        "sizeMode": "auto",
-        "previewExpanded": false
-      },
-      "type": "core.chat_input"
-    },
-    {
       "id": "prompt_agent",
       "position": {
         "x": 181.9726362451946,
@@ -80,8 +62,8 @@
     {
       "id": "memory",
       "position": {
-        "x": -261.8588509146043,
-        "y": 897.0729328414167
+        "x": 219.12034455580948,
+        "y": 470.50314862331203
       },
       "data": {
         "label": "长期记忆",
@@ -98,8 +80,8 @@
     {
       "id": "skills",
       "position": {
-        "x": -11.39487717623112,
-        "y": 896.9074086092592
+        "x": 224.74196765879105,
+        "y": 715.1799750265462
       },
       "data": {
         "label": "技能目录",
@@ -117,8 +99,8 @@
     {
       "id": "tools",
       "position": {
-        "x": 241.49724915957455,
-        "y": 901.8688266850106
+        "x": 220.82167288369703,
+        "y": 988.9238846887054
       },
       "data": {
         "label": "工具箱",
@@ -135,8 +117,8 @@
     {
       "id": "context",
       "position": {
-        "x": 499.1851851851851,
-        "y": 720.2925925925925
+        "x": 490.47967938481565,
+        "y": 473.2738655071083
       },
       "data": {
         "label": "上下文联结",
@@ -147,10 +129,24 @@
       "type": "context.merge"
     },
     {
+      "id": "capability_usage",
+      "position": {
+        "x": 554,
+        "y": 1035
+      },
+      "data": {
+        "label": "能力使用方式",
+        "category": "tools",
+        "config": {},
+        "sizeMode": "auto"
+      },
+      "type": "capability.schema_merge"
+    },
+    {
       "id": "llm_qwen",
       "position": {
-        "x": 501.18244749689615,
-        "y": 437.5172298484721
+        "x": -177.84700493192332,
+        "y": 479.95657062527334
       },
       "data": {
         "label": "Qwen3 1.7B · GGUF Q4_K_M（运行时）",
@@ -170,16 +166,13 @@
     {
       "id": "llm_chat",
       "position": {
-        "x": 902.0885466296809,
+        "x": 900.8385465996338,
         "y": 396.7376405887193
       },
       "data": {
         "label": "模型对话",
         "category": "model",
-        "config": {
-          "max_iterations": 5,
-          "display_mode": "normal"
-        },
+        "config": {},
         "sizeMode": "auto",
         "previewExpanded": true
       },
@@ -188,37 +181,37 @@
     {
       "id": "response_router",
       "position": {
-        "x": 1549.6539132810212,
-        "y": 155.34716988832662
+        "x": 1406.0130675749247,
+        "y": 473.09813160181267
       },
       "data": {
-        "label": "响应解析与分流",
+        "label": "响应解析",
         "category": "control",
         "config": {},
         "sizeMode": "auto"
       },
-      "type": "react.response_router"
+      "type": "control.response_parser"
     },
     {
       "id": "tool_dispatch",
       "position": {
-        "x": 1506.0415580043177,
-        "y": 539.5833461171392
+        "x": 949.977375005717,
+        "y": 802.924896578316
       },
       "data": {
-        "label": "工具 / 技能执行",
+        "label": "能力分发",
         "category": "tools",
         "config": {},
         "sizeMode": "auto",
-        "previewExpanded": true
+        "previewExpanded": false
       },
-      "type": "tools.dispatch"
+      "type": "capability.dispatch"
     },
     {
       "id": "chat_output",
       "position": {
-        "x": 2055.2762343087616,
-        "y": 145.85727895679352
+        "x": 1809.3456954483236,
+        "y": 590.9262630006833
       },
       "data": {
         "label": "回复输出",
@@ -228,25 +221,25 @@
           "show_trace": false
         },
         "sizeMode": "auto",
-        "previewExpanded": true
+        "previewExpanded": false
       },
       "type": "core.chat_output"
     },
     {
       "id": "react_loop",
       "position": {
-        "x": 1061.354010065046,
-        "y": 761.9792209978413
+        "x": 1396.5159833792711,
+        "y": 835.9760203009818
       },
       "data": {
-        "label": "ReAct 循环",
+        "label": "循环控制",
         "category": "control",
         "config": {
-          "max_iterations": 5
+          "max_iterations": 20
         },
         "sizeMode": "auto"
       },
-      "type": "react.loop"
+      "type": "control.loop"
     },
     {
       "id": "prompt_user",
@@ -283,26 +276,25 @@
         "sizeMode": "auto"
       },
       "type": "prompt.markdown_file"
+    },
+    {
+      "id": "chat_input_a752b",
+      "position": {
+        "x": 494.1863463838821,
+        "y": -72.34293087262434
+      },
+      "data": {
+        "label": "对话输入",
+        "category": "io",
+        "module_id": "",
+        "config": {
+          "placeholder": "说点什么…"
+        }
+      },
+      "type": "core.chat_input"
     }
   ],
   "edges": [
-    {
-      "id": "e_input_chat",
-      "source": "chat_input",
-      "target": "llm_chat",
-      "sourceHandle": "message",
-      "targetHandle": "message",
-      "style": {
-        "stroke": "#4386a5",
-        "strokeWidth": 2
-      },
-      "markerEnd": {
-        "type": "arrowclosed",
-        "color": "#4386a5",
-        "width": 15,
-        "height": 15
-      }
-    },
     {
       "id": "e_agent_join",
       "source": "prompt_agent",
@@ -310,12 +302,12 @@
       "sourceHandle": "prompt",
       "targetHandle": "prompt_a",
       "style": {
-        "stroke": "#a66f4e",
+        "stroke": "#a467d6",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#a66f4e",
+        "color": "#a467d6",
         "width": 15,
         "height": 15
       }
@@ -327,12 +319,12 @@
       "sourceHandle": "prompt",
       "targetHandle": "prompt_b",
       "style": {
-        "stroke": "#a66f4e",
+        "stroke": "#a467d6",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#a66f4e",
+        "color": "#a467d6",
         "width": 15,
         "height": 15
       }
@@ -344,12 +336,12 @@
       "sourceHandle": "prompt",
       "targetHandle": "prompt",
       "style": {
-        "stroke": "#a66f4e",
+        "stroke": "#a467d6",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#a66f4e",
+        "color": "#a467d6",
         "width": 15,
         "height": 15
       }
@@ -361,12 +353,12 @@
       "sourceHandle": "memory",
       "targetHandle": "memory",
       "style": {
-        "stroke": "#368a74",
+        "stroke": "#58a675",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#368a74",
+        "color": "#58a675",
         "width": 15,
         "height": 15
       }
@@ -378,12 +370,12 @@
       "sourceHandle": "skills",
       "targetHandle": "skills",
       "style": {
-        "stroke": "#718e43",
+        "stroke": "#83a84c",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#718e43",
+        "color": "#83a84c",
         "width": 15,
         "height": 15
       }
@@ -395,12 +387,29 @@
       "sourceHandle": "tools",
       "targetHandle": "tools",
       "style": {
-        "stroke": "#bd7650",
+        "stroke": "#da8945",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#bd7650",
+        "color": "#da8945",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_usage_chat",
+      "source": "capability_usage",
+      "target": "llm_chat",
+      "sourceHandle": "schemas",
+      "targetHandle": "tool_schemas",
+      "style": {
+        "stroke": "#c5a244",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#c5a244",
         "width": 15,
         "height": 15
       }
@@ -412,12 +421,12 @@
       "sourceHandle": "context",
       "targetHandle": "context",
       "style": {
-        "stroke": "#667d72",
+        "stroke": "#39a6a5",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#667d72",
+        "color": "#39a6a5",
         "width": 15,
         "height": 15
       }
@@ -429,12 +438,12 @@
       "sourceHandle": "llm",
       "targetHandle": "llm",
       "style": {
-        "stroke": "#7467a8",
+        "stroke": "#5a9fd2",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#7467a8",
+        "color": "#5a9fd2",
         "width": 15,
         "height": 15
       }
@@ -446,29 +455,29 @@
       "sourceHandle": "response",
       "targetHandle": "response",
       "style": {
-        "stroke": "#a078b5",
+        "stroke": "#b66cc1",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#a078b5",
+        "color": "#b66cc1",
         "width": 15,
         "height": 15
       }
     },
     {
-      "id": "e_chat_loop_trace",
-      "source": "llm_chat",
+      "id": "e_router_loop_response",
+      "source": "response_router",
       "target": "react_loop",
-      "sourceHandle": "trace",
-      "targetHandle": "trace",
+      "sourceHandle": "response",
+      "targetHandle": "response",
       "style": {
-        "stroke": "#667d72",
+        "stroke": "#b66cc1",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#667d72",
+        "color": "#b66cc1",
         "width": 15,
         "height": 15
       }
@@ -480,12 +489,12 @@
       "sourceHandle": "answer",
       "targetHandle": "answer",
       "style": {
-        "stroke": "#3f8b69",
+        "stroke": "#7874d8",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#3f8b69",
+        "color": "#7874d8",
         "width": 15,
         "height": 15
       }
@@ -497,12 +506,46 @@
       "sourceHandle": "tool_calls",
       "targetHandle": "tool_calls",
       "style": {
-        "stroke": "#bd7650",
+        "stroke": "#d46f67",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#bd7650",
+        "color": "#d46f67",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_tools_dispatch",
+      "source": "tools",
+      "target": "tool_dispatch",
+      "sourceHandle": "executor",
+      "targetHandle": "tool_executor",
+      "style": {
+        "stroke": "#d5794f",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#d5794f",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_skills_dispatch",
+      "source": "skills",
+      "target": "tool_dispatch",
+      "sourceHandle": "executor",
+      "targetHandle": "skill_executor",
+      "style": {
+        "stroke": "#709d65",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#709d65",
         "width": 15,
         "height": 15
       }
@@ -514,12 +557,103 @@
       "sourceHandle": "tool_results",
       "targetHandle": "tool_results",
       "style": {
-        "stroke": "#bd7650",
+        "stroke": "#45ac8a",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#bd7650",
+        "color": "#45ac8a",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_loop_context",
+      "source": "react_loop",
+      "target": "context",
+      "sourceHandle": "loop",
+      "targetHandle": "loop",
+      "data": {
+        "feedback": true
+      },
+      "style": {
+        "stroke": "#c38a54",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#c38a54",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_usage_dispatch",
+      "source": "capability_usage",
+      "target": "tool_dispatch",
+      "sourceHandle": "schemas",
+      "targetHandle": "usage",
+      "style": {
+        "stroke": "#c5a244",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#c5a244",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_loop_usage",
+      "source": "react_loop",
+      "target": "capability_usage",
+      "sourceHandle": "loop",
+      "targetHandle": "loop",
+      "data": {
+        "feedback": true
+      },
+      "style": {
+        "stroke": "#c38a54",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#c38a54",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_skills_usage",
+      "source": "skills",
+      "target": "capability_usage",
+      "sourceHandle": "schemas",
+      "targetHandle": "schemas_a",
+      "style": {
+        "stroke": "#c5a244",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#c5a244",
+        "width": 15,
+        "height": 15
+      }
+    },
+    {
+      "id": "e_tools_usage",
+      "source": "tools",
+      "target": "capability_usage",
+      "sourceHandle": "schemas",
+      "targetHandle": "schemas_b",
+      "style": {
+        "stroke": "#c5a244",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#c5a244",
         "width": 15,
         "height": 15
       }
@@ -531,12 +665,12 @@
       "sourceHandle": "prompt",
       "targetHandle": "prompt_c",
       "style": {
-        "stroke": "#a66f4e",
+        "stroke": "#a467d6",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#a66f4e",
+        "color": "#a467d6",
         "width": 15,
         "height": 15
       }
@@ -548,38 +682,58 @@
       "sourceHandle": "prompt",
       "targetHandle": "prompt_d",
       "style": {
-        "stroke": "#a66f4e",
+        "stroke": "#a467d6",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#a66f4e",
+        "color": "#a467d6",
         "width": 15,
         "height": 15
       }
     },
     {
       "id": "e_loop_chat",
-      "source": "react_loop",
+      "source": "context",
       "target": "llm_chat",
       "sourceHandle": "loop",
       "targetHandle": "loop",
       "style": {
-        "stroke": "#667d72",
+        "stroke": "#c38a54",
         "strokeWidth": 2
       },
       "markerEnd": {
         "type": "arrowclosed",
-        "color": "#667d72",
+        "color": "#c38a54",
         "width": 15,
         "height": 15
+      }
+    },
+    {
+      "style": {
+        "strokeWidth": 2,
+        "stroke": "#7874d8"
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#7874d8",
+        "width": 15,
+        "height": 15
+      },
+      "source": "chat_input_a752b",
+      "sourceHandle": "message",
+      "target": "llm_chat",
+      "targetHandle": "message",
+      "id": "e_5d0d77b7",
+      "data": {
+        "feedback": false
       }
     }
   ],
   "viewport": {
-    "x": 310.3105139545231,
-    "y": 209.02498933281174,
-    "zoom": 0.5472815352774099
+    "x": 318.650932396175,
+    "y": 135.89329472294924,
+    "zoom": 0.7999999807698438
   },
   "metadata": {
     "status": "active",

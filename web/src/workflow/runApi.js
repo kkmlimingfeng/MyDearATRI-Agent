@@ -15,8 +15,8 @@ export async function runWorkflowRequest(payload, onProgress) {
     const status = await statusResponse.json();
     if (!statusResponse.ok) throw new Error(status.error || '读取运行状态失败');
     if (status.done) {
+      onProgress(status.events || status.result?.events || []);
       if (status.error) throw new Error(status.error);
-      onProgress(status.result.events || []);
       return status.result;
     }
     onProgress(status.events || []);

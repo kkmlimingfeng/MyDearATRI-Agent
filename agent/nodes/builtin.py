@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Mapping
+
+from agent.tool_executor import ToolExecutor
+from agent.tool_discovery import GET_TOOL_USAGE, LIST_TOOLS, TOOL_DISCOVERY_TEXT, discovery_schemas, merge_schemas
 
 from .base import BaseNode, NodeContext, NodeResult, PortDefinition
 from .registry import node_registry
@@ -27,7 +32,7 @@ class ModuleProviderNode(BaseNode):
     output_name = "module"
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
-        module_id = self.config.get("module_id")
+        module_id = context.services.get("node_module_id") or self.config.get("module_id") or self.module_id
         if not module_id:
             raise ValueError(f"{self.node_type} 缺少 module_id")
         return NodeResult(outputs={self.output_name: context.get_module(module_id)})
@@ -68,6 +73,12 @@ class PromptProviderNode(ModuleProviderNode):
     output_name = "prompt"
     outputs = (PortDefinition("prompt", "prompt"),)
 
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        agent = context.services["agent"]
+        module_id = context.services.get("node_module_id") or self.module_id
+        reply = agent.bus.request(source="agent", target=module_id, payload={"action": "get_system_prompt", "prompt_name": self.config.get("prompt_name", "default")})
+        return NodeResult(outputs={"prompt": reply.payload.get("system_prompt", "")})
+
 
 class MarkdownPromptNode(PromptProviderNode):
     node_type = "prompt.markdown_file"
@@ -75,6 +86,12 @@ class MarkdownPromptNode(PromptProviderNode):
     description = "从 Markdown 文件加载一个提示词片段。"
     defaults = {"file": "AGENT.md", "source": "modules/prompt/SystemPrompt"}
     preview = "从 Markdown 文件读取提示词片段。"
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        read_prompt = context.services.get("read_prompt")
+        if read_prompt is None:
+            raise RuntimeError("缺少 Markdown 提示词读取服务")
+        return NodeResult(outputs={"prompt": read_prompt(self.config.get("file", "AGENT.md"))})
 
 
 class TextPromptNode(BaseNode):
@@ -104,7 +121,7 @@ class PromptJoinNode(BaseNode):
     outputs = (PortDefinition("prompt", "prompt"),)
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
-        separator = str(self.config.get("separator", "\n\n"))
+        separator = str(self.config.get("separator", "\n\n")).replace("\\n", "\n")
         parts = [str(inputs[name]) for name in ("prompt_a", "prompt_b", "prompt_c", "prompt_d") if inputs.get(name)]
         return NodeResult(outputs={"prompt": separator.join(parts)})
 
@@ -120,6 +137,12 @@ class MemoryProviderNode(ModuleProviderNode):
     output_name = "memory"
     outputs = (PortDefinition("memory", "memory"),)
 
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        agent = context.services["agent"]
+        module_id = context.services.get("node_module_id") or self.module_id
+        reply = agent.bus.request(source="agent", target=module_id, payload={"action": "get_memory"})
+        return NodeResult(outputs={"memory": reply.payload.get("memory", "")})
+
 
 class SkillsProviderNode(ModuleProviderNode):
     node_type = "skills.provider"
@@ -130,7 +153,23 @@ class SkillsProviderNode(ModuleProviderNode):
     defaults = {"source": "modules/skills"}
     preview = "recommend_travel\nfile_operations"
     output_name = "skills"
-    outputs = (PortDefinition("skills", "skills"),)
+    outputs = (
+        PortDefinition("skills", "skills"),
+        PortDefinition("schemas", "tool_schemas", required=False),
+        PortDefinition("executor", "skill_executor", required=False),
+    )
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        agent = context.services["agent"]
+        module_id = context.services.get("node_module_id") or self.module_id
+        reply = agent.bus.request(source="agent", target=module_id, payload={"action": "format_skill_overview"})
+        catalog = agent.bus.request(source="agent", target=module_id, payload={"action": "get_skill_descriptions"})
+        schemas = [{"type": "function", "function": {
+            "name": f"skill__{item['folder_name']}",
+            "description": f"读取技能 {item['name']} 的完整说明。{item.get('description', '')}",
+            "parameters": {"type": "object", "properties": {}},
+        }} for item in catalog.payload.get("descriptions", []) if re.fullmatch(r"[A-Za-z0-9_]+", item.get("folder_name", ""))]
+        return NodeResult(outputs={"skills": {"module_id": module_id, "text": reply.payload.get("text", ""), "schemas": schemas}, "schemas": schemas, "executor": {"module_id": module_id}})
 
 
 class ToolsProviderNode(ModuleProviderNode):
@@ -140,25 +179,92 @@ class ToolsProviderNode(ModuleProviderNode):
     module_kind = "tools"
     module_id = "tools"
     defaults = {"approval": "risk-based"}
-    preview = "get_weather\nget_attraction\nget_current_*\nexec_sandbox_cmd"
+    preview = "提供工具目录查询、按需读取用法，以及独立的执行器引用。"
     output_name = "tools"
-    outputs = (PortDefinition("tools", "tools"),)
+    outputs = (
+        PortDefinition("tools", "tools"),
+        PortDefinition("schemas", "tool_schemas", required=False),
+        PortDefinition("executor", "tool_executor", required=False),
+    )
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        module_id = context.services.get("node_module_id") or self.module_id
+        schemas = discovery_schemas()
+        return NodeResult(outputs={"tools": {"module_id": module_id, "text": TOOL_DISCOVERY_TEXT, "schemas": schemas}, "schemas": schemas, "executor": {"module_id": module_id}})
+
+
+class SchemaMergeNode(BaseNode):
+    node_type = "capability.schema_merge"
+    title = "能力使用方式"
+    category = "tools"
+    description = "汇总模型可调用能力的名称、用途和参数定义。"
+    preview = "初始提供工具发现方式；按需读取后加入具体工具定义。"
+    inputs = (
+        *(PortDefinition(f"schemas_{suffix}", "tool_schemas", required=False) for suffix in "abcd"),
+        PortDefinition("loop", "loop", required=False),
+    )
+    outputs = (PortDefinition("schemas", "tool_schemas"),)
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        groups = []
+        for suffix in "abcd":
+            value = inputs.get(f"schemas_{suffix}") or []
+            if not isinstance(value, list):
+                raise ValueError("能力使用方式输入必须是列表")
+            groups.append(value)
+        loop = inputs.get("loop") or {}
+        response = loop.get("response") or {}
+        previously_offered = response.get("tool_schemas") or []
+        activated = [result["activated_schema"] for result in loop.get("tool_results", []) if result.get("activated_schema")]
+        return NodeResult(outputs={"schemas": merge_schemas(*groups, previously_offered, activated)})
 
 
 class ContextMergeNode(BaseNode):
     node_type = "context.merge"
     title = "上下文联结"
     category = "context"
-    preview = "把记忆、技能和工具描述汇总成上下文。"
+    preview = "汇总技能、工具、MCP、记忆和循环结果，组织下一轮上下文。"
     inputs = (
-        PortDefinition("memory", "memory", required=False),
         PortDefinition("skills", "skills", required=False),
         PortDefinition("tools", "tools", required=False),
+        PortDefinition("mcp", "mcp", required=False),
+        PortDefinition("memory", "memory", required=False),
+        PortDefinition("tool_results", "tool_results", required=False),
+        PortDefinition("context_a", "context", required=False),
+        PortDefinition("context_b", "context", required=False),
+        PortDefinition("loop", "loop", required=False),
     )
-    outputs = (PortDefinition("context", "context"),)
+    outputs = (
+        PortDefinition("context", "context"),
+        PortDefinition("tool_schemas", "tool_schemas", required=False),
+        PortDefinition("loop", "loop", required=False),
+    )
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
-        return NodeResult(outputs={"context": dict(inputs)})
+        parts = []
+        schemas = []
+        for name in ("skills", "tools", "mcp", "memory", "tool_results", "context_a", "context_b"):
+            value = inputs.get(name)
+            if not value:
+                continue
+            if name in {"skills", "tools", "mcp"} and isinstance(value, dict):
+                if value.get("text"):
+                    parts.append(str(value["text"]))
+                definitions = value.get("schemas") or []
+                if not isinstance(definitions, list):
+                    raise ValueError(f"{name} 的能力使用方式必须是列表")
+                schemas.extend(definitions)
+            else:
+                parts.append(str(value))
+        loop = inputs.get("loop")
+        if loop is not None and not isinstance(loop, dict):
+            raise ValueError("新上下文必须是循环控制返回的数据包")
+        if loop and loop.get("tool_results"):
+            parts.append(json.dumps(loop["tool_results"], ensure_ascii=False, default=str))
+        outputs = {"context": "\n\n".join(parts), "tool_schemas": schemas}
+        if loop:
+            outputs["loop"] = loop
+        return NodeResult(outputs=outputs)
 
 
 class ReactRuntimeNode(BaseNode):
@@ -213,71 +319,285 @@ class LLMChatNode(ReactRuntimeNode):
     node_type = "llm.chat"
     title = "模型对话"
     category = "model"
-    defaults = {"max_iterations": 5, "display_mode": "normal"}
+    defaults = {}
     preview = "接收消息、提示词和上下文，返回模型回答。"
+    config_schema = {"type": "object", "properties": {}}
     inputs = (
         PortDefinition("message", "text"),
         PortDefinition("prompt", "prompt"),
         PortDefinition("context", "context", required=False),
         PortDefinition("llm", "llm"),
+        PortDefinition("tool_schemas", "tool_schemas", required=False),
         PortDefinition("loop", "loop", required=False),
     )
     outputs = (
         PortDefinition("answer", "text"),
-        PortDefinition("trace", "trace", required=False),
         PortDefinition("response", "model_response", required=False),
+        PortDefinition("trace", "trace", required=False, hidden=True),
     )
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        agent = context.services["agent"]
+        llm = inputs["llm"]
+        if not getattr(llm, "_initialized", False):
+            llm.ensure_initialized()
+        feedback = inputs.get("loop")
+        if feedback:
+            messages = list(feedback["messages"])
+            response = feedback["response"]
+            calls = response.get("tool_calls") or []
+            assistant_message = {"role": "assistant", "content": "" if "<tool_call>" in response.get("content", "") else response.get("content", "")}
+            if calls:
+                assistant_message["tool_calls"] = [ToolExecutor.from_provider_call(call).to_message_dict() for call in calls]
+            messages.append(assistant_message)
+            for result in feedback.get("tool_results", []):
+                messages.append({"role": "tool", "tool_call_id": result.get("call_id", ""), "content": json.dumps(result, ensure_ascii=False, default=str)})
+            if "feedback" in feedback:
+                messages.append({"role": "user", "content": str(feedback["feedback"])})
+        else:
+            prompt = str(inputs.get("prompt", ""))
+            extra = str(inputs.get("context", ""))
+            tools_text = str(context.services.get("tools_text", ""))
+            skills_text = str(context.services.get("skills_text", ""))
+            prompt = prompt.replace("{{TOOLS}}", "" if tools_text and tools_text in extra else tools_text)
+            prompt = prompt.replace("{{SKILLS}}", "" if skills_text and skills_text in extra else skills_text)
+            system = "\n\n".join(part for part in (prompt, extra) if part)
+            history = agent._history[-agent.max_history_turns * 2:]
+            messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": str(inputs["message"])}]
+        tool_schemas = inputs.get("tool_schemas", context.services.get("tool_schemas", []))
+        if feedback:
+            prior = feedback.get("response", {}).get("tool_schemas") or []
+            activated = [item["activated_schema"] for item in feedback.get("tool_results", []) if item.get("activated_schema")]
+            tool_schemas = merge_schemas(tool_schemas or [], prior, activated)
+        context.emit("model_request", context.node_id, {"messages": messages, "tool_schemas": tool_schemas})
+        reply = agent.bus.request(source="agent", target=llm.module_id, payload={"action": "generate", "messages": messages, "tools": tool_schemas})
+        response = {
+            "content": reply.payload.get("response", ""),
+            "tool_calls": reply.payload.get("tool_calls", []),
+            "usage": reply.payload.get("usage", {}),
+            "messages": messages,
+            "tool_schemas": tool_schemas,
+        }
+        if not response["tool_calls"] and response["content"]:
+            response["tool_calls"] = agent._parse_embedded_tool_calls(response["content"])
+        if "<tool_call>" in response["content"] and not response["tool_calls"]:
+            raise ValueError("模型输出了工具调用，但参数格式无法解析；请检查模型的工具调用格式")
+        context.emit("model_response", context.node_id, {"content": response["content"], "tool_calls": response["tool_calls"], "usage": response["usage"]})
+        return NodeResult(outputs={"answer": response["content"], "response": response, "trace": response})
 
 
 class ResponseRouterNode(BaseNode):
-    node_type = "react.response_router"
-    title = "响应解析与分流"
+    node_type = "control.response_parser"
+    title = "响应解析"
     category = "control"
-    description = "解析模型结构化响应；工具或技能调用进入执行反馈循环，普通内容进入最终回答。"
-    preview = "运行时按 tool_calls 分流：调用能力后反馈下一轮，无调用时输出回答。"
+    description = "解析模型输出，将普通回答、工具调用和结构化结果分开。"
+    preview = "把模型输出转换为可连接的回答、工具调用或其他结构化数据。"
     inputs = (
         PortDefinition("response", "model_response"),
     )
     outputs = (
         PortDefinition("tool_calls", "tool_calls", required=False),
         PortDefinition("answer", "text", required=False),
+        PortDefinition("response", "model_response", required=False),
     )
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
         response = inputs.get("response")
-        return NodeResult(outputs={
-            "tool_calls": getattr(response, "tool_calls", []) if response is not None else [],
-            "answer": getattr(response, "content", "") if response is not None else "",
-        })
+        if isinstance(response, dict):
+            calls = response.get("tool_calls") or []
+            content = response.get("content", "")
+        else:
+            calls = getattr(response, "tool_calls", []) if response is not None else []
+            content = getattr(response, "content", "") if response is not None else ""
+        if calls:
+            return NodeResult(outputs={"tool_calls": calls, "response": response})
+        return NodeResult(outputs={"answer": content})
+
+
+class LegacyResponseRouterNode(ResponseRouterNode):
+    """Compatibility alias for graph files using the old ReAct name."""
+
+    node_type = "react.response_router"
+    title = "兼容：响应解析与分流"
 
 
 class ToolDispatchNode(BaseNode):
-    node_type = "tools.dispatch"
-    title = "工具 / 技能执行"
+    node_type = "capability.dispatch"
+    title = "能力分发"
     category = "tools"
-    description = "由运行时将解析出的工具或技能调用分发给已启用能力并返回结果。"
-    preview = "技能通过工具调用协议加载或执行；结果返回 ReAct 循环。"
-    inputs = (PortDefinition("tool_calls", "tool_calls"),)
+    description = "把解析出的调用分发给工具、技能或 MCP 能力并返回统一结果。"
+    preview = "根据模型调用选择技能、工具或 MCP 执行器，返回统一结果。"
+    inputs = (
+        PortDefinition("tool_calls", "tool_calls"),
+        PortDefinition("skill_executor", "skill_executor", required=False),
+        PortDefinition("tool_executor", "tool_executor", required=False),
+        PortDefinition("skills", "skills", required=False, hidden=True),
+        PortDefinition("tools", "tools", required=False, hidden=True),
+        PortDefinition("mcp", "mcp", required=False),
+        PortDefinition("usage", "tool_schemas", required=False),
+        PortDefinition("handlers", "capability_handlers", required=False),
+    )
     outputs = (PortDefinition("tool_results", "tool_results"),)
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
-        return NodeResult(outputs={"tool_results": []})
+        agent = context.services["agent"]
+        results = []
+        mcp = inputs.get("mcp") or {}
+        handlers = {
+            **(context.services.get("capability_handlers") or {}),
+            **((mcp.get("handlers") or {}) if isinstance(mcp, dict) else {}),
+            **(inputs.get("handlers") or {}),
+        }
+        tools_ref = inputs.get("tool_executor") or inputs.get("tools")
+        skills_ref = inputs.get("skill_executor") or inputs.get("skills")
+        for raw in inputs.get("tool_calls") or []:
+            call = ToolExecutor.from_provider_call(raw)
+            if call.name in {LIST_TOOLS, GET_TOOL_USAGE}:
+                module_id = tools_ref.get("module_id") if isinstance(tools_ref, dict) else context.services.get("tools_id")
+                if not module_id or self.node_type == "capability.dispatch" and not tools_ref:
+                    raise RuntimeError("工具发现需要在工作流中连接工具箱")
+                if call.name == LIST_TOOLS:
+                    reply = agent.bus.request(source="agent", target=module_id, payload={"action": "get_tool_descriptions"})
+                    catalog = [{"name": item["name"], "description": item.get("description", "")} for item in reply.payload.get("descriptions", [])]
+                    results.append({"call_id": call.call_id, "name": call.name, "status": "success", "output": catalog})
+                else:
+                    tool_name = call.arguments.get("tool_name")
+                    if not isinstance(tool_name, str) or not tool_name:
+                        results.append({"call_id": call.call_id, "name": call.name, "status": "error", "error": "缺少 tool_name"})
+                        continue
+                    reply = agent.bus.request(source="agent", target=module_id, payload={"action": "get_tool_usage", "tool_name": tool_name})
+                    schema = reply.payload.get("schema")
+                    result = {"call_id": call.call_id, "name": call.name, "status": "success" if schema else "error"}
+                    if schema:
+                        result["output"] = schema["function"]
+                        result["activated_schema"] = schema
+                    else:
+                        result["error"] = reply.payload.get("error", "工具不可用")
+                    results.append(result)
+                continue
+            namespace, separator, name = call.name.partition(":")
+            if not separator and "__" in call.name and call.name.split("__", 1)[0] in {"skill", *handlers}:
+                namespace, separator, name = call.name.partition("__")
+            if call.name.startswith("skill__") or separator and namespace == "skill":
+                name = call.name[len("skill__"):] if call.name.startswith("skill__") else name
+                skills_id = skills_ref.get("module_id") if isinstance(skills_ref, dict) else context.services.get("skills_id")
+                if not skills_id or self.node_type == "capability.dispatch" and not skills_ref:
+                    raise RuntimeError("技能调用需要在工作流中连接技能目录")
+                reply = agent.bus.request(source="agent", target=skills_id, payload={"action": "get_skill_detail", "skill_name": name})
+                results.append({"call_id": call.call_id, "name": call.name, "status": "error" if "error" in reply.payload else "success", "output": reply.payload.get("detail"), "error": reply.payload.get("error")})
+            elif separator and namespace != "tool":
+                handler = handlers.get(namespace)
+                if handler is None:
+                    raise RuntimeError(f"未注册能力类型: {namespace}")
+                results.append(handler(name, call.arguments, call.call_id))
+            else:
+                module_id = tools_ref.get("module_id") if isinstance(tools_ref, dict) else context.services.get("tools_id")
+                if not module_id or self.node_type == "capability.dispatch" and not tools_ref:
+                    raise RuntimeError("能力分发节点缺少已连接的工具箱")
+                if separator:
+                    call.name = name
+                if "usage" in inputs and call.name not in {
+                    schema.get("function", {}).get("name") for schema in (inputs.get("usage") or [])
+                }:
+                    results.append({"call_id": call.call_id, "name": call.name, "status": "error", "error": "请先读取该工具的使用方式"})
+                    continue
+                results.append(agent._get_tool_executor().execute(call, module_id).as_dict())
+        return NodeResult(outputs={"tool_results": results})
+
+
+class LegacyToolDispatchNode(ToolDispatchNode):
+    """Compatibility alias for graph files using the old tools name."""
+
+    node_type = "tools.dispatch"
+    title = "兼容：工具 / 技能执行"
 
 
 class ReactLoopNode(BaseNode):
-    node_type = "react.loop"
-    title = "ReAct 循环"
+    node_type = "control.loop"
+    title = "循环控制"
     category = "control"
-    description = "根据模型输出和工具结果决定继续推理或结束。"
+    description = "根据输入的条件或结果决定继续、结束或回到上游节点。"
     defaults = {"max_iterations": 5}
+    config_schema = {"type": "object", "properties": {"max_iterations": {"type": "integer", "title": "最大循环次数", "minimum": 1, "maximum": 500, "default": 5}}}
     inputs = (
-        PortDefinition("trace", "trace", required=False),
+        PortDefinition("response", "model_response", required=False),
+        PortDefinition("trace", "trace", required=False, hidden=True),
         PortDefinition("tool_results", "tool_results", required=False),
+        PortDefinition("value", "any", required=False),
     )
-    outputs = (PortDefinition("loop", "loop"),)
+    outputs = (PortDefinition("loop", "loop", label_zh="新上下文", label_en="Next context"),)
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
-        return NodeResult(outputs={"loop": {"max_iterations": self.config.get("max_iterations", 5)}})
+        results = inputs.get("tool_results")
+        feedback = inputs.get("value")
+        response = inputs.get("response", inputs.get("trace"))
+        if not results and feedback is None or not isinstance(response, dict):
+            return NodeResult()
+        iteration = int(context.services.get("iteration", 1))
+        limit = max(1, min(500, int(self.config.get("max_iterations", 5))))
+        if iteration >= limit:
+            raise RuntimeError(f"已达到最大循环次数 {limit}，任务未完成")
+        value = {"messages": response["messages"], "response": response}
+        if results:
+            value["tool_results"] = results
+        if feedback is not None:
+            value["feedback"] = feedback
+        return NodeResult(outputs={"loop": value})
+
+
+class LegacyReactLoopNode(ReactLoopNode):
+    """Compatibility alias for graph files using the old ReAct name."""
+
+    node_type = "react.loop"
+    title = "兼容：ReAct 循环"
+
+
+class BranchNode(BaseNode):
+    node_type = "control.branch"
+    title = "条件分支"
+    category = "control"
+    description = "根据条件将数据送到满足条件或不满足条件的出口。"
+    defaults = {"condition": "truthy", "compare_to": ""}
+    inputs = (PortDefinition("value", "any"),)
+    outputs = (
+        PortDefinition("true", "any", required=False),
+        PortDefinition("false", "any", required=False),
+    )
+    config_schema = {"type": "object", "properties": {"condition": {"type": "string", "enum": ["truthy", "empty", "equals", "contains", "not_contains"]}, "compare_to": {"type": "string"}}}
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        value = inputs.get("value")
+        condition = self.config.get("condition", "truthy")
+        compare_to = str(self.config.get("compare_to", ""))
+        matched = {
+            "truthy": lambda: bool(value),
+            "empty": lambda: not bool(value),
+            "equals": lambda: str(value) == compare_to,
+            "contains": lambda: compare_to in str(value),
+            "not_contains": lambda: compare_to not in str(value),
+        }.get(condition)
+        if matched is None:
+            raise ValueError(f"未知分支条件: {condition}")
+        return NodeResult(outputs={"true" if matched() else "false": value})
+
+
+class StateAccumulatorNode(BaseNode):
+    node_type = "state.accumulator"
+    title = "状态累积"
+    category = "context"
+    description = "把当前状态与新结果合并，供下一轮模型或评估节点使用。"
+    inputs = (
+        PortDefinition("state", "context", required=False),
+        PortDefinition("item", "any", required=False),
+    )
+    outputs = (PortDefinition("state", "context"),)
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        previous = inputs.get("state")
+        state = list(previous) if isinstance(previous, list) else ([] if previous is None else [previous])
+        if inputs.get("item") is not None:
+            state.append(inputs["item"])
+        return NodeResult(outputs={"state": state})
 
 
 class ChatOutputNode(BaseNode):
@@ -288,6 +608,7 @@ class ChatOutputNode(BaseNode):
     defaults = {"show_trace": False}
     preview = "工作流最终输出。"
     inputs = (PortDefinition("answer", "text"),)
+    outputs = (PortDefinition("answer", "text", hidden=True),)
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
         return NodeResult(outputs={"answer": inputs.get("answer", "")})
@@ -296,10 +617,15 @@ class ChatOutputNode(BaseNode):
 node_registry.register_many((
     ChatInputNode,
     ReactLoopNode,
+    LegacyReactLoopNode,
     ReactRuntimeNode,
     LLMChatNode,
     ResponseRouterNode,
+    LegacyResponseRouterNode,
     ToolDispatchNode,
+    LegacyToolDispatchNode,
+    BranchNode,
+    StateAccumulatorNode,
     LLMProviderNode,
     GGUFLoaderNode,
     OpenAILoaderNode,
@@ -310,6 +636,7 @@ node_registry.register_many((
     MemoryProviderNode,
     SkillsProviderNode,
     ToolsProviderNode,
+    SchemaMergeNode,
     ContextMergeNode,
     ChatOutputNode,
 ))

@@ -4,21 +4,35 @@ set -Eeuo pipefail
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
 
-if [[ "${CONDA_DEFAULT_ENV:-}" != "atri" ]] && command -v conda >/dev/null 2>&1; then
-  eval "$(conda shell.bash hook)"
-  if conda env list | awk '{print $1}' | grep -qx 'atri'; then
-    conda activate atri
-  fi
-fi
-
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
-  if command -v python >/dev/null 2>&1; then
-    PYTHON_BIN=python
-  elif command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN=python3
-  else
-    printf 'Python was not found. Activate the atri environment or set PYTHON_BIN.\n' >&2
+  if [[ "${CONDA_DEFAULT_ENV:-}" != "atri" ]]; then
+    CONDA_EXECUTABLE="$(command -v conda || true)"
+    if [[ -z "$CONDA_EXECUTABLE" ]]; then
+      for candidate in "$HOME/anaconda3/bin/conda" "$HOME/miniconda3/bin/conda" "$HOME/miniforge3/bin/conda"; do
+        if [[ -x "$candidate" ]]; then
+          CONDA_EXECUTABLE="$candidate"
+          break
+        fi
+      done
+    fi
+    if [[ -z "$CONDA_EXECUTABLE" ]]; then
+      printf 'Conda was not found. Install Conda or set PYTHON_BIN to the atri environment Python.\n' >&2
+      exit 1
+    fi
+    eval "$("$CONDA_EXECUTABLE" shell.bash hook)"
+    if ! conda activate atri; then
+      printf 'Could not activate the atri Conda environment.\n' >&2
+      exit 1
+    fi
+  fi
+  if [[ -z "${CONDA_PREFIX:-}" ]]; then
+    printf 'The atri Conda environment is not active.\n' >&2
+    exit 1
+  fi
+  PYTHON_BIN="$CONDA_PREFIX/bin/python"
+  if [[ ! -x "$PYTHON_BIN" ]]; then
+    printf 'The atri Conda environment has no usable Python interpreter.\n' >&2
     exit 1
   fi
 fi
