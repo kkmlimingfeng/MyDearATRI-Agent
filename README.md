@@ -4,9 +4,9 @@
 
 项目仍在开发中。工作流由通用节点及其连线决定执行顺序，默认陪伴工作流用一个模型节点、响应解析、能力分发和反馈边组成 ReAct 循环。
 
-![](images/chat1.png)
+![](docs/chat1.png)
 
-![](images/workflow1.png)
+![](docs/workflow1.png)
 
 
 
