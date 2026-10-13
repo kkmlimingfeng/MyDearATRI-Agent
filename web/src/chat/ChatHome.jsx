@@ -58,10 +58,109 @@ function readChatState() {
   }
 }
 
-function MessageTrace({ events, mode, language }) {
+function eventTime(event) {
+  const time = Date.parse(event?.timestamp);
+  return Number.isFinite(time) ? time : null;
+}
+
+function tokenCount(usage, primary, alternative) {
+  const value = usage?.[primary] ?? usage?.[alternative];
+  const count = Number(value);
+  return value !== null && value !== undefined && value !== '' && Number.isFinite(count) && count >= 0 ? count : null;
+}
+
+function traceMetrics(events, durationMs) {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let hasInput = false;
+  let hasOutput = false;
+  let modelDurationMs = 0;
+  const requests = new Map();
+
+  for (const event of events) {
+    const type = event.event_type;
+    const key = event.node_id || 'model';
+    if (type === 'model_request' || type === 'model_thinking') {
+      requests.set(key, eventTime(event));
+      continue;
+    }
+    if (type !== 'model_response' && type !== 'llm_completed') continue;
+    const usage = event.data?.usage;
+    const input = tokenCount(usage, 'prompt_tokens', 'input_tokens');
+    const output = tokenCount(usage, 'completion_tokens', 'output_tokens');
+    if (input !== null) { inputTokens += input; hasInput = true; }
+    if (output !== null) { outputTokens += output; hasOutput = true; }
+    const started = requests.get(key);
+    const finished = eventTime(event);
+    if (output !== null && started !== null && started !== undefined && finished !== null && finished > started) {
+      modelDurationMs += finished - started;
+    }
+    requests.delete(key);
+  }
+
+  const first = eventTime(events[0]);
+  const last = eventTime(events[events.length - 1]);
+  return {
+    inputTokens: hasInput ? inputTokens : null,
+    outputTokens: hasOutput ? outputTokens : null,
+    outputSpeed: hasOutput && modelDurationMs > 0 ? outputTokens / (modelDurationMs / 1000) : null,
+    durationMs: Number.isFinite(durationMs) ? durationMs : first !== null && last !== null && last >= first ? last - first : null,
+  };
+}
+
+function formatDuration(durationMs) {
+  if (durationMs === null) return '—';
+  const seconds = durationMs / 1000;
+  return seconds < 60 ? `${seconds.toFixed(1)} s` : `${Math.floor(seconds / 60)}m ${(seconds % 60).toFixed(1)}s`;
+}
+
+function formatMessageTime(sentAt, language) {
+  if (!Number.isFinite(sentAt)) return null;
+  const time = new Date(sentAt);
+  const today = new Date();
+  const sameDay = time.toDateString() === today.toDateString();
+  const locale = language === 'en' ? 'en-US' : 'zh-CN';
+  return {
+    short: new Intl.DateTimeFormat(locale, { ...(sameDay ? {} : { year: 'numeric', month: '2-digit', day: '2-digit' }), hour: '2-digit', minute: '2-digit' }).format(time),
+    full: new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'medium' }).format(time),
+  };
+}
+
+function MessageTime({ message, language }) {
+  const time = formatMessageTime(message.sentAt, language);
+  return <div className="message-meta" title={time?.full || undefined}>
+    <span>{message.role === 'assistant' ? 'ATRI' : language === 'en' ? 'You' : '你'}</span>
+    <time dateTime={time ? new Date(message.sentAt).toISOString() : undefined}>
+      {time?.short || (language === 'en' ? 'Time not recorded' : '时间未记录')}
+    </time>
+  </div>;
+}
+
+function MessageTrace({ events, mode, language, durationMs }) {
   const [open, setOpen] = useState(mode === 'transparent');
   useEffect(() => setOpen(mode === 'transparent'), [mode]);
-  return <div className="trace-details"><button type="button" className="trace-details-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}><Activity size={13} />{language === 'en' ? 'Execution trace' : '执行轨迹'} <span>{events.length} {language === 'en' ? 'steps' : '步'}</span></button><div className={`motion-collapse ${open ? 'is-open' : ''}`} inert={!open ? '' : undefined}><div><TraceView events={events} /></div></div></div>;
+  const metrics = traceMetrics(events, durationMs);
+  const number = (value) => value === null ? '—' : value.toLocaleString();
+  const speed = metrics.outputSpeed === null ? '—' : `${metrics.outputSpeed.toFixed(1)} token/s`;
+  const labels = language === 'en' ? ['Input tokens', 'Output tokens', 'Output speed', 'Total time'] : ['输入 token', '输出 token', '输出速度', '总耗时'];
+  return <div className="trace-details">
+    <div className="trace-details-heading">
+      <button type="button" className="trace-details-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        <Activity size={14} />{language === 'en' ? 'Execution trace' : '执行轨迹'}
+        <span>{events.length} {language === 'en' ? 'steps' : '步'}</span>
+        <ChevronDown size={14} className={open ? 'is-open' : ''} />
+      </button>
+      <div className="trace-metrics" aria-label={language === 'en' ? 'Run metrics' : '运行统计'}>
+        <span>{labels[0]} <strong>{number(metrics.inputTokens)}</strong></span>
+        <span>{labels[1]} <strong>{number(metrics.outputTokens)}</strong></span>
+        <span>{labels[2]} <strong>{speed}</strong></span>
+        <span>{labels[3]} <strong>{formatDuration(metrics.durationMs)}</strong></span>
+      </div>
+    </div>
+    <div className={`motion-collapse ${open ? 'is-open' : ''}`} inert={!open ? '' : undefined}>
+      <div><TraceView events={events} /></div>
+    </div>
+  </div>;
 }
 
 export default function ChatHome({ onNavigate, active = true }) {
@@ -197,12 +296,14 @@ export default function ChatHome({ onNavigate, active = true }) {
     const sessionId = activeSession?.id;
     if (!text || busy || !workflow || !sessionId) return;
     if (!runtimeStatus.running) {
-      appendMessage(sessionId, { role: 'assistant', error: '工作流尚未启动，请先到工作流页点击“启动工作流”后再对话。' });
+      appendMessage(sessionId, { role: 'assistant', error: '工作流尚未启动，请先到工作流页点击“启动工作流”后再对话。', sentAt: Date.now() });
       return;
     }
+    const sentAt = Date.now();
+    const started = performance.now();
     setInput('');
     followThreadRef.current = true;
-    appendMessage(sessionId, { role: 'user', content: text }, text);
+    appendMessage(sessionId, { role: 'user', content: text, sentAt }, text);
     setBusy(true);
     setBusySessionId(sessionId);
     setLiveEvents([]);
@@ -220,9 +321,9 @@ export default function ChatHome({ onNavigate, active = true }) {
       const result = await runWorkflowRequest({ workflow, input: text, mode, require_started: true, history }, onProgress);
       if (!result.answer && result.error) throw new Error(result.error);
       liveEventsRef.current = result.events || liveEventsRef.current;
-      appendMessage(sessionId, { role: 'assistant', content: result.answer, events: result.events });
+      appendMessage(sessionId, { role: 'assistant', content: result.answer, events: result.events, sentAt: Date.now(), durationMs: performance.now() - started });
     } catch (error) {
-      appendMessage(sessionId, { role: 'assistant', error: error.message, events: liveEventsRef.current });
+      appendMessage(sessionId, { role: 'assistant', error: error.message, events: liveEventsRef.current, sentAt: Date.now(), durationMs: performance.now() - started });
     } finally {
       setBusy(false);
       setBusySessionId(null);
@@ -340,13 +441,12 @@ export default function ChatHome({ onNavigate, active = true }) {
           const thread = event.currentTarget;
           followThreadRef.current = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 100;
         }}>
-          <div className="chat-date-label"><span />今天<span /></div>
           {messages.map((message, index) => <article className={`chat-message ${message.role}`} key={`${message.role}-${index}`}>
             {message.role === 'assistant' && <div className="message-avatar"><Bot size={16} /></div>}
             <div className="message-content">
+              <MessageTime message={message} language={interfaceLanguage} />
               {message.error ? <div className="message-error">{message.error}</div> : <div className="message-bubble">{message.content}</div>}
-              {message.events?.length > 0 && <MessageTrace events={message.events} mode={mode} language={interfaceLanguage} />}
-              {message.role === 'assistant' && index === 0 && <div className="message-meta"><span>ATRI</span><span>·</span><span>刚刚</span></div>}
+              {message.events?.length > 0 && <MessageTrace events={message.events} mode={mode} language={interfaceLanguage} durationMs={message.durationMs} />}
             </div>
             {message.role === 'user' && <div className="user-avatar">W</div>}
           </article>)}
