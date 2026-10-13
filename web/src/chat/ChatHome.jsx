@@ -173,6 +173,7 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [busy, setBusy] = useState(false);
   const [busySessionId, setBusySessionId] = useState(null);
   const [liveEvents, setLiveEvents] = useState([]);
+  const [liveDraft, setLiveDraft] = useState('');
   const liveEventsRef = useRef([]);
   const threadRef = useRef(null);
   const followThreadRef = useRef(true);
@@ -193,7 +194,7 @@ export default function ChatHome({ onNavigate, active = true }) {
   useEffect(() => {
     const thread = threadRef.current;
     if (thread && followThreadRef.current) thread.scrollTop = thread.scrollHeight;
-  }, [activeSessionId, messages.length, busy, liveEvents.length]);
+  }, [activeSessionId, messages.length, busy, liveEvents.length, liveDraft]);
 
   useEffect(() => {
     try {
@@ -307,13 +308,15 @@ export default function ChatHome({ onNavigate, active = true }) {
     setBusy(true);
     setBusySessionId(sessionId);
     setLiveEvents([]);
+    setLiveDraft('');
     liveEventsRef.current = [];
     try {
-      const onProgress = (events) => {
+      const onProgress = (events, draft) => {
         if (events.length !== liveEventsRef.current.length) {
           liveEventsRef.current = events;
           setLiveEvents(events);
         }
+        setLiveDraft(draft);
       };
       const history = activeSession.messages
         .filter((message) => !message.error && typeof message.content === 'string' && ['user', 'assistant'].includes(message.role))
@@ -328,6 +331,7 @@ export default function ChatHome({ onNavigate, active = true }) {
       setBusy(false);
       setBusySessionId(null);
       setLiveEvents(liveEventsRef.current);
+      setLiveDraft('');
     }
   };
 
@@ -454,9 +458,10 @@ export default function ChatHome({ onNavigate, active = true }) {
             <div className="message-avatar"><Bot size={16} /></div>
             <div className="message-content">
               <div className="chat-live-panel">
-                <div className="chat-live-status" role="status" aria-live="polite"><Activity size={15} aria-hidden="true" /><span className="chat-live-status-text">{getChatActivity(liveEvents, workflow, interfaceLanguage)}</span></div>
+                <div className="chat-live-status" role="status" aria-live="polite"><Activity size={15} aria-hidden="true" /><span className="chat-live-status-text">{liveDraft ? interfaceLanguage === 'en' ? 'Generating reply…' : '正在生成回复…' : getChatActivity(liveEvents, workflow, interfaceLanguage)}</span></div>
                 {mode === 'normal' && recentActions.length > 0 && <div className="chat-live-actions">{recentActions.map((action) => <div key={action.id} className={action.failed ? 'is-error' : ''}>{action.failed ? <AlertCircle size={13} /> : <Check size={13} />}<span>{action.label}</span></div>)}</div>}
               </div>
+              {liveDraft && <div className="message-bubble chat-stream-bubble">{liveDraft}<span className="stream-caret" aria-hidden="true" /></div>}
               {mode === 'transparent' && liveEvents.length > 0 && <TraceView events={liveEvents} />}
             </div>
           </div>}

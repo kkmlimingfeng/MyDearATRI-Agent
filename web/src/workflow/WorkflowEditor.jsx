@@ -349,6 +349,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   const [agentStopping, setAgentStopping] = useState(false);
   const [runResult, setRunResult] = useState(null);
   const [liveEvents, setLiveEvents] = useState([]);
+  const [liveDraft, setLiveDraft] = useState('');
   const lastEventsRef = useRef([]);
   const [modelOptions, setModelOptions] = useState(modelChoices);
   const [promptFiles, setPromptFiles] = useState([]);
@@ -817,13 +818,17 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     setRunning(true);
     setRunResult(null);
     setLiveEvents([]);
+    setLiveDraft('');
     lastEventsRef.current = [];
     setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, executionStatus: undefined, executionDurationMs: undefined } })));
     try {
-      const payload = await runWorkflowRequest({ workflow: currentDocument(), input: runInput, mode: 'transparent' }, (events) => {
-        setLiveEvents(events);
-        lastEventsRef.current = events;
-        setNodes((current) => applyExecutionEvents(current, events));
+      const payload = await runWorkflowRequest({ workflow: currentDocument(), input: runInput, mode: 'transparent' }, (events, draft) => {
+        setLiveDraft(draft);
+        if (events.length !== lastEventsRef.current.length) {
+          setLiveEvents(events);
+          lastEventsRef.current = events;
+          setNodes((current) => applyExecutionEvents(current, events));
+        }
       });
       setRunResult(payload);
       lastEventsRef.current = payload.events || [];
@@ -851,6 +856,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     } finally {
       setRunning(false);
       setLiveEvents([]);
+      setLiveDraft('');
     }
   };
 
@@ -986,6 +992,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
               <div className="run-drawer-heading"><div><span className="eyebrow">WORKFLOW RUN</span><strong>试运行</strong></div><span className="transparent-mode-label">透明模式</span><button className="icon-button" onClick={() => setRunPanel(false)} title="关闭试运行"><X size={15} /></button></div>
               <textarea value={runInput} onChange={(event) => setRunInput(event.target.value)} placeholder="输入一条消息…" />
               <div className="run-drawer-actions"><span>{agentRunning && serverWorkflowId !== workflow.id ? `请先停止运行中的工作流：${serverWorkflowId}` : issues[0] || '将使用当前画布配置运行工作流'}</span><button className="run-top-button" disabled={!runtimeStatusLoaded || running || issues.length > 0 || (agentRunning && serverWorkflowId !== workflow.id)} onClick={runWorkflow}>{running ? <span className="spinner" /> : <Play size={13} fill="currentColor" />}{running ? '运行中…' : '运行工作流'}</button></div>
+              {running && liveDraft && <div className="run-output is-streaming"><strong>正在生成</strong><p>{liveDraft}<span className="stream-caret" aria-hidden="true" /></p></div>}
               {running && liveEvents.length > 0 && <TraceView events={liveEvents} />}
               {runResult && <div className={`run-output ${runResult.error ? 'has-error' : ''}`}><strong>{runResult.error ? '运行失败' : '工作流输出'}</strong><p>{runResult.error || runResult.answer}</p>{runResult.events?.length > 0 && <TraceView events={runResult.events} />}</div>}
             </div>}

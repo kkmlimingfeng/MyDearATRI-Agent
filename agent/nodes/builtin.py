@@ -369,8 +369,16 @@ class LLMChatNode(ReactRuntimeNode):
             prior = feedback.get("response", {}).get("tool_schemas") or []
             activated = [item["activated_schema"] for item in feedback.get("tool_results", []) if item.get("activated_schema")]
             tool_schemas = merge_schemas(tool_schemas or [], prior, activated)
+        stream_update = context.services.get("stream_update")
+        if callable(stream_update):
+            stream_update("")
         context.emit("model_request", context.node_id, {"messages": messages, "tool_schemas": tool_schemas})
-        reply = agent.bus.request(source="agent", target=llm.module_id, payload={"action": "generate", "messages": messages, "tools": tool_schemas})
+        request = {"action": "generate", "messages": messages, "tools": tool_schemas}
+        if callable(stream_update):
+            request["on_progress"] = stream_update
+        reply = agent.bus.request(source="agent", target=llm.module_id, payload=request)
+        if reply.payload.get("error"):
+            raise RuntimeError(reply.payload["error"])
         response = {
             "content": reply.payload.get("response", ""),
             "tool_calls": reply.payload.get("tool_calls", []),
@@ -382,6 +390,8 @@ class LLMChatNode(ReactRuntimeNode):
             response["tool_calls"] = agent._parse_embedded_tool_calls(response["content"])
         if "<tool_call>" in response["content"] and not response["tool_calls"]:
             raise ValueError("模型输出了工具调用，但参数格式无法解析；请检查模型的工具调用格式")
+        if response["tool_calls"] and callable(stream_update):
+            stream_update("")
         context.emit("model_response", context.node_id, {"content": response["content"], "tool_calls": response["tool_calls"], "usage": response["usage"]})
         return NodeResult(outputs={"answer": response["content"], "response": response, "trace": response})
 

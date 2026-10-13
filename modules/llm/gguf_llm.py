@@ -11,10 +11,10 @@ import json
 import site
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 from agent.protocol import LLMResponse, ToolCall
 
-from .base_llm import BaseLLM
+from .base_llm import BaseLLM, StreamPreview
 
 
 class GGUFLLM(BaseLLM):
@@ -185,6 +185,10 @@ class GGUFLLM(BaseLLM):
         if self.reasoning_format and self._supports_reasoning_format():
             kwargs["reasoning_format"] = self.reasoning_format
         response = self.model.create_chat_completion(**kwargs)
+        return self._parse_completion(response)
+
+    @staticmethod
+    def _parse_completion(response: Dict[str, Any]) -> LLMResponse:
         choices = response.get("choices", [])
         if not choices:
             return LLMResponse(raw=response)
@@ -211,6 +215,82 @@ class GGUFLLM(BaseLLM):
             usage=response.get("usage") or {},
             raw=response,
         )
+
+    def generate_response_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        on_progress: Callable[[str], None],
+    ) -> LLMResponse:
+        if self.model is None:
+            raise RuntimeError("GGUF 模型尚未初始化")
+        kwargs: Dict[str, Any] = {
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        if self.reasoning_format and self._supports_reasoning_format():
+            kwargs["reasoning_format"] = self.reasoning_format
+
+        preview = StreamPreview(
+            on_progress,
+            wait_for_reasoning_end=self.reasoning_format == "qwen3" and "qwen3" in Path(self.model_path).name.lower(),
+        )
+        tool_parts = {}
+        usage = {}
+        generated_usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        original_generate = self.model.generate
+        had_generate_override = "generate" in vars(self.model)
+
+        def capture_generate(prompt_tokens, *args, **generation_kwargs):
+            generated_usage["prompt_tokens"] += len(prompt_tokens)
+            for token in original_generate(prompt_tokens, *args, **generation_kwargs):
+                generated_usage["completion_tokens"] += 1
+                yield token
+
+        # This llama-cpp-python build does not include usage in streamed chunks.
+        # Its generate() iterator exposes the actual prompt and sampled tokens.
+        self.model.generate = capture_generate
+        try:
+            try:
+                chunks = self.model.create_chat_completion(**kwargs)
+            except TypeError as exc:
+                if "stream" not in str(exc).lower():
+                    raise
+                return self.generate_response(messages, tools=tools)
+            if isinstance(chunks, dict):
+                return self._parse_completion(chunks)
+            for chunk in chunks:
+                usage = chunk.get("usage") or usage
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    if delta.get("content"):
+                        preview.push(str(delta["content"]))
+                    for tool in delta.get("tool_calls") or []:
+                        part = tool_parts.setdefault(tool.get("index", 0), {"id": "", "name": "", "arguments": ""})
+                        if tool.get("id"):
+                            part["id"] = tool["id"]
+                        function = tool.get("function") or {}
+                        part["name"] += function.get("name") or ""
+                        part["arguments"] += function.get("arguments") or ""
+        finally:
+            if had_generate_override:
+                self.model.generate = original_generate
+            else:
+                del self.model.generate
+        calls = []
+        for part in tool_parts.values():
+            try:
+                arguments = json.loads(part["arguments"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                arguments = {}
+            calls.append(ToolCall(call_id=part["id"], name=part["name"], arguments=arguments))
+        if generated_usage["prompt_tokens"]:
+            generated_usage["total_tokens"] = sum(generated_usage.values())
+        return LLMResponse(content=preview.content, tool_calls=calls, usage=usage or generated_usage)
 
     def _supports_reasoning_format(self) -> bool:
         """Return whether the installed llama-cpp binding exposes this option."""

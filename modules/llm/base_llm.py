@@ -3,7 +3,7 @@ LLM模块基类 - 定义所有LLM模块的统一接口
 """
 import html
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable
 from agent.protocol import LLMResponse
 from modules.base import BaseModule
 from bus.base import Message, MessageType
@@ -35,6 +35,34 @@ def _hide_reasoning_markup(content: str) -> str:
     return text.strip()
 
 
+class StreamPreview:
+    """Publish only the stable, user-facing prefix of a streamed response."""
+
+    def __init__(self, on_progress: Callable[[str], None], wait_for_reasoning_end: bool = False):
+        self.content = ""
+        self.on_progress = on_progress
+        self.last_preview = ""
+        self.wait_for_reasoning_end = wait_for_reasoning_end
+
+    def push(self, delta: str) -> None:
+        self.content += delta
+        if self.wait_for_reasoning_end:
+            beginning = html.unescape(self.content).lstrip().lstrip("\\")
+            if beginning.startswith("<") and ">" not in beginning[:16] and len(beginning) < 16:
+                return
+            if re.match(r"<\s*think\b", beginning, flags=re.IGNORECASE):
+                if not re.search(r"\\*</\s*think\s*>", beginning, flags=re.IGNORECASE):
+                    return
+            self.wait_for_reasoning_end = False
+        visible = _hide_reasoning_markup(self.content)
+        visible = re.split(r"\\*<\s*tool_call\b", visible, maxsplit=1, flags=re.IGNORECASE)[0]
+        # Hold only an unfinished markup tag, not the last 16 visible characters.
+        preview = re.sub(r"\\*<[^>]{0,16}$", "", visible)
+        if preview != self.last_preview:
+            self.last_preview = preview
+            self.on_progress(preview)
+
+
 class BaseLLM(BaseModule):
     """LLM模块基类，所有LLM实现必须继承此类"""
     
@@ -57,9 +85,13 @@ class BaseLLM(BaseModule):
                 # 从消息内容中提取messages列表（标准格式）
                 messages = message.payload.get('messages', [])
                 tools = message.payload.get('tools')
+                on_progress = message.payload.get('on_progress')
                 # 统一使用结构化响应；旧后端默认由 generate() 包装。
-                response = self.generate_response(messages, tools=tools)
+                response = (self.generate_response_stream(messages, tools=tools, on_progress=on_progress)
+                            if callable(on_progress) else self.generate_response(messages, tools=tools))
                 response.content = _hide_reasoning_markup(response.content)
+                if callable(on_progress):
+                    on_progress(re.split(r"\\*<\s*tool_call\b", response.content, maxsplit=1, flags=re.IGNORECASE)[0])
                 # 将生成结果作为响应消息发回给请求方
                 self.send(
                     target=message.source,                        # 回复给原始请求方
@@ -98,6 +130,15 @@ class BaseLLM(BaseModule):
     ) -> LLMResponse:
         """Generate a normalized response; subclasses may add native tool calls."""
         return LLMResponse(content=self.generate(messages))
+
+    def generate_response_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        on_progress: Callable[[str], None],
+    ) -> LLMResponse:
+        """Optional streaming hook; older modules still return a complete reply."""
+        return self.generate_response(messages, tools=tools)
     
     def shutdown(self) -> None:
         """关闭LLM，释放资源，子类应在完成清理后设置 self._initialized = False"""

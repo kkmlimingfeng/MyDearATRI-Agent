@@ -49,6 +49,13 @@ _jobs_lock = threading.Lock()
 _workflow_file_lock = threading.Lock()
 
 
+def _update_run_draft(job_id: str, content: str) -> None:
+    with _jobs_lock:
+        job = _run_jobs.get(job_id)
+        if job is not None:
+            job["draft"] = content
+
+
 def _graph_workflow_documents() -> list[dict]:
     """Read editable graph workflows directly from workflows/ on each request."""
     documents = []
@@ -742,6 +749,7 @@ def run_graph(
 ) -> dict:
     global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started, _runtime_workflow_id
     graph, bindings = _validate_runtime_graph(graph_data)
+    stream_update = (lambda content: _update_run_draft(job_id, content)) if job_id else None
     serialized_graph = json.dumps(graph_data, ensure_ascii=False, sort_keys=True)
     execution_key = _execution_graph_key(graph_data)
     with _runtime_lock:
@@ -820,6 +828,7 @@ def run_graph(
                 "tool_schemas": tool_schemas,
                 "tools_id": tools_id,
                 "skills_id": _runtime_bindings.get("skills_id"),
+                "stream_update": stream_update,
             }
             executor = GraphExecutor(graph, agent._modules, services, agent._trace)
             executor.run_id = run_id
@@ -856,6 +865,7 @@ def run_graph(
             prompt_override=prompt_override,
             context_override=context_override,
             graph_previews=previews,
+            stream_update=stream_update,
             **_runtime_bindings,
         )
         previews[runtime_node["id"]] = answer
@@ -877,7 +887,7 @@ def _start_run_job(payload: dict) -> dict:
         if any(not job["done"] for job in _run_jobs.values()):
             raise GraphWorkflowError("已有工作流正在运行，请等待完成")
         _run_jobs.clear()
-        _run_jobs[job_id] = {"done": False, "result": None, "error": None, "trace_ready": False}
+        _run_jobs[job_id] = {"done": False, "result": None, "error": None, "trace_ready": False, "draft": ""}
 
     def worker() -> None:
         try:
@@ -902,10 +912,10 @@ def _run_job_status(job_id: str) -> dict:
     if snapshot["done"]:
         return snapshot
     if not snapshot["trace_ready"]:
-        return {"done": False, "events": []}
+        return {"done": False, "events": [], "draft": snapshot["draft"]}
     agent = _runtime_agent
     events = [event.as_dict() for event in agent.get_trace_events()] if agent is not None else []
-    return {"done": False, "events": events}
+    return {"done": False, "events": events, "draft": snapshot["draft"]}
 
 
 class ApiHandler(BaseHTTPRequestHandler):

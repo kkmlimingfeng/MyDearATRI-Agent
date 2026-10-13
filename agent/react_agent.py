@@ -6,7 +6,7 @@ import os
 import re
 import uuid
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Tuple, Optional, Any, Callable
 from .base_agent import BaseAgent, Colors
 from .protocol import TraceEvent, ToolCall, ToolResult
 from .tool_executor import ToolExecutor
@@ -348,6 +348,7 @@ class ReactAgent(BaseAgent):
         prompt_override: Optional[str] = None,
         context_override: Optional[str] = None,
         graph_previews: Optional[Dict[str, str]] = None,
+        stream_update: Optional[Callable[[str], None]] = None,
         **kwargs
     ) -> str:
         """
@@ -437,6 +438,8 @@ class ReactAgent(BaseAgent):
 
         # 开始ReAct循环
         for i in range(self.max_iterations):
+            if stream_update:
+                stream_update("")
             # 青色输出：循环开始
             self._trace("node_started", {"iteration": i + 1}, "llm")
             self._trace("model_thinking", {"iteration": i + 1}, "llm")
@@ -447,20 +450,27 @@ class ReactAgent(BaseAgent):
 
             # 通过总线调用LLM
             try:
+                request_payload = {
+                    'action': 'generate',
+                    'messages': messages,
+                    'tools': available_schemas,
+                }
+                if stream_update:
+                    request_payload['on_progress'] = stream_update
                 llm_response = self.bus.request(
                     source='agent',
                     target=llm_id,
-                    payload={
-                        'action': 'generate',
-                        'messages': messages,
-                        'tools': available_schemas,
-                    }
+                    payload=request_payload,
                 )
+                if llm_response.payload.get('error'):
+                    raise RuntimeError(llm_response.payload['error'])
                 output = llm_response.payload.get('response', '')
                 tool_calls = llm_response.payload.get('tool_calls', [])
                 if not tool_calls and output:
                     tool_calls = self._parse_embedded_tool_calls(output)
                 if tool_calls:
+                    if stream_update:
+                        stream_update("")
                     self._trace("response_parsed", {"tool_calls": tool_calls}, "react.response_router")
                     self._trace("response_routed_to_tools", {"count": len(tool_calls)}, "react.response_router")
                 else:

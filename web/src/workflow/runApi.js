@@ -10,15 +10,15 @@ export async function runWorkflowRequest(payload, onProgress) {
   if (!response.ok) throw new Error(result.error || 'Agent 运行失败');
   if (!onProgress) return result;
   while (true) {
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const statusResponse = await fetch(`/api/run/status?id=${encodeURIComponent(result.job_id)}`);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const statusResponse = await fetch(`/api/run/status?id=${encodeURIComponent(result.job_id)}`, { cache: 'no-store' });
     const status = await statusResponse.json();
     if (!statusResponse.ok) throw new Error(status.error || '读取运行状态失败');
     if (status.done) {
-      onProgress(status.events || status.result?.events || []);
+      onProgress(status.events || status.result?.events || [], status.draft || '');
       if (status.error) throw new Error(status.error);
       return status.result;
     }
-    onProgress(status.events || []);
+    onProgress(status.events || [], status.draft || '');
   }
 }

@@ -3,13 +3,13 @@ OpenAI风格LLM模块 - 通过OpenAI兼容API调用远程模型
 支持OpenAI官方API以及所有兼容OpenAI接口的服务（如vLLM、Ollama、LocalAI等）
 """
 import json
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from agent.protocol import LLMResponse, ToolCall
 try:
     from openai import OpenAI
 except ImportError:
     OpenAI = None  # type: ignore[misc, assignment]
-from .base_llm import BaseLLM
+from .base_llm import BaseLLM, StreamPreview
 
 
 # ANSI颜色码，用于终端彩色输出
@@ -100,6 +100,65 @@ class OpenAILLM(BaseLLM):
 
     def generate(self, messages: List[Dict[str, str]]) -> str:
         return self.generate_response(messages).content
+
+    def generate_response_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        on_progress: Callable[[str], None],
+    ) -> LLMResponse:
+        request = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        if tools:
+            request["tools"] = tools
+        try:
+            stream = self.client.chat.completions.create(
+                **request, stream=True, stream_options={"include_usage": True}
+            )
+        except Exception as exc:
+            message = str(exc).lower()
+            if "stream_options" not in message:
+                if "stream" in message and any(word in message for word in ("unsupported", "not supported", "not implemented")):
+                    return self.generate_response(messages, tools=tools)
+                raise
+            try:
+                stream = self.client.chat.completions.create(**request, stream=True)
+            except Exception as fallback_exc:
+                message = str(fallback_exc).lower()
+                if "stream" in message and any(word in message for word in ("unsupported", "not supported", "not implemented")):
+                    return self.generate_response(messages, tools=tools)
+                raise
+
+        preview = StreamPreview(on_progress)
+        tool_parts = {}
+        usage = {}
+        for chunk in stream:
+            if getattr(chunk, "usage", None):
+                usage = chunk.usage.model_dump() if hasattr(chunk.usage, "model_dump") else dict(chunk.usage)
+            for choice in (getattr(chunk, "choices", None) or []):
+                delta = choice.delta
+                if getattr(delta, "content", None):
+                    preview.push(delta.content)
+                for tool in (getattr(delta, "tool_calls", None) or []):
+                    part = tool_parts.setdefault(tool.index, {"id": "", "name": "", "arguments": ""})
+                    if tool.id:
+                        part["id"] = tool.id
+                    function = tool.function
+                    if function:
+                        part["name"] += function.name or ""
+                        part["arguments"] += function.arguments or ""
+        calls = []
+        for part in tool_parts.values():
+            try:
+                arguments = json.loads(part["arguments"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                arguments = {}
+            calls.append(ToolCall(call_id=part["id"], name=part["name"], arguments=arguments))
+        return LLMResponse(content=preview.content, tool_calls=calls, usage=usage)
     
     def shutdown(self) -> None:
         """关闭客户端连接"""
