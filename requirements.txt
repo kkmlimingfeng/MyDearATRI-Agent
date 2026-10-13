@@ -1,5 +1,5 @@
 # Core runtime dependencies
-openai>=1.0
+openai>=1.67.0
 requests>=2.30
 tavily-python>=0.3
 readchar>=4.0

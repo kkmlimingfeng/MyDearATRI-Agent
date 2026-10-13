@@ -256,14 +256,7 @@ button { color: inherit; cursor: pointer; }
 .node-preview-toggle { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; font-size: 12px; }
 .node-preview-toggle span { color: var(--muted); font-size: 11px; }
 .node-config-button { display: flex; align-items: center; justify-content: center; gap: 6px; width: calc(100% - 20px); margin: 8px 10px; padding: 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-muted); color: var(--text); cursor: pointer; font-size: 12px; }
-.node-api-fields { display: grid; gap: 7px; margin: 0 10px 8px; }
-.node-api-fields label { display: grid; gap: 3px; color: var(--text); font-size: 11px; }
-.node-api-fields input { width: 100%; box-sizing: border-box; min-width: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--text); padding: 6px; font-size: 11px; }
-.node-api-fields button { display: flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-muted); color: var(--text); padding: 6px; cursor: pointer; font-size: 11px; }
-.api-key-field { display: grid; gap: 8px; margin: 14px 0; }
-.api-key-field label { font-size: 12px; color: var(--text); }
-.api-key-field input { width: 100%; box-sizing: border-box; }
-.api-key-field > div { display: flex; gap: 8px; }
+.inspector-config-button { width: 100%; margin: 12px 0; }
 .capability-modal { width: min(800px, calc(100vw - 32px)); max-height: min(780px, calc(100vh - 32px)); display: flex; flex-direction: column; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 20px 80px #0003; }
 .capability-modal > header, .capability-modal > footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
 .capability-modal > footer { border-top: 1px solid var(--line); border-bottom: 0; color: var(--muted); font-size: 12px; }
@@ -283,6 +276,27 @@ button { color: inherit; cursor: pointer; }
 .memory-layout nav button { border: 0; border-radius: 4px; background: transparent; color: var(--text); padding: 10px; text-align: left; cursor: pointer; }
 .memory-layout nav button.selected { background: var(--surface-muted); font-weight: 700; }
 .memory-layout textarea { width: 100%; height: 100%; min-height: 380px; resize: none; box-sizing: border-box; border: 0; padding: 16px; background: var(--surface); color: var(--text); font: 13px/1.6 var(--mono); }
+.api-model-modal { width: min(860px, calc(100vw - 32px)); }
+.api-model-layout { display: grid; grid-template-columns: minmax(185px, 245px) minmax(0, 1fr); min-height: 420px; overflow: hidden; }
+.api-model-layout nav { display: flex; flex-direction: column; overflow: auto; padding: 10px; border-right: 1px solid var(--line); }
+.api-model-layout nav button { display: grid; gap: 4px; padding: 10px; border: 0; border-radius: 5px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.api-model-layout nav button.selected { background: var(--surface-muted); }
+.api-model-layout nav strong, .api-model-layout nav small { overflow-wrap: anywhere; }
+.api-model-layout nav strong { font-size: 13px; }
+.api-model-layout nav small { color: var(--muted); font-size: 11px; }
+.api-model-layout form { display: grid; align-content: start; gap: 12px; min-width: 0; overflow: auto; padding: 18px 20px; }
+.api-model-layout form label { display: grid; gap: 5px; color: var(--text); font-size: 13px; }
+.api-model-layout form label small { color: var(--muted); font-size: 11px; }
+.api-model-layout form input:not([type='checkbox']), .api-model-layout form select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 34px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 13px; }
+.api-model-layout form input:disabled { color: var(--muted); background: var(--surface-muted); }
+.api-model-layout form .api-model-toggle { display: flex; align-items: center; gap: 8px; }
+.api-model-key-row, .api-model-token-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; }
+.api-model-key-row .secondary-button { min-height: 34px; justify-content: center; white-space: nowrap; }
+.api-model-layout form .api-model-hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.api-model-toggle input { width: 17px; height: 17px; margin: 0; }
+.api-model-modal footer { flex-wrap: wrap; }
+.api-model-modal footer > div { flex-wrap: wrap; }
+.api-model-error { color: #b04c4c; }
 .trace-view { padding: 8px 10px 10px; }
 .trace-language { display: flex; width: max-content; gap: 2px; margin-bottom: 8px; padding: 2px; border: 1px solid var(--line); border-radius: 5px; }
 .trace-language button { border: 0; border-radius: 3px; background: transparent; color: var(--muted); padding: 4px 9px; cursor: pointer; font-size: 11px; }
@@ -295,7 +309,7 @@ button { color: inherit; cursor: pointer; }
 .trace-step-toggle strong { flex: 1; font-weight: 600; }
 .trace-step-toggle small { color: var(--muted); font-size: 11px; }
 .trace-step pre { max-height: 240px; overflow: auto; margin: 0 0 8px 28px; padding: 8px; background: var(--surface-muted); color: var(--text); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 var(--mono); }
-@media (max-width: 640px) { .memory-layout { grid-template-columns: 110px 1fr; } .capability-toolbar { flex-wrap: wrap; } .capability-toolbar label { flex-basis: 100%; } }
+@media (max-width: 640px) { .memory-layout { grid-template-columns: 110px 1fr; } .capability-toolbar { flex-wrap: wrap; } .capability-toolbar label { flex-basis: 100%; } .api-model-layout { grid-template-columns: minmax(105px, 28%) minmax(0, 1fr); } .api-model-layout form { padding: 12px; } }
 .workflow-node-footer { height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 9px; border-top: 1px solid #edf0ee; color: #839189; font: 9px var(--mono); }
 .connected-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--node-color); }
 .node-number { position: absolute; top: -7px; right: -7px; width: 16px; height: 16px; display: grid; place-items: center; border: 2px solid #f2f5f3; border-radius: 50%; background: #83968b; color: white; font: 6px var(--mono); }
@@ -518,6 +532,9 @@ button { color: inherit; cursor: pointer; }
 .composer-tools { height: 37px; display: flex; align-items: center; gap: 8px; padding: 0 8px 5px 12px; }
 .composer-tools > span:first-child { display: flex; align-items: center; gap: 5px; color: #839087; font-size: 8px; }
 .composer-tools > span:first-child svg { color: #bd9950; }
+.composer-tools .composer-model { min-width: 0; max-width: 35%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.composer-reasoning { display: flex; align-items: center; gap: 6px; flex: none; color: var(--muted); font-size: 12px; }
+.composer-reasoning select { max-width: 120px; min-height: 29px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 12px; }
 .composer-hint { margin-left: auto; color: #adb6b1; font-size: 8px; }
 .send-button { width: 31px; height: 31px; display: grid; place-items: center; border: 0; border-radius: 6px; background: var(--green); color: white; }
 .send-button:hover:not(:disabled) { background: #2d7058; }
@@ -766,4 +783,10 @@ button { color: inherit; cursor: pointer; }
   .modal-backdrop, .profile-editor-backdrop, .chat-delete-backdrop, .modal-backdrop > *, .profile-editor-backdrop > *, .chat-delete-backdrop > *, .workflow-open-menu, .node-picker, .theme-popover, .run-drawer { animation: none; }
   .chat-live-status-text { animation: none; background: none; color: var(--live-ink); }
   .stream-caret { animation: none; }
+}
+
+@media (max-width: 640px) {
+  .api-model-key-row, .api-model-token-row { grid-template-columns: 1fr; }
+  .composer-reasoning > span { display: none; }
+  .composer-reasoning select { max-width: 106px; }
 }

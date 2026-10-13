@@ -86,9 +86,13 @@ class BaseLLM(BaseModule):
                 messages = message.payload.get('messages', [])
                 tools = message.payload.get('tools')
                 on_progress = message.payload.get('on_progress')
+                reasoning_effort = message.payload.get('reasoning_effort', 'auto')
+                if not isinstance(reasoning_effort, str) or reasoning_effort not in {'auto', 'minimal', 'low', 'medium', 'high', 'xhigh'}:
+                    raise ValueError('思考强度无效')
+                options = {'reasoning_effort': reasoning_effort} if reasoning_effort != 'auto' and getattr(self, 'supports_reasoning_effort', False) else {}
                 # 统一使用结构化响应；旧后端默认由 generate() 包装。
-                response = (self.generate_response_stream(messages, tools=tools, on_progress=on_progress)
-                            if callable(on_progress) else self.generate_response(messages, tools=tools))
+                response = (self.generate_response_stream(messages, tools=tools, on_progress=on_progress, **options)
+                            if callable(on_progress) else self.generate_response(messages, tools=tools, **options))
                 response.content = _hide_reasoning_markup(response.content)
                 if callable(on_progress):
                     on_progress(re.split(r"\\*<\s*tool_call\b", response.content, maxsplit=1, flags=re.IGNORECASE)[0])

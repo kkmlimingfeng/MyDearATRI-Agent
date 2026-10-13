@@ -19,6 +19,7 @@ import { getPortTypeColor, portsCompatible } from './portTypes';
 import { portLabel, useInterfaceLanguage } from './interfaceLanguage';
 import { ThemePicker } from '../theme.jsx';
 import CapabilityPanel from './CapabilityPanel';
+import ApiModelPanel from './ApiModelPanel';
 import TraceView from './TraceView';
 import IterationStepper from './IterationStepper';
 import { runWorkflowRequest } from './runApi';
@@ -30,7 +31,7 @@ function fromDocument(document) {
   return {
     nodes: document.nodes.map((node) => {
       const definition = getNodeDefinition(node.type);
-      const { api_key, ...fileConfig } = node.data?.config || {};
+      const { api_key, base_url, ...fileConfig } = node.data?.config || {};
       const nextNode = {
         ...node,
         type: 'workflow',
@@ -41,6 +42,7 @@ function fromDocument(document) {
           ...Object.fromEntries(Object.entries(definition.configSchema?.properties || {}).filter(([, field]) => Object.hasOwn(field, 'default')).map(([key, field]) => [key, field.default])),
           ...(definition.defaults || {}),
           ...fileConfig,
+          ...(node.type === 'llm.openai_loader' ? {} : base_url === undefined ? {} : { base_url }),
         },
         },
       };
@@ -85,12 +87,16 @@ function findPort(node, handle, direction) {
   return list.find((port) => port.id === handle);
 }
 
-function connectionIssue(connection, nodes, edges, excludedEdgeId = null) {
+function connectionIssue(connection, nodes) {
   const sourcePort = findPort(nodes.find((node) => node.id === connection.source), connection.sourceHandle, 'source');
   const targetPort = findPort(nodes.find((node) => node.id === connection.target), connection.targetHandle, 'target');
   if (!portsCompatible(sourcePort?.type, targetPort?.type)) return '接口类型不匹配，连接未建立';
-  if (edges.some((edge) => edge.id !== excludedEdgeId && edge.target === connection.target && edge.targetHandle === connection.targetHandle)) return '这个输入接口已有连线';
   return null;
+}
+
+function withoutTargetConnection(edges, connection, excludedEdgeId = null) {
+  return edges.filter((edge) => edge.id !== excludedEdgeId
+    && !(edge.target === connection.target && edge.targetHandle === connection.targetHandle));
 }
 
 function isFeedbackConnection(connection, nodes, edges) {
@@ -118,6 +124,15 @@ function styleConnection(connection, feedback, nodes) {
     style: { ...existingStyle, stroke: color, strokeWidth: 2 },
     markerEnd: { type: 'arrowclosed', color, width: 15, height: 15 },
   };
+}
+
+function supportsReasoningForNode(node, nodes, edges, modelOptions) {
+  if (node?.data?.kind !== 'llm.chat') return false;
+  const connection = edges.find((edge) => edge.target === node.id && edge.targetHandle === 'llm');
+  const source = nodes.find((item) => item.id === connection?.source);
+  if (source?.data?.kind === 'llm.openai_loader') return true;
+  if (source?.data?.kind !== 'llm.provider') return false;
+  return modelOptions.some((model) => model.value === source.data.config?.model && model.type === 'api');
 }
 
 function validateGraph(nodes, edges, modelOptions = [], language = 'zh') {
@@ -208,7 +223,7 @@ function PaletteItem({ definition, onAdd }) {
   );
 }
 
-function Inspector({ node, edges = [], language, modelOptions = modelChoices, promptFiles = [], credentialConfigured = [], onSaveCredential, onChange, onDelete }) {
+function Inspector({ node, edges = [], language, modelOptions = modelChoices, promptFiles = [], reasoningAvailable = false, onOpenConfig, onChange, onDelete }) {
   if (!node) return (
     <aside className="inspector empty-inspector">
       <div className="panel-heading"><div><span className="eyebrow">属性</span><h2>节点设置</h2></div></div>
@@ -219,17 +234,14 @@ function Inspector({ node, edges = [], language, modelOptions = modelChoices, pr
   const definition = getNodeDefinition(node.data.kind);
   const meta = categoryMeta[definition.category] || categoryMeta.control;
   const Icon = meta.icon;
-  const config = node.data.config ?? {};
+  const config = { ...Object.fromEntries(Object.entries(definition.configSchema?.properties || {})
+    .filter(([, field]) => Object.hasOwn(field, 'default'))
+    .map(([key, field]) => [key, field.default])), ...(node.data.config ?? {}) };
   const visiblePorts = (ports, direction) => ports.filter((port) => !port.hidden || edges.some((edge) => direction === 'input'
     ? edge.target === node.id && edge.targetHandle === port.id
     : edge.source === node.id && edge.sourceHandle === port.id));
   const setData = (patch) => onChange(node.id, { ...node.data, ...patch });
   const setConfig = (key, value) => setData({ config: { ...config, [key]: value } });
-  const saveCredential = () => {
-    const input = document.getElementById(`api-key-${node.id}`);
-    onSaveCredential?.(node.id, input?.value || '');
-    if (input) input.value = '';
-  };
 
   return (
     <aside className="inspector">
@@ -249,7 +261,7 @@ function Inspector({ node, edges = [], language, modelOptions = modelChoices, pr
             <input id="module-id" value={node.data.module_id ?? ''} placeholder="可留空" onChange={(event) => setData({ module_id: event.target.value })} />
           </>
         )}
-        {Object.entries(config).filter(([key]) => !(node.data.kind === 'prompt.markdown_file' && key === 'source')).map(([key, value]) => (
+        {Object.entries(config).filter(([key]) => !(node.data.kind === 'prompt.markdown_file' && key === 'source') && !(node.data.kind === 'llm.openai_loader' && key === 'base_url')).map(([key, value]) => (
           <div className="field-label config-field" key={key}>
             <span>{definition.configSchema?.properties?.[key]?.title || key.replaceAll('_', ' ')}</span>
             {typeof value === 'boolean' ? (
@@ -285,6 +297,10 @@ function Inspector({ node, edges = [], language, modelOptions = modelChoices, pr
               <select value={value} onChange={(event) => setConfig(key, event.target.value)}>
                 {(key === 'display_mode' ? ['normal', 'transparent'] : ['CUDA', 'CPU', 'auto']).map((option) => <option key={option}>{option}</option>)}
               </select>
+            ) : key === 'reasoning_effort' ? (
+              <><select value={reasoningAvailable ? value ?? 'auto' : 'auto'} disabled={!reasoningAvailable} onChange={(event) => setConfig(key, event.target.value)}>
+                <option value="auto">{reasoningAvailable ? '自动（由提供商决定）' : 'GGUF 模型暂不支持'}</option>{reasoningAvailable && <><option value="minimal">极低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">极高</option></>}
+              </select>{!reasoningAvailable && <small className="field-hint">连接 API 运行时模型后可设置</small>}</>
             ) : Array.isArray(definition.configSchema?.properties?.[key]?.enum) ? (
               <select value={value ?? ''} onChange={(event) => setConfig(key, event.target.value)}>
                 {definition.configSchema.properties[key].enum.map((option) => <option key={String(option)} value={option}>{String(option)}</option>)}
@@ -294,7 +310,7 @@ function Inspector({ node, edges = [], language, modelOptions = modelChoices, pr
             )}
           </div>
         ))}
-        {node.data.kind === 'llm.openai_loader' && <div className="api-key-field"><label htmlFor={`api-key-${node.id}`}>API Key {credentialConfigured.includes(node.id) ? '· 已配置' : '· 未配置'}</label><input id={`api-key-${node.id}`} type="password" autoComplete="off" placeholder="输入后点保存；不会写入工作流" /><div><button className="secondary-button" onClick={saveCredential}><Save size={14} />保存密钥</button><button className="secondary-button" onClick={() => onSaveCredential?.(node.id, '')}>清除</button></div></div>}
+        {node.data.kind === 'llm.openai_loader' && <button className="secondary-button inspector-config-button" onClick={() => onOpenConfig?.('api-models', config.model)}>配置模型</button>}
         <section className="port-section">
           <span className="eyebrow">接口定义</span>
           {[[language === 'en' ? 'Inputs' : '输入', visiblePorts(definition.inputs, 'input')], [language === 'en' ? 'Outputs' : '输出', visiblePorts(definition.outputs, 'output')]].map(([title, ports]) => (
@@ -317,7 +333,6 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   const [nodes, setNodes, onNodesChange] = useNodesState(initialGraph.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialGraph.edges);
   const [connectionHint, setConnectionHint] = useState(null);
-  const reconnectingEdgeRef = useRef(null);
   const [edgeMode, setEdgeMode] = useState(() => {
     try { return localStorage.getItem('atri.workflow.edge-mode') === 'step' ? 'step' : 'curve'; }
     catch { return 'curve'; }
@@ -353,8 +368,8 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   const lastEventsRef = useRef([]);
   const [modelOptions, setModelOptions] = useState(modelChoices);
   const [promptFiles, setPromptFiles] = useState([]);
-  const [credentialConfigured, setCredentialConfigured] = useState([]);
   const [configKind, setConfigKind] = useState(null);
+  const [configModelId, setConfigModelId] = useState('');
   const [previewRevision, setPreviewRevision] = useState(0);
   const [collapsedGroups, setCollapsedGroups] = useState({});
   const { fitView, getViewport, screenToFlowPosition, setViewport } = useReactFlow();
@@ -421,20 +436,14 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
 
   useEffect(() => {
     fetch('/api/prompts').then((response) => response.json()).then((result) => setPromptFiles(result.files || [])).catch(() => {});
-    fetch('/api/model-credentials').then((response) => response.json()).then((result) => setCredentialConfigured(result.configured || [])).catch(() => {});
   }, []);
 
-  const saveCredential = async (nodeId, apiKey) => {
-    try {
-      const response = await fetch('/api/model-credentials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_id: nodeId, api_key: apiKey }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || '保存失败');
-      setCredentialConfigured((current) => result.configured ? [...new Set([...current, nodeId])] : current.filter((id) => id !== nodeId));
-      setAgentRunning(false);
-      setAgentModelLoaded(false);
-      window.dispatchEvent(new Event('atri-runtime-status'));
-      setNotice(result.configured ? 'API Key 已保存到本机配置' : 'API Key 已清除');
-    } catch (cause) { setNotice(cause.message); }
+  const refreshModelOptions = async () => {
+    const response = await fetch('/api/models');
+    if (!response.ok) return;
+    const payload = await response.json();
+    setModelOptions((payload.models || []).map((model) => ({ ...model, value: model.id })));
+    window.dispatchEvent(new Event('atri-runtime-status'));
   };
 
   useEffect(() => {
@@ -462,11 +471,10 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     const originPort = findPort(origin, connectionHint.handleId, connectionHint.handleType);
     if (!originPort) return null;
     const targetIsInput = connectionHint.handleType === 'source';
-    const occupiedInputs = new Set(edges.filter((edge) => edge.id !== connectionHint.edgeId).map((edge) => `${edge.target}:${edge.targetHandle}`));
     return new Map(nodes.map((node) => {
       const definition = getNodeDefinition(node.data.kind);
-      const eligibleInputs = targetIsInput ? definition.inputs.filter((port) => !port.hidden && portsCompatible(originPort.type, port.type) && !occupiedInputs.has(`${node.id}:${port.id}`)).map((port) => port.id) : [];
-      const eligibleOutputs = targetIsInput || occupiedInputs.has(`${origin.id}:${originPort.id}`) ? [] : definition.outputs.filter((port) => !port.hidden && portsCompatible(port.type, originPort.type)).map((port) => port.id);
+      const eligibleInputs = targetIsInput ? definition.inputs.filter((port) => !port.hidden && portsCompatible(originPort.type, port.type)).map((port) => port.id) : [];
+      const eligibleOutputs = targetIsInput ? [] : definition.outputs.filter((port) => !port.hidden && portsCompatible(port.type, originPort.type)).map((port) => port.id);
       return [node.id, {
         type: originPort.type,
         origin: node.id === origin.id,
@@ -476,7 +484,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
         eligibleOutputs,
       }];
     }));
-  }, [connectionHint, nodes, edges, nodeCatalog.length]);
+  }, [connectionHint, nodes, nodeCatalog.length]);
   const displayEdges = useMemo(() => {
     const pairCounts = new Map();
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
@@ -504,39 +512,38 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   }, [search]);
 
   const onConnect = useCallback((connection) => {
-    const issue = connectionIssue(connection, nodes, edges);
+    const issue = connectionIssue(connection, nodes);
     if (issue) {
       setNotice(issue);
       window.setTimeout(() => setNotice(''), 2400);
       return;
     }
     setEdges((current) => {
-      const feedback = isFeedbackConnection(connection, nodes, current);
-      return addEdge(styleConnection({ ...connection, id: `e_${crypto.randomUUID().slice(0, 8)}` }, feedback, nodes), current);
+      const available = withoutTargetConnection(current, connection);
+      const feedback = isFeedbackConnection(connection, nodes, available);
+      return addEdge(styleConnection({ ...connection, id: `e_${crypto.randomUUID().slice(0, 8)}` }, feedback, nodes), available);
     });
-  }, [nodes, edges, setEdges]);
+  }, [nodes, setEdges]);
 
   const onReconnect = useCallback((oldEdge, connection) => {
-    const issue = connectionIssue(connection, nodes, edges, oldEdge.id);
+    const issue = connectionIssue(connection, nodes);
     if (issue) {
       setNotice(issue);
       window.setTimeout(() => setNotice(''), 2400);
       return;
     }
     setEdges((current) => {
-      const others = current.filter((edge) => edge.id !== oldEdge.id);
+      const others = withoutTargetConnection(current, connection, oldEdge.id);
       const feedback = isFeedbackConnection(connection, nodes, others);
-      return current.map((edge) => edge.id === oldEdge.id
-        ? styleConnection({ ...edge, ...connection }, feedback, nodes)
-        : edge);
+      return [...others, styleConnection({ ...oldEdge, ...connection }, feedback, nodes)];
     });
-  }, [nodes, edges, setEdges]);
+  }, [nodes, setEdges]);
 
   const onConnectStart = useCallback((_, params) => {
-    setConnectionHint({ ...params, edgeId: reconnectingEdgeRef.current });
+    setConnectionHint(params);
   }, []);
   const onConnectEnd = useCallback(() => setConnectionHint(null), []);
-  const isValidConnection = useCallback((connection) => !connectionIssue(connection, nodes, edges, reconnectingEdgeRef.current), [nodes, edges]);
+  const isValidConnection = useCallback((connection) => !connectionIssue(connection, nodes), [nodes]);
   const connectionSource = nodes.find((node) => node.id === connectionHint?.nodeId);
   const connectionColor = getPortTypeColor(findPort(connectionSource, connectionHint?.handleId, connectionHint?.handleType)?.type);
 
@@ -621,7 +628,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     setNotice('所有节点已按内容自适应尺寸');
     window.setTimeout(() => setNotice(''), 2400);
   }, [setNodes]);
-  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, dragHandle: '.workflow-node-header', data: { ...node.data, interfaceLanguage, connectedPorts: { inputs: edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle), outputs: edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle) }, connectionState: connectionEligibility?.get(node.id) || null, modelOptions, promptFiles, credentialConfigured, onSaveCredential: saveCredential, onOpenConfig: setConfigKind, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, edges, interfaceLanguage, connectionEligibility, modelOptions, promptFiles, credentialConfigured, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
+  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, dragHandle: '.workflow-node-header', data: { ...node.data, interfaceLanguage, reasoningAvailable: supportsReasoningForNode(node, nodes, edges, modelOptions), connectedPorts: { inputs: edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle), outputs: edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle) }, connectionState: connectionEligibility?.get(node.id) || null, modelOptions, promptFiles, onOpenConfig: (kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, edges, interfaceLanguage, connectionEligibility, modelOptions, promptFiles, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
   const deleteNode = (id) => {
     setNodes((current) => current.filter((node) => node.id !== id));
     setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));
@@ -954,8 +961,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
               onConnectStart={onConnectStart}
               onConnectEnd={onConnectEnd}
               onReconnect={onReconnect}
-              onReconnectStart={(_, edge) => { reconnectingEdgeRef.current = edge.id; }}
-              onReconnectEnd={() => { reconnectingEdgeRef.current = null; setConnectionHint(null); }}
+              onReconnectEnd={() => setConnectionHint(null)}
               edgesReconnectable
               reconnectRadius={20}
               connectionLineType={edgeMode === 'curve' ? ConnectionLineType.Bezier : ConnectionLineType.SmoothStep}
@@ -1001,14 +1007,15 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
           <div className="canvas-status"><div className="status-left"><span className={`status-light ${issues.length ? 'warn' : 'ok'}`} />{issues.length ? `${issues.length} 项待检查` : '接口连接正常'}<span className="status-sep">|</span><span>自动布局关闭</span></div><button onClick={runValidation}><Check size={13} />验证图结构</button></div>
         </section>
 
-        <Inspector node={selectedNode} edges={edges} language={interfaceLanguage} modelOptions={modelOptions} promptFiles={promptFiles} credentialConfigured={credentialConfigured} onSaveCredential={saveCredential} onChange={updateNode} onDelete={deleteNode} />
+        <Inspector node={selectedNode} edges={edges} language={interfaceLanguage} modelOptions={modelOptions} promptFiles={promptFiles} reasoningAvailable={supportsReasoningForNode(selectedNode, nodes, edges, modelOptions)} onOpenConfig={(kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }} onChange={updateNode} onDelete={deleteNode} />
       </main>
 
       <footer className="app-footer"><span>ATRI · LOCAL WORKSPACE</span><span className="execution-note"><span className="note-dot" />试运行调用当前 Agent · 应用后在对话页使用</span></footer>
 
       {jsonOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setJsonOpen(false); }}><section className="json-modal"><header><div><span className="eyebrow">WORKFLOW DOCUMENT</span><h2>工作流 JSON</h2></div><button className="icon-button" onClick={() => setJsonOpen(false)} title="关闭"><X size={17} /></button></header><textarea spellCheck="false" value={jsonText} onChange={(event) => { setJsonText(event.target.value); setJsonCopied(false); }} /><div className="modal-footer"><span>版本 2 · 节点 {nodes.length} · 连接 {edges.length}</span><div><button className="secondary-button" onClick={copyJson}>{jsonCopied ? <Check size={14} /> : <Copy size={14} />}{jsonCopied ? '已复制' : '复制'}</button><button className="primary-button" onClick={applyJson}><Check size={14} />应用到画布</button></div></div></section></div>}
       {saveDialog && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setSaveDialog(null); }}><form className="workflow-save-modal" onSubmit={submitSaveDialog} role="dialog" aria-label={saveDialog.mode === 'new' ? '保存新工作流' : '重命名工作流'}><header><h2>{saveDialog.mode === 'new' ? '保存新工作流' : '重命名工作流'}</h2><button type="button" className="icon-button" onClick={() => setSaveDialog(null)} disabled={saving} title="关闭"><X size={17} /></button></header><label>显示名称<input autoFocus value={saveDialog.name} onChange={(event) => setSaveDialog((current) => ({ ...current, name: event.target.value }))} placeholder="工作流名称" /></label><label>文件名<input value={saveDialog.id} onChange={(event) => setSaveDialog((current) => ({ ...current, id: event.target.value }))} placeholder="my_workflow" spellCheck="false" /><small>保存在 workflows/ 目录，自动添加 .json</small></label><footer><button type="button" className="secondary-button" onClick={() => setSaveDialog(null)} disabled={saving}>取消</button><button type="submit" className="primary-button" disabled={saving}><Save size={15} />{saving ? '保存中' : '保存'}</button></footer></form></div>}
-      {configKind && <CapabilityPanel kind={configKind} onClose={() => setConfigKind(null)} onChanged={() => setPreviewRevision((value) => value + 1)} />}
+      {configKind === 'api-models' && <ApiModelPanel initialModelId={configModelId} onClose={() => setConfigKind(null)} onChanged={() => { refreshModelOptions(); setPreviewRevision((value) => value + 1); }} />}
+      {configKind && configKind !== 'api-models' && <CapabilityPanel kind={configKind} onClose={() => setConfigKind(null)} onChanged={() => setPreviewRevision((value) => value + 1)} />}
     </div>
   );
 }

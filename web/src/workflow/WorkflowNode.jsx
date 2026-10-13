@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Handle, NodeResizer, Position, useUpdateNodeInternals } from '@xyflow/react';
-import { Braces, GripVertical, Save, Settings2 } from 'lucide-react';
+import { Braces, GripVertical, Settings2 } from 'lucide-react';
 import { categoryMeta, getNodeDefinition } from './catalog';
 import { getPortTypeColor } from './portTypes';
 import { portLabel } from './interfaceLanguage';
@@ -41,11 +41,11 @@ export default function WorkflowNode({ id, data, selected }) {
   const mmprojOptions = allModels.filter((option) => option.type === 'mmproj');
   const currentModel = data.config?.model ?? '';
   const currentMmproj = data.config?.mmproj ?? '';
+  const reasoningEffort = data.config?.reasoning_effort ?? 'auto';
   const hasPreview = !definition.hideOutputPreview && !isModelLoader && !['llm.chat', 'agent.react_runtime', 'control.loop', 'react.loop'].includes(data.kind) && (outputs.length > 0 || data.kind === 'core.chat_output');
   const editableInput = data.kind === 'core.chat_input' || data.kind === 'prompt.text';
   const inputKey = data.kind === 'prompt.text' ? 'text' : 'debug_input';
   const [draftInput, setDraftInput] = useState(data.config?.[inputKey] ?? '');
-  const [apiKeyDraft, setApiKeyDraft] = useState('');
   const contentRef = useRef(null);
   const updateNodeInternals = useUpdateNodeInternals();
   const [contentHeight, setContentHeight] = useState(72);
@@ -101,8 +101,9 @@ export default function WorkflowNode({ id, data, selected }) {
         {editableInput && <label className="node-debug-input"><span>{data.kind === 'prompt.text' ? '提示词内容' : '调试输入'}</span><textarea value={draftInput} onChange={(event) => updateDraftInput(event.target.value)} onPointerDown={(event) => event.stopPropagation()} /></label>}
         {data.kind === 'prompt.markdown_file' && <label className="node-model-select" onPointerDown={(event) => event.stopPropagation()}><span>Markdown 文件</span><select value={data.config?.file || ''} onChange={(event) => data.onDataChange?.(id, { config: { ...(data.config || {}), file: event.target.value } })}>{(data.promptFiles || []).map((file) => <option key={file} value={file}>{file}</option>)}</select></label>}
         {isModelLoader && <label className="node-model-select" onPointerDown={(event) => event.stopPropagation()}><span>主模型</span><select value={currentModel} onChange={(event) => data.onDataChange?.(id, { config: { ...(data.config ?? {}), model: event.target.value } })}><option value="" disabled>请选择{expectedModelType === 'api' ? ' API' : ' GGUF'}模型</option>{currentModel && !modelOptions.some((option) => option.value === currentModel) && <option value={currentModel}>当前模型不可用：{currentModel}</option>}{modelOptions.map((option) => <option key={option.value} value={option.value} disabled={option.ready === false}>{option.label}{option.ready === false ? ' · 未就绪' : ''}</option>)}</select></label>}
-        {data.kind === 'llm.openai_loader' && <div className="node-api-fields" onPointerDown={(event) => event.stopPropagation()}><label><span>提供商端点</span><input value={data.config?.base_url || ''} placeholder={modelOptions.find((option) => option.value === currentModel)?.base_url || 'https://.../v1'} onChange={(event) => data.onDataChange?.(id, { config: { ...(data.config || {}), base_url: event.target.value } })} /></label><label><span>API Key {data.credentialConfigured?.includes(id) ? '· 已配置' : '· 未配置'}</span><input type="password" autoComplete="off" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="仅保存在本机" /></label><button onClick={() => { data.onSaveCredential?.(id, apiKeyDraft); setApiKeyDraft(''); }} disabled={!apiKeyDraft}><Save size={13} />保存密钥</button></div>}
+        {data.kind === 'llm.openai_loader' && <button className="node-config-button" onClick={() => data.onOpenConfig?.('api-models', currentModel)} onPointerDown={(event) => event.stopPropagation()}><Settings2 size={14} />配置模型</button>}
         {data.kind === 'llm.gguf_loader' && <label className="node-model-select secondary-model-select" onPointerDown={(event) => event.stopPropagation()}><span>视觉投影（mmproj，可选）</span><select value={currentMmproj} onChange={(event) => data.onDataChange?.(id, { config: { ...(data.config ?? {}), mmproj: event.target.value } })}><option value="">不使用（纯文本）</option>{currentMmproj && !mmprojOptions.some((option) => option.value === currentMmproj) && <option value={currentMmproj}>当前 mmproj 不可用：{currentMmproj}</option>}{mmprojOptions.map((option) => <option key={option.value} value={option.value} disabled={option.ready === false}>{option.label}{option.ready === false ? ' · 未就绪' : ''}</option>)}</select></label>}
+        {data.kind === 'llm.chat' && <label className="node-model-select node-reasoning-select" onPointerDown={(event) => event.stopPropagation()}><span>思考强度（API）</span><select value={data.reasoningAvailable ? reasoningEffort : 'auto'} disabled={!data.reasoningAvailable} onChange={(event) => data.onDataChange?.(id, { config: { ...(data.config ?? {}), reasoning_effort: event.target.value } })}><option value="auto">{data.reasoningAvailable ? '自动' : 'GGUF 模型暂不支持'}</option>{data.reasoningAvailable && <><option value="minimal">极低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">极高</option></>}</select><small>{data.reasoningAvailable ? '可在对话页临时覆盖' : '连接 API 运行时模型后可设置'}</small></label>}
         {['skills.provider', 'tools.provider', 'memory.provider'].includes(data.kind) && <button className="node-config-button" onClick={() => data.onOpenConfig?.(data.kind.split('.')[0])} onPointerDown={(event) => event.stopPropagation()}><Settings2 size={14} />详细配置</button>}
         {['control.loop', 'react.loop'].includes(data.kind) && <div className="node-loop-limit"><span>{language === 'en' ? 'Maximum iterations' : '最大循环次数'}</span><IterationStepper value={data.config?.max_iterations ?? 5} onChange={(value) => data.onDataChange?.(id, { config: { ...(data.config || {}), max_iterations: value } })} /></div>}
         {(inputs.length > 0 || outputs.length > 0) && <div className={`node-port-grid ${inputs.length && outputs.length ? 'split-ports' : outputs.length ? 'output-only' : ''}`}>

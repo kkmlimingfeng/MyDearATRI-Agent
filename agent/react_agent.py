@@ -349,6 +349,7 @@ class ReactAgent(BaseAgent):
         context_override: Optional[str] = None,
         graph_previews: Optional[Dict[str, str]] = None,
         stream_update: Optional[Callable[[str], None]] = None,
+        reasoning_effort: str = "auto",
         **kwargs
     ) -> str:
         """
@@ -454,6 +455,7 @@ class ReactAgent(BaseAgent):
                     'action': 'generate',
                     'messages': messages,
                     'tools': available_schemas,
+                    'reasoning_effort': reasoning_effort,
                 }
                 if stream_update:
                     request_payload['on_progress'] = stream_update

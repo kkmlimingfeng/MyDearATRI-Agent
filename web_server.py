@@ -37,6 +37,7 @@ THEME_BACKGROUND_PATH = ROOT / "data" / "theme" / "background.webp"
 PROMPT_DIR = ROOT / "modules" / "prompt" / "SystemPrompt"
 MEMORY_DIR = ROOT / "modules" / "mem"
 CREDENTIAL_PATH = ROOT / "config" / "model_credentials.json"
+API_MODELS_PATH = ROOT / "config" / "api_models.json"
 _runtime_lock = threading.RLock()
 _runtime_agent = None
 _runtime_graph_key = None
@@ -47,6 +48,7 @@ _runtime_workflow_id = None
 _run_jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 _workflow_file_lock = threading.Lock()
+_model_config_lock = threading.Lock()
 
 
 def _update_run_draft(job_id: str, content: str) -> None:
@@ -173,6 +175,7 @@ def _load_models() -> dict:
         raise ModuleConfigError(f"加载模型配置失败: {exc}") from exc
     if not isinstance(payload, dict):
         raise ModuleConfigError("config/models.json 必须是对象")
+    payload.update(_read_json_map(API_MODELS_PATH))
     # Local GGUF files are models too. Explicit config entries remain
     # authoritative, while new files in models/ become selectable automatically.
     models_dir = ROOT / "models"
@@ -349,6 +352,7 @@ def _model_kind(config: dict) -> str:
 def _model_catalog() -> list[dict]:
     """Return safe, editor-facing model metadata without exposing secrets."""
     catalog = []
+    credentials = _read_json_map(CREDENTIAL_PATH)
     for model_id, raw in _load_models().items():
         config = dict(raw) if isinstance(raw, dict) else {}
         kind = _model_kind(config)
@@ -360,8 +364,8 @@ def _model_catalog() -> list[dict]:
             label = f"{config.get('label', model_id)} · {label_suffix}"
         else:
             ready = True
-            reason = "请在 API 模型节点配置密钥，或设置 OPENAI_API_KEY"
-            label = f"{model_id} · API"
+            reason = "请在 API 模型配置中保存密钥，或设置 OPENAI_API_KEY"
+            label = f"{config.get('model_name') or model_id} · API"
         catalog.append({
             "id": model_id,
             "label": label,
@@ -370,8 +374,119 @@ def _model_catalog() -> list[dict]:
             "reason": reason,
             "model_name": config.get("model_name", ""),
             "base_url": config.get("base_url", ""),
+            "api_style": config.get("api_style", "chat_completions"),
+            "supports_images": config.get("supports_images", False),
+            "input_token_limit": config.get("input_token_limit", config.get("context_window")),
+            "max_output_tokens": config.get("max_tokens"),
+            "has_saved_key": bool(credentials.get(f"model:{model_id}")) if kind == "api" else False,
+            "configured": bool(credentials.get(f"model:{model_id}") or os.environ.get("OPENAI_API_KEY")) if kind == "api" else False,
         })
     return catalog
+
+
+def _api_model_catalog() -> list[dict]:
+    overrides = _read_json_map(API_MODELS_PATH)
+    builtins = _read_json_map(ROOT / "config" / "models.json")
+    return [
+        {**item, "custom": item["id"] in overrides,
+         "builtin": item["id"] in builtins}
+        for item in _model_catalog() if item["type"] == "api"
+    ]
+
+
+def _invalidate_active_model(model_id: str) -> None:
+    with _runtime_lock:
+        if not _runtime_graph_key:
+            return
+        graph = json.loads(_runtime_graph_key)
+        if any(node.get("type") in {"llm.openai_loader", "llm.provider"}
+               and node.get("data", {}).get("config", {}).get("model") == model_id
+               for node in graph.get("nodes", [])):
+            stop_runtime()
+
+
+def _save_api_model(payload: dict) -> dict:
+    model_id = payload.get("id")
+    model_name = payload.get("model_name")
+    base_url = payload.get("base_url")
+    style = payload.get("api_style", "chat_completions")
+    api_key = payload.get("api_key", "")
+    input_token_limit = payload.get("input_token_limit")
+    max_output_tokens = payload.get("max_output_tokens")
+    if not isinstance(model_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:-]{0,127}", model_id):
+        raise ValueError("配置 ID 只能包含字母、数字、点、下划线、斜杠、冒号和连字符")
+    if not isinstance(model_name, str) or not model_name.strip() or len(model_name) > 200:
+        raise ValueError("请输入有效的提供商模型 ID")
+    if not isinstance(base_url, str) or len(base_url) > 2048:
+        raise ValueError("请输入有效的 API 根地址")
+    base_url = base_url.strip().rstrip("/")
+    if style not in {"chat_completions", "responses"}:
+        raise ValueError("不支持的 API 格式")
+    endpoint = "/responses" if style == "responses" else "/chat/completions"
+    if base_url.endswith(endpoint):
+        base_url = base_url[:-len(endpoint)]
+    elif base_url.endswith("/responses") or base_url.endswith("/chat/completions"):
+        raise ValueError("API 地址末尾与所选请求格式不一致")
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("API 根地址必须是有效的 http(s) 地址")
+    if not isinstance(api_key, str) or len(api_key) > 4096:
+        raise ValueError("API Key 无效")
+    if input_token_limit not in (None, "") and (isinstance(input_token_limit, bool) or not isinstance(input_token_limit, int) or not 1 <= input_token_limit <= 10_000_000):
+        raise ValueError("最大输入 token 必须是正整数")
+    if max_output_tokens not in (None, "") and (isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or not 1 <= max_output_tokens <= 10_000_000):
+        raise ValueError("最大输出 token 必须是正整数，或留空使用自动模式")
+    with _model_config_lock:
+        existing = _load_models().get(model_id)
+        if existing and _model_kind(existing) != "api":
+            raise ValueError("该配置 ID 已被本地模型占用")
+        overrides = _read_json_map(API_MODELS_PATH)
+        overrides[model_id] = {**(existing or {}),
+            "model_name": model_name.strip(), "base_url": base_url,
+            "api_style": style, "supports_images": payload.get("supports_images") is True,
+            **({"input_token_limit": input_token_limit} if input_token_limit not in (None, "") else {}),
+        }
+        overrides[model_id].pop("context_window", None)
+        overrides[model_id].pop("max_tokens", None)
+        if max_output_tokens not in (None, ""):
+            overrides[model_id]["max_tokens"] = max_output_tokens
+        if input_token_limit in (None, ""):
+            overrides[model_id].pop("input_token_limit", None)
+        _write_json_map(API_MODELS_PATH, overrides)
+        if api_key:
+            credentials = _read_json_map(CREDENTIAL_PATH)
+            credentials[f"model:{model_id}"] = api_key
+            _write_json_map(CREDENTIAL_PATH, credentials)
+    _invalidate_active_model(model_id)
+    return {"models": _api_model_catalog()}
+
+
+def _clear_api_model_key(model_id: Any) -> dict:
+    model = _load_models().get(model_id) if isinstance(model_id, str) else None
+    if not isinstance(model, dict) or _model_kind(model) != "api":
+        raise ValueError("API 模型不存在")
+    with _model_config_lock:
+        credentials = _read_json_map(CREDENTIAL_PATH)
+        credentials.pop(f"model:{model_id}", None)
+        _write_json_map(CREDENTIAL_PATH, credentials)
+    _invalidate_active_model(model_id)
+    return {"models": _api_model_catalog()}
+
+
+def _delete_api_model(model_id: Any) -> dict:
+    if not isinstance(model_id, str):
+        raise ValueError("缺少配置 ID")
+    with _model_config_lock:
+        overrides = _read_json_map(API_MODELS_PATH)
+        if model_id not in overrides:
+            raise ValueError("该模型没有本地自定义配置")
+        overrides.pop(model_id)
+        _write_json_map(API_MODELS_PATH, overrides)
+        credentials = _read_json_map(CREDENTIAL_PATH)
+        credentials.pop(f"model:{model_id}", None)
+        _write_json_map(CREDENTIAL_PATH, credentials)
+    _invalidate_active_model(model_id)
+    return {"models": _api_model_catalog()}
 
 
 def _load_env_file() -> None:
@@ -538,18 +653,19 @@ def _make_agent(graph: dict):
     llm_kwargs = {} if selected_class else dict(llm_spec.get("kwargs", {}))
     llm_kwargs.update(selected_model.get("kwargs", {}))
     for key, value in selected_model.items():
-        if key not in {"class", "provider", "kwargs", "label", "projection"}:
+        if key not in {"class", "provider", "kwargs", "label", "projection", "supports_images", "context_window", "input_token_limit"}:
             llm_kwargs[key] = value
     model_kwargs = model_config.get("kwargs", {})
     if isinstance(model_kwargs, dict):
         llm_kwargs.update({key: value for key, value in model_kwargs.items() if key != "model"})
     for key, value in model_config.items():
-        if key not in {"model", "mmproj", "kwargs", "api_key"}:
+        if key not in {"model", "mmproj", "kwargs", "api_key"} and not (actual_kind == "api" and key == "base_url"):
             llm_kwargs[key] = value
     if actual_kind == "api":
-        key = _read_json_map(CREDENTIAL_PATH).get(model_node["id"]) or os.environ.get("OPENAI_API_KEY", "")
+        credentials = _read_json_map(CREDENTIAL_PATH)
+        key = credentials.get(f"model:{model_key}") or os.environ.get("OPENAI_API_KEY", "")
         if not key:
-            raise GraphWorkflowError("API 模型未配置密钥，请在模型节点填写 API Key")
+            raise GraphWorkflowError("API 模型未配置密钥，请在模型配置中保存 API Key")
         llm_kwargs["api_key"] = key
         if not llm_kwargs.get("base_url"):
             llm_kwargs["base_url"] = selected_model.get("base_url") or "https://api.openai.com/v1"
@@ -746,9 +862,12 @@ def run_graph(
     require_started: bool = False,
     job_id: str | None = None,
     history: Any = None,
+    reasoning_effort: Any = None,
 ) -> dict:
     global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started, _runtime_workflow_id
     graph, bindings = _validate_runtime_graph(graph_data)
+    if reasoning_effort is not None and (not isinstance(reasoning_effort, str) or reasoning_effort not in {"auto", "minimal", "low", "medium", "high", "xhigh"}):
+        raise ValueError("思考强度无效")
     stream_update = (lambda content: _update_run_draft(job_id, content)) if job_id else None
     serialized_graph = json.dumps(graph_data, ensure_ascii=False, sort_keys=True)
     execution_key = _execution_graph_key(graph_data)
@@ -829,6 +948,7 @@ def run_graph(
                 "tools_id": tools_id,
                 "skills_id": _runtime_bindings.get("skills_id"),
                 "stream_update": stream_update,
+                "reasoning_effort": reasoning_effort,
             }
             executor = GraphExecutor(graph, agent._modules, services, agent._trace)
             executor.run_id = run_id
@@ -866,6 +986,7 @@ def run_graph(
             context_override=context_override,
             graph_previews=previews,
             stream_update=stream_update,
+            reasoning_effort=reasoning_effort if reasoning_effort is not None else runtime_node.get("data", {}).get("config", {}).get("reasoning_effort", "auto"),
             **_runtime_bindings,
         )
         previews[runtime_node["id"]] = answer
@@ -891,7 +1012,7 @@ def _start_run_job(payload: dict) -> dict:
 
     def worker() -> None:
         try:
-            result = run_graph(payload.get("workflow"), payload.get("input", "").strip(), payload.get("mode", "transparent"), bool(payload.get("require_started", False)), job_id, payload.get("history"))
+            result = run_graph(payload.get("workflow"), payload.get("input", "").strip(), payload.get("mode", "transparent"), bool(payload.get("require_started", False)), job_id, payload.get("history"), payload.get("reasoning_effort"))
             with _jobs_lock:
                 _run_jobs[job_id].update(done=True, result=result)
         except Exception as exc:
@@ -1001,6 +1122,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         if self.path == "/api/models":
             self._send(200, {"models": _model_catalog()})
             return
+        if self.path == "/api/api-models":
+            self._send(200, {"models": _api_model_catalog()})
+            return
         if self.path == "/api/user-profile":
             try:
                 self._send(200, _read_user_profile())
@@ -1010,7 +1134,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/skills", "/api/tools", "/api/memory"}:
+        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory"}:
             self._send(404, {"error": "Not found"})
             return
         try:
@@ -1038,6 +1162,11 @@ class ApiHandler(BaseHTTPRequestHandler):
                 _write_json_map(CREDENTIAL_PATH, credentials)
                 stop_runtime()
                 self._send(200, {"configured": bool(key)})
+                return
+            if self.path == "/api/api-models":
+                action = payload.get("action")
+                result = _delete_api_model(payload.get("id")) if action == "delete" else _clear_api_model_key(payload.get("id")) if action == "clear-key" else _save_api_model(payload)
+                self._send(200, result)
                 return
             if self.path in {"/api/skills", "/api/tools"}:
                 self._send(200, _set_capability_items(self.path.removeprefix("/api/"), payload.get("updates")))
@@ -1078,6 +1207,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 payload.get("mode", "normal"),
                 require_started=bool(payload.get("require_started", False)),
                 history=payload.get("history"),
+                reasoning_effort=payload.get("reasoning_effort"),
             )
             self._send(200, result)
         except (GraphWorkflowError, ModuleConfigError, ValueError, KeyError) as exc:

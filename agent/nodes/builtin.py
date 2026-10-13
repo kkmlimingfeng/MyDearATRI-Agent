@@ -60,7 +60,7 @@ class OpenAILoaderNode(LLMProviderNode):
     node_type = "llm.openai_loader"
     title = "API 模型加载"
     description = "连接 OpenAI 兼容 API 模型。"
-    defaults = {"model": "qwen3.5-35b", "base_url": ""}
+    defaults = {"model": "qwen3.5-35b"}
     preview = "首次运行时建立 API 模块；编辑画布不会发起请求。"
 
 
@@ -292,6 +292,7 @@ class ReactRuntimeNode(BaseNode):
             "max_iterations": {"type": "integer", "minimum": 1},
             "display_mode": {"type": "string", "enum": ["normal", "transparent"]},
             "prompt_name": {"type": "string"},
+            "reasoning_effort": {"type": "string", "title": "默认思考强度（API）", "enum": ["auto", "minimal", "low", "medium", "high", "xhigh"], "default": "auto"},
         },
     }
 
@@ -309,6 +310,7 @@ class ReactRuntimeNode(BaseNode):
             user_input=str(inputs.get("message", "")),
             prompt_name=self.config.get("prompt_name", "default"),
             mode=self.config.get("display_mode", "normal"),
+            reasoning_effort=context.services.get("reasoning_effort") or self.config.get("reasoning_effort", "auto"),
             **bindings,
         )
         events = agent.get_trace_events() if hasattr(agent, "get_trace_events") else []
@@ -319,9 +321,9 @@ class LLMChatNode(ReactRuntimeNode):
     node_type = "llm.chat"
     title = "模型对话"
     category = "model"
-    defaults = {}
+    defaults = {"reasoning_effort": "auto"}
     preview = "接收消息、提示词和上下文，返回模型回答。"
-    config_schema = {"type": "object", "properties": {}}
+    config_schema = {"type": "object", "properties": {"reasoning_effort": {"type": "string", "title": "默认思考强度（API）", "enum": ["auto", "minimal", "low", "medium", "high", "xhigh"], "default": "auto"}}}
     inputs = (
         PortDefinition("message", "text"),
         PortDefinition("prompt", "prompt"),
@@ -374,6 +376,7 @@ class LLMChatNode(ReactRuntimeNode):
             stream_update("")
         context.emit("model_request", context.node_id, {"messages": messages, "tool_schemas": tool_schemas})
         request = {"action": "generate", "messages": messages, "tools": tool_schemas}
+        request["reasoning_effort"] = context.services.get("reasoning_effort") or self.config.get("reasoning_effort", "auto")
         if callable(stream_update):
             request["on_progress"] = stream_update
         reply = agent.bus.request(source="agent", target=llm.module_id, payload=request)

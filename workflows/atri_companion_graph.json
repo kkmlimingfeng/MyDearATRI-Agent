@@ -172,7 +172,9 @@
       "data": {
         "label": "模型对话",
         "category": "model",
-        "config": {},
+        "config": {
+          "reasoning_effort": "auto"
+        },
         "sizeMode": "auto",
         "previewExpanded": true
       },
@@ -288,10 +290,27 @@
         "category": "io",
         "module_id": "",
         "config": {
-          "placeholder": "说点什么…"
+          "placeholder": "说点什么…",
+          "debug_input": "你好，介绍一下你自己。"
         }
       },
       "type": "core.chat_input"
+    },
+    {
+      "id": "openai_loader_72238",
+      "position": {
+        "x": -117.95466358043595,
+        "y": 740.2672598986451
+      },
+      "data": {
+        "label": "API 模型加载",
+        "category": "model",
+        "module_id": "llm",
+        "config": {
+          "model": "qwen3.5-27b"
+        }
+      },
+      "type": "llm.openai_loader"
     }
   ],
   "edges": [
@@ -427,23 +446,6 @@
       "markerEnd": {
         "type": "arrowclosed",
         "color": "#39a6a5",
-        "width": 15,
-        "height": 15
-      }
-    },
-    {
-      "id": "e_llm_chat",
-      "source": "llm_qwen",
-      "target": "llm_chat",
-      "sourceHandle": "llm",
-      "targetHandle": "llm",
-      "style": {
-        "stroke": "#5a9fd2",
-        "strokeWidth": 2
-      },
-      "markerEnd": {
-        "type": "arrowclosed",
-        "color": "#5a9fd2",
         "width": 15,
         "height": 15
       }
@@ -728,12 +730,32 @@
       "data": {
         "feedback": false
       }
+    },
+    {
+      "style": {
+        "strokeWidth": 2,
+        "stroke": "#5a9fd2"
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#5a9fd2",
+        "width": 15,
+        "height": 15
+      },
+      "source": "openai_loader_72238",
+      "sourceHandle": "llm",
+      "target": "llm_chat",
+      "targetHandle": "llm",
+      "id": "e_483473aa",
+      "data": {
+        "feedback": false
+      }
     }
   ],
   "viewport": {
-    "x": 318.650932396175,
-    "y": 135.89329472294924,
-    "zoom": 0.7999999807698438
+    "x": 576.3954603307986,
+    "y": -122.25606246517805,
+    "zoom": 0.9189586663259086
   },
   "metadata": {
     "status": "active",

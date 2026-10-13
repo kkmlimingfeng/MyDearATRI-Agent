@@ -170,6 +170,7 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [chatState, setChatState] = useState(readChatState);
   const [input, setInput] = useState('');
   const [mode, setMode] = useState('normal');
+  const [reasoningEffort, setReasoningEffort] = useState('workflow');
   const [busy, setBusy] = useState(false);
   const [busySessionId, setBusySessionId] = useState(null);
   const [liveEvents, setLiveEvents] = useState([]);
@@ -269,13 +270,16 @@ export default function ChatHome({ onNavigate, active = true }) {
   }, []);
 
   const activeModel = useMemo(() => {
-    const node = workflow?.nodes?.find((item) => ['llm.provider', 'llm.gguf_loader', 'llm.openai_loader'].includes(item.type));
+    const runtime = workflow?.nodes?.find((item) => ['llm.chat', 'agent.react_runtime'].includes(item.type));
+    const modelEdge = workflow?.edges?.find((edge) => edge.target === runtime?.id && edge.targetHandle === 'llm');
+    const node = workflow?.nodes?.find((item) => item.id === modelEdge?.source);
     const modelId = node?.data?.config?.model;
     const direct = workflow?.nodes?.length === 2
       && workflow.nodes.some((item) => item.type === 'core.chat_input')
       && workflow.nodes.some((item) => item.type === 'core.chat_output')
       && workflow.edges?.length === 1;
-    return modelChoices.find((option) => option.value === modelId)?.label || modelId || (direct ? '无模型直通' : '未选择模型');
+    const choice = modelChoices.find((option) => option.value === modelId);
+    return { label: choice?.label || modelId || (direct ? '无模型直通' : '未选择模型'), hasModel: Boolean(node), supportsReasoning: node?.type === 'llm.openai_loader' || (node?.type === 'llm.provider' && choice?.type === 'api') };
   }, [workflow]);
 
   const appendMessage = (sessionId, message, title) => {
@@ -321,7 +325,7 @@ export default function ChatHome({ onNavigate, active = true }) {
       const history = activeSession.messages
         .filter((message) => !message.error && typeof message.content === 'string' && ['user', 'assistant'].includes(message.role))
         .map(({ role, content }) => ({ role, content }));
-      const result = await runWorkflowRequest({ workflow, input: text, mode, require_started: true, history }, onProgress);
+      const result = await runWorkflowRequest({ workflow, input: text, mode, require_started: true, history, ...(activeModel.supportsReasoning && reasoningEffort !== 'workflow' ? { reasoning_effort: reasoningEffort } : {}) }, onProgress);
       if (!result.answer && result.error) throw new Error(result.error);
       liveEventsRef.current = result.events || liveEventsRef.current;
       appendMessage(sessionId, { role: 'assistant', content: result.answer, events: result.events, sentAt: Date.now(), durationMs: performance.now() - started });
@@ -467,7 +471,7 @@ export default function ChatHome({ onNavigate, active = true }) {
           </div>}
         </section>
         <footer className="composer-area">
-          <div className="composer-box"><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder={runtimeStatus.running ? '给 ATRI 发消息…' : '请先在工作流页启动 Agent'} rows={1} /><div className="composer-tools"><span><Zap size={13} />{activeModel}</span><span className="composer-hint">Enter 发送 · Shift + Enter 换行</span><button className="send-button" disabled={!input.trim() || busy || runtimeStatus.loading || !runtimeStatus.running} onClick={sendMessage} title={runtimeStatus.running ? '发送消息' : '先启动工作流'}><ArrowUp size={17} /></button></div></div>
+          <div className="composer-box"><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder={runtimeStatus.running ? '给 ATRI 发消息…' : '请先在工作流页启动 Agent'} rows={1} /><div className="composer-tools"><span className="composer-model"><Zap size={13} />{activeModel.label}</span>{activeModel.hasModel && <label className="composer-reasoning" title={activeModel.supportsReasoning ? '本次对话的思考强度' : '当前 GGUF 模型暂不支持思考强度参数'}><span>思考强度</span><select aria-label="思考强度" value={activeModel.supportsReasoning ? reasoningEffort : 'unsupported'} disabled={!activeModel.supportsReasoning} onChange={(event) => setReasoningEffort(event.target.value)}>{activeModel.supportsReasoning ? <><option value="workflow">跟随工作流</option><option value="auto">自动</option><option value="minimal">极低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">极高</option></> : <option value="unsupported">GGUF 暂不支持</option>}</select></label>}<span className="composer-hint">Enter 发送 · Shift + Enter 换行</span><button className="send-button" disabled={!input.trim() || busy || runtimeStatus.loading || !runtimeStatus.running} onClick={sendMessage} title={runtimeStatus.running ? '发送消息' : '先启动工作流'}><ArrowUp size={17} /></button></div></div>
           <div className="composer-caption">ATRI 会根据当前激活的工作流配置运行。<button onClick={() => onNavigate('workflow')}>编辑工作流</button></div>
         </footer>
       </main>
