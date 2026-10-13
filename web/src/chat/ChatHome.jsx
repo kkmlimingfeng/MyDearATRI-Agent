@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, ArrowUp, Bot, ChevronDown, FileClock, MessageSquarePlus, PanelLeftClose, Pencil, Plus, Save, Trash2, Workflow, X, Zap } from 'lucide-react';
+import { Activity, AlertCircle, ArrowUp, Bot, Check, ChevronDown, FileClock, MessageSquarePlus, PanelLeftClose, Pencil, Plus, Save, Trash2, Workflow, X, Zap } from 'lucide-react';
 import { ThemePicker } from '../theme.jsx';
 import { modelChoices } from '../workflow/catalog';
 import TraceView from '../workflow/TraceView';
 import { useInterfaceLanguage } from '../workflow/interfaceLanguage';
 import { runWorkflowRequest } from '../workflow/runApi';
+import { getChatActivity, getRecentActions } from './activityStatus';
 
 const CHAT_STORAGE_KEY = 'atri.chat.sessions.v1';
 const ACTIVE_CHAT_STORAGE_KEY = 'atri.chat.active.v1';
@@ -74,6 +75,8 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [busySessionId, setBusySessionId] = useState(null);
   const [liveEvents, setLiveEvents] = useState([]);
   const liveEventsRef = useRef([]);
+  const threadRef = useRef(null);
+  const followThreadRef = useRef(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState(null);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -86,6 +89,12 @@ export default function ChatHome({ onNavigate, active = true }) {
   const { sessions, activeSessionId } = chatState;
   const activeSession = sessions.find((session) => session.id === activeSessionId) || sessions[0];
   const messages = activeSession?.messages || [];
+  const recentActions = getRecentActions(liveEvents, interfaceLanguage);
+
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (thread && followThreadRef.current) thread.scrollTop = thread.scrollHeight;
+  }, [activeSessionId, messages.length, busy, liveEvents.length]);
 
   useEffect(() => {
     try {
@@ -192,13 +201,19 @@ export default function ChatHome({ onNavigate, active = true }) {
       return;
     }
     setInput('');
+    followThreadRef.current = true;
     appendMessage(sessionId, { role: 'user', content: text }, text);
     setBusy(true);
     setBusySessionId(sessionId);
     setLiveEvents([]);
     liveEventsRef.current = [];
     try {
-      const onProgress = mode === 'transparent' ? (events) => { liveEventsRef.current = events; setLiveEvents(events); } : null;
+      const onProgress = (events) => {
+        if (events.length !== liveEventsRef.current.length) {
+          liveEventsRef.current = events;
+          setLiveEvents(events);
+        }
+      };
       const history = activeSession.messages
         .filter((message) => !message.error && typeof message.content === 'string' && ['user', 'assistant'].includes(message.role))
         .map(({ role, content }) => ({ role, content }));
@@ -286,6 +301,7 @@ export default function ChatHome({ onNavigate, active = true }) {
 
   const selectConversation = (sessionId) => {
     if (sessionId === activeSessionId) return;
+    followThreadRef.current = true;
     setChatState((current) => ({ ...current, activeSessionId: sessionId }));
   };
 
@@ -320,7 +336,10 @@ export default function ChatHome({ onNavigate, active = true }) {
           <div className="mode-switch" role="group" aria-label="对话模式"><button className={mode === 'normal' ? 'selected' : ''} onClick={() => setMode('normal')}>正常</button><button className={mode === 'transparent' ? 'selected' : ''} onClick={() => setMode('transparent')}><Activity size={12} />透明</button></div>
           <button className="icon-button" title="新对话" onClick={clearConversation}><Plus size={16} /></button>
         </header>
-        <section className="chat-thread">
+        <section className="chat-thread" ref={threadRef} onScroll={(event) => {
+          const thread = event.currentTarget;
+          followThreadRef.current = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 100;
+        }}>
           <div className="chat-date-label"><span />今天<span /></div>
           {messages.map((message, index) => <article className={`chat-message ${message.role}`} key={`${message.role}-${index}`}>
             {message.role === 'assistant' && <div className="message-avatar"><Bot size={16} /></div>}
@@ -331,7 +350,16 @@ export default function ChatHome({ onNavigate, active = true }) {
             </div>
             {message.role === 'user' && <div className="user-avatar">W</div>}
           </article>)}
-          {busy && busySessionId === activeSessionId && <div className="chat-message assistant"><div className="message-avatar"><Bot size={16} /></div><div className="message-content"><div className="message-bubble thinking"><span /><span /><span />正在思考</div>{mode === 'transparent' && liveEvents.length > 0 && <TraceView events={liveEvents} />}</div></div>}
+          {busy && busySessionId === activeSessionId && <div className="chat-message assistant">
+            <div className="message-avatar"><Bot size={16} /></div>
+            <div className="message-content">
+              <div className="chat-live-panel">
+                <div className="chat-live-status" role="status" aria-live="polite"><Activity size={15} aria-hidden="true" /><span className="chat-live-status-text">{getChatActivity(liveEvents, workflow, interfaceLanguage)}</span></div>
+                {mode === 'normal' && recentActions.length > 0 && <div className="chat-live-actions">{recentActions.map((action) => <div key={action.id} className={action.failed ? 'is-error' : ''}>{action.failed ? <AlertCircle size={13} /> : <Check size={13} />}<span>{action.label}</span></div>)}</div>}
+              </div>
+              {mode === 'transparent' && liveEvents.length > 0 && <TraceView events={liveEvents} />}
+            </div>
+          </div>}
         </section>
         <footer className="composer-area">
           <div className="composer-box"><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder={runtimeStatus.running ? '给 ATRI 发消息…' : '请先在工作流页启动 Agent'} rows={1} /><div className="composer-tools"><span><Zap size={13} />{activeModel}</span><span className="composer-hint">Enter 发送 · Shift + Enter 换行</span><button className="send-button" disabled={!input.trim() || busy || runtimeStatus.loading || !runtimeStatus.running} onClick={sendMessage} title={runtimeStatus.running ? '发送消息' : '先启动工作流'}><ArrowUp size={17} /></button></div></div>

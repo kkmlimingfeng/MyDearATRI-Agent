@@ -10,6 +10,7 @@ const labels = {
   node_started: ['节点开始', 'Node started'], node_completed: ['节点完成', 'Node completed'], node_failed: ['节点失败', 'Node failed'], model_request: ['模型输入', 'Model input'], model_response: ['模型响应', 'Model response'], model_thinking: ['模型推理中', 'Model reasoning'],
   llm_completed: ['模型输出', 'Model output'], loop_decision: ['循环决策', 'Loop decision'],
   tool_call_requested: ['调用工具', 'Tool called'], tool_completed: ['工具结果', 'Tool result'],
+  tool_call_denied: ['工具调用未获批准', 'Tool call denied'],
   tool_results_added: ['工具结果注入上下文', 'Tool results added'], loop_feedback: ['结果反馈下一轮', 'Feedback to next iteration'],
   legacy_observation_added: ['观察结果注入上下文', 'Observation added'], workflow_completed: ['完成回复', 'Answer complete'],
   workflow_failed: ['运行失败', 'Workflow failed'], tool_call_adapted: ['解析模型工具调用', 'Tool call parsed'],
@@ -39,7 +40,11 @@ function TraceStep({ event, index, language }) {
   const [open, setOpen] = useState(false);
   const content = detail(event, language);
   const tokens = event.data?.usage?.total_tokens;
-  return <div className="trace-step"><button type="button" className="trace-step-toggle" aria-expanded={open} disabled={!content} onClick={() => setOpen((value) => !value)}><span>{String(index + 1).padStart(2, '0')}</span><strong>{labels[event.event_type]?.[language === 'en' ? 1 : 0] || event.event_type}</strong><small>{event.node_id || 'runtime'}{event.event_type === 'node_completed' && Number.isFinite(event.data?.duration_ms) ? ` · ${event.data.duration_ms} ms` : ''}{tokens ? ` · ${tokens} tokens` : ''}</small></button>{content && <div className={`motion-collapse ${open ? 'is-open' : ''}`} inert={!open ? '' : undefined}><div><pre>{content}</pre></div></div>}</div>;
+  const subject = ['tool_call_requested', 'tool_completed', 'tool_call_denied'].includes(event.event_type)
+    ? event.data?.target || (event.data?.name === 'atri_list_available_tools'
+      ? language === 'en' ? 'available tools' : '可用工具' : event.data?.name) : null;
+  const title = labels[event.event_type]?.[language === 'en' ? 1 : 0] || event.event_type;
+  return <div className="trace-step"><button type="button" className="trace-step-toggle" aria-expanded={open} disabled={!content} onClick={() => setOpen((value) => !value)}><span>{String(index + 1).padStart(2, '0')}</span><strong>{subject ? `${title} · ${subject}` : title}</strong><small>{event.node_id || 'runtime'}{event.event_type === 'node_completed' && Number.isFinite(event.data?.duration_ms) ? ` · ${event.data.duration_ms} ms` : ''}{tokens ? ` · ${tokens} tokens` : ''}</small></button>{content && <div className={`motion-collapse ${open ? 'is-open' : ''}`} inert={!open ? '' : undefined}><div><pre>{content}</pre></div></div>}</div>;
 }
 
 export default function TraceView({ events = [], language: controlledLanguage, onLanguageChange }) {

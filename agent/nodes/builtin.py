@@ -453,6 +453,11 @@ class ToolDispatchNode(BaseNode):
         for raw in inputs.get("tool_calls") or []:
             call = ToolExecutor.from_provider_call(raw)
             if call.name in {LIST_TOOLS, GET_TOOL_USAGE}:
+                target = call.arguments.get("tool_name") if call.name == GET_TOOL_USAGE else None
+                context.emit("tool_call_requested", context.node_id, {
+                    "call_id": call.call_id, "name": call.name, "arguments": call.arguments,
+                    "kind": "tool_discovery", "target": target,
+                })
                 module_id = tools_ref.get("module_id") if isinstance(tools_ref, dict) else context.services.get("tools_id")
                 if not module_id or self.node_type == "capability.dispatch" and not tools_ref:
                     raise RuntimeError("工具发现需要在工作流中连接工具箱")
@@ -463,7 +468,9 @@ class ToolDispatchNode(BaseNode):
                 else:
                     tool_name = call.arguments.get("tool_name")
                     if not isinstance(tool_name, str) or not tool_name:
-                        results.append({"call_id": call.call_id, "name": call.name, "status": "error", "error": "缺少 tool_name"})
+                        result = {"call_id": call.call_id, "name": call.name, "status": "error", "error": "缺少 tool_name"}
+                        results.append(result)
+                        context.emit("tool_completed", context.node_id, {**result, "kind": "tool_discovery", "target": target})
                         continue
                     reply = agent.bus.request(source="agent", target=module_id, payload={"action": "get_tool_usage", "tool_name": tool_name})
                     schema = reply.payload.get("schema")
@@ -474,22 +481,39 @@ class ToolDispatchNode(BaseNode):
                     else:
                         result["error"] = reply.payload.get("error", "工具不可用")
                     results.append(result)
+                context.emit("tool_completed", context.node_id, {**results[-1], "kind": "tool_discovery", "target": target})
                 continue
             namespace, separator, name = call.name.partition(":")
             if not separator and "__" in call.name and call.name.split("__", 1)[0] in {"skill", *handlers}:
                 namespace, separator, name = call.name.partition("__")
             if call.name.startswith("skill__") or separator and namespace == "skill":
                 name = call.name[len("skill__"):] if call.name.startswith("skill__") else name
+                context.emit("tool_call_requested", context.node_id, {
+                    "call_id": call.call_id, "name": call.name, "arguments": call.arguments,
+                    "kind": "skill", "target": name,
+                })
                 skills_id = skills_ref.get("module_id") if isinstance(skills_ref, dict) else context.services.get("skills_id")
                 if not skills_id or self.node_type == "capability.dispatch" and not skills_ref:
                     raise RuntimeError("技能调用需要在工作流中连接技能目录")
                 reply = agent.bus.request(source="agent", target=skills_id, payload={"action": "get_skill_detail", "skill_name": name})
-                results.append({"call_id": call.call_id, "name": call.name, "status": "error" if "error" in reply.payload else "success", "output": reply.payload.get("detail"), "error": reply.payload.get("error")})
+                result = {"call_id": call.call_id, "name": call.name, "status": "error" if "error" in reply.payload else "success", "output": reply.payload.get("detail"), "error": reply.payload.get("error")}
+                results.append(result)
+                context.emit("tool_completed", context.node_id, {**result, "kind": "skill", "target": name})
             elif separator and namespace != "tool":
+                context.emit("tool_call_requested", context.node_id, {
+                    "call_id": call.call_id, "name": call.name, "arguments": call.arguments,
+                    "kind": namespace, "target": name,
+                })
                 handler = handlers.get(namespace)
                 if handler is None:
                     raise RuntimeError(f"未注册能力类型: {namespace}")
-                results.append(handler(name, call.arguments, call.call_id))
+                result = handler(name, call.arguments, call.call_id)
+                results.append(result)
+                context.emit("tool_completed", context.node_id, {
+                    **(result if isinstance(result, dict) else {"output": result}),
+                    "call_id": call.call_id, "name": call.name,
+                    "kind": namespace, "target": name,
+                })
             else:
                 module_id = tools_ref.get("module_id") if isinstance(tools_ref, dict) else context.services.get("tools_id")
                 if not module_id or self.node_type == "capability.dispatch" and not tools_ref:
@@ -499,7 +523,9 @@ class ToolDispatchNode(BaseNode):
                 if "usage" in inputs and call.name not in {
                     schema.get("function", {}).get("name") for schema in (inputs.get("usage") or [])
                 }:
-                    results.append({"call_id": call.call_id, "name": call.name, "status": "error", "error": "请先读取该工具的使用方式"})
+                    result = {"call_id": call.call_id, "name": call.name, "status": "error", "error": "请先读取该工具的使用方式"}
+                    results.append(result)
+                    context.emit("tool_completed", context.node_id, result)
                     continue
                 results.append(agent._get_tool_executor().execute(call, module_id).as_dict())
         return NodeResult(outputs={"tool_results": results})
