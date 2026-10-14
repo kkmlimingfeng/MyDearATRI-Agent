@@ -71,7 +71,7 @@ npm run dev
 
 **本地 GGUF：** 将模型文件放入项目根目录的 `models/`。刷新工作流页面后，在 GGUF 模型节点的下拉框中选择文件。多模态模型如果需要单独的 `mmproj`，可在第二个下拉框选择；纯文本模型留空。`models/` 下的 GGUF 文件已被 Git 忽略。
 
-**OpenAI 兼容 API：**在 API 模型节点点击“配置模型”，从左侧选择已有配置，或添加自定义模型。填写提供商模型 ID、API 根地址（例如 `https://api.openai.com/v1`）、API Key，并选择 Chat Completions 或 Responses 格式。保存后即可在节点下拉框选择模型。自定义配置保存在本机的 `config/api_models.json`，密钥单独保存在 `config/model_credentials.json`；两者均被 Git 忽略。已有 `config/models.json` 条目仍可作为内置预设。
+**OpenAI 兼容 API：** 在 API 模型节点点击“配置模型”，从左侧选择已有配置，或添加自定义模型。填写提供商模型 ID、API 根地址（例如 `https://api.openai.com/v1`）、API Key，并选择 Chat Completions 或 Responses 格式。保存后即可在节点下拉框选择模型。自定义配置保存在本机的 `config/api_models.json`，密钥单独保存在 `config/model_credentials.json`；两者均被 Git 忽略。已有 `config/models.json` 条目仍可作为内置预设。
 
 模型配置分别记录最大输入 token（模型能力参考）和最大输出 token（可选的生成上限）。输出上限默认留空，API 请求不指定上限，由提供商和模型决定；手动填写后才发送限制。已有配置中的数值会继续生效，需要自动模式时可清空后保存。实际送入模型的历史消息仍由工作流的上下文策略决定，输入上限不会自动截断历史。密钥可在配置页单独清除；若设置了 `OPENAI_API_KEY`，清除本机保存的密钥后仍会使用该环境变量。图片输入标记用于记录模型能力，当前对话输入仍为文本。
 
