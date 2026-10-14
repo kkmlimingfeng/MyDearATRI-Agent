@@ -69,7 +69,7 @@ npm run dev
 
 ## 接入模型
 
-**本地 GGUF：**将模型文件放入项目根目录的 `models/`。刷新工作流页面后，在 GGUF 模型节点的下拉框中选择文件。多模态模型如果需要单独的 `mmproj`，可在第二个下拉框选择；纯文本模型留空。`models/` 下的 GGUF 文件已被 Git 忽略。
+**本地 GGUF：** 将模型文件放入项目根目录的 `models/`。刷新工作流页面后，在 GGUF 模型节点的下拉框中选择文件。多模态模型如果需要单独的 `mmproj`，可在第二个下拉框选择；纯文本模型留空。`models/` 下的 GGUF 文件已被 Git 忽略。
 
 **OpenAI 兼容 API：**在 API 模型节点点击“配置模型”，从左侧选择已有配置，或添加自定义模型。填写提供商模型 ID、API 根地址（例如 `https://api.openai.com/v1`）、API Key，并选择 Chat Completions 或 Responses 格式。保存后即可在节点下拉框选择模型。自定义配置保存在本机的 `config/api_models.json`，密钥单独保存在 `config/model_credentials.json`；两者均被 Git 忽略。已有 `config/models.json` 条目仍可作为内置预设。
 
