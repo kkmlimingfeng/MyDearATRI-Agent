@@ -28,6 +28,7 @@ from modules.module_loader import (
     load_module_specs,
     resolve_config_value,
 )
+from modules.tts.qwen_gguf import TTSRuntimeError, tts
 
 
 ROOT = Path(__file__).resolve().parent
@@ -1053,12 +1054,58 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_tts(self, payload: dict) -> None:
+        response_format = payload.get("response_format", "pcm")
+        with tts.speech(
+            payload.get("text"),
+            reference=payload.get("reference", "atri"),
+            ref_text=payload.get("ref_text"),
+            language=payload.get("language", "Chinese"),
+            response_format=response_format,
+            model=payload.get("model"),
+        ) as response:
+            if response_format == "wav":
+                body = response.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "http://localhost:5173")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/pcm")
+            self.send_header("X-Sample-Rate", "24000")
+            self.send_header("X-Channels", "1")
+            self.send_header("X-Sample-Format", "s16le")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "http://localhost:5173")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            try:
+                while chunk := response.read(4096):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
     def do_OPTIONS(self) -> None:
         self._send(204, {})
 
     def do_GET(self) -> None:
         parsed_url = urlparse(self.path)
         query = parse_qs(parsed_url.query)
+        if parsed_url.path == "/api/tts/status":
+            self._send(200, tts.status())
+            return
+        if parsed_url.path == "/api/tts/models":
+            self._send(200, tts.models())
+            return
+        if parsed_url.path == "/api/tts/references":
+            self._send(200, {"references": tts.references()})
+            return
         if parsed_url.path == "/api/prompts":
             self._send(200, {"files": sorted(path.name for path in PROMPT_DIR.glob("*.md"))})
             return
@@ -1134,12 +1181,18 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory"}:
+        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory", "/api/tts/speech", "/api/tts/model"}:
             self._send(404, {"error": "Not found"})
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(size)) if size else {}
+            if self.path == "/api/tts/speech":
+                self._send_tts(payload)
+                return
+            if self.path == "/api/tts/model":
+                self._send(200, tts.select_model(payload.get("model")))
+                return
             if self.path == "/api/preview":
                 if not isinstance(payload.get("workflow"), dict) or not isinstance(payload["workflow"].get("nodes"), list) or not isinstance(payload["workflow"].get("edges"), list):
                     raise ValueError("工作流格式无效")
@@ -1212,6 +1265,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send(200, result)
         except (GraphWorkflowError, ModuleConfigError, ValueError, KeyError) as exc:
             self._send(400, {"error": str(exc)})
+        except TTSRuntimeError as exc:
+            self._send(503, {"error": str(exc)})
         except Exception as exc:
             self._send(500, {"error": f"Agent 运行失败: {exc}"})
 
@@ -1230,6 +1285,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+        tts.close()
         if _runtime_agent is not None:
             _runtime_agent.stop()
 
