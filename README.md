@@ -69,6 +69,8 @@ npm run dev
 
 打开 `http://localhost:5173`。后端 API 默认监听 `127.0.0.1:8765`；本地模型由后端进程加载，无需单独启动模型服务。
 
+首次使用网页内的 Live2D 形象时，在 `web/` 目录运行 `npm run download:cubism-core` 获取 Live2D Cubism Core Web 运行库。运行库保存在 Git 忽略的 `web/public/vendor/`；模型资源从本机 `data/atri-liv2d/` 提供。形象可在页面内拖动，对话页和工作流页会分别记住位置，点击形象可触发弹跳。模型和运行库均不随项目源码提交。
+
 ## 接入模型
 
 **本地 GGUF：** 将模型文件放入项目根目录的 `models/`。刷新工作流页面后，在 GGUF 模型节点的下拉框中选择文件。多模态模型如果需要单独的 `mmproj`，可在第二个下拉框选择；纯文本模型留空。`models/` 下的 GGUF 文件已被 Git 忽略。

@@ -1,8 +1,10 @@
-import { startTransition, useCallback, useRef, useState } from 'react';
+import { lazy, startTransition, Suspense, useCallback, useRef, useState } from 'react';
 import WorkflowApp from './workflow/WorkflowEditor';
 import ChatHome from './chat/ChatHome';
 import ParticleTransition from './ParticleTransition';
 import { useTheme } from './theme.jsx';
+
+const Live2DAvatar = lazy(() => import('./live2d/Live2DAvatar'));
 
 export default function App() {
   useTheme();
@@ -34,6 +36,7 @@ export default function App() {
     {workflowVisited && <div className={`app-page ${page === 'workflow' ? 'is-active' : ''}`} aria-hidden={page !== 'workflow'} inert={page !== 'workflow' ? '' : undefined}>
       <WorkflowApp />
     </div>}
+    <Suspense fallback={null}><Live2DAvatar page={page} /></Suspense>
     {transition && <ParticleTransition key={transition.id} intro={transition.intro} onReveal={() => { if (!transition.intro) startTransition(() => setPage(transition.target)); }} onComplete={() => { if (transition.target === 'workflow') setWorkflowVisited(true); setPage(transition.target); switching.current = false; setTransition(null); }} />}
   </div>;
 }

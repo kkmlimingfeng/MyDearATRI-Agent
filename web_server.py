@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import base64
 import binascii
+import mimetypes
 import os
+import random
 import re
 import threading
 import uuid
 from datetime import datetime
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
@@ -35,6 +37,9 @@ ROOT = Path(__file__).resolve().parent
 WORKFLOW_DIR = ROOT / "workflows"
 USER_PROFILE_PATH = ROOT / "modules" / "prompt" / "SystemPrompt" / "USER.md"
 THEME_BACKGROUND_PATH = ROOT / "data" / "theme" / "background.webp"
+LIVE2D_ASSET_DIR = ROOT / "data" / "atri-liv2d"
+CLICK_AUDIO_DIR = ROOT / "data" / "ATRI语音包" / "click"
+CLICK_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".webm"}
 PROMPT_DIR = ROOT / "modules" / "prompt" / "SystemPrompt"
 MEMORY_DIR = ROOT / "modules" / "mem"
 CREDENTIAL_PATH = ROOT / "config" / "model_credentials.json"
@@ -90,6 +95,22 @@ def _graph_workflow_documents() -> list[dict]:
         })
     documents.sort(key=lambda item: item["modified"], reverse=True)
     return [{key: value for key, value in item.items() if key != "modified"} for item in documents]
+
+
+def _click_audio_files(directory: Path | None = None) -> list[Path]:
+    audio_root = (directory or CLICK_AUDIO_DIR).resolve()
+    if not audio_root.is_dir():
+        return []
+    files = []
+    for path in audio_root.iterdir():
+        if path.is_symlink() or path.suffix.lower() not in CLICK_AUDIO_EXTENSIONS or not path.is_file():
+            continue
+        try:
+            path.resolve().relative_to(audio_root)
+        except ValueError:
+            continue
+        files.append(path)
+    return files
 
 
 def _save_graph_workflow(document: Any, previous_id: Any = None, create_only: bool = False) -> dict:
@@ -1131,6 +1152,49 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_live2d_asset(self, relative_path: str) -> None:
+        relative_path = unquote(relative_path)
+        if not relative_path or "\\" in relative_path:
+            self._send(404, {"error": "Live2D 资源不存在"})
+            return
+        asset_root = LIVE2D_ASSET_DIR.resolve()
+        asset_path = (asset_root / relative_path).resolve()
+        try:
+            asset_path.relative_to(asset_root)
+        except ValueError:
+            self._send(404, {"error": "Live2D 资源不存在"})
+            return
+        if not asset_path.is_file():
+            self._send(404, {"error": "Live2D 资源不存在"})
+            return
+        body = asset_path.read_bytes()
+        content_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_click_audio(self) -> None:
+        audio_files = _click_audio_files()
+        if not audio_files:
+            self._send(404, {"error": "click 音频目录中没有可播放的音频文件"})
+            return
+        audio_path = random.choice(audio_files)
+        try:
+            body = audio_path.read_bytes()
+        except OSError:
+            self._send(404, {"error": "点击音频无法读取"})
+            return
+        content_type = mimetypes.guess_type(audio_path.name)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_tts(self, payload: dict) -> None:
         response_format = payload.get("response_format", "pcm")
         with tts.speech(
@@ -1174,6 +1238,12 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed_url = urlparse(self.path)
         query = parse_qs(parsed_url.query)
+        if parsed_url.path == "/api/live2d/click-audio":
+            self._send_click_audio()
+            return
+        if parsed_url.path.startswith("/api/live2d/"):
+            self._send_live2d_asset(parsed_url.path.removeprefix("/api/live2d/"))
+            return
         if parsed_url.path == "/api/tts/status":
             self._send(200, tts.status())
             return

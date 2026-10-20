@@ -29,3 +29,4 @@ data/theme/
 # Web editor build output and installed frontend packages
 web/node_modules/
 web/dist/
+web/public/vendor/live2dcubismcore.min.js
