@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FlipHorizontal2, MessageSquare, X } from 'lucide-react';
+import { FlipHorizontal2, MessageSquare, RotateCcw, X } from 'lucide-react';
 import { Application, Ticker } from 'pixi.js';
 import { Live2DModel } from 'pixi-live2d-display/cubism4';
 import { playAudioElement, stopAudioElement } from '../workflow/streamingTts';
@@ -12,6 +12,11 @@ const POSITION_KEYS = {
 };
 const SIZE_KEY = 'atri.live2d.size.v1';
 const FLIP_KEY = 'atri.live2d.flip.v1';
+const EXPRESSION_KEY = 'atri.live2d.expression.v1';
+const EXPRESSIONS = Array.from({ length: 16 }, (_, index) => ({
+  name: `expression${index + 1}`,
+  label: `表情 ${String(index + 1).padStart(2, '0')}`,
+}));
 const DEFAULT_POSITIONS = {
   chat: { x: 0.86, y: 0.68 },
   workflow: { x: 0.84, y: 0.7 },
@@ -35,6 +40,13 @@ function readFlipped() {
   catch { return false; }
 }
 
+function readExpression() {
+  try {
+    const value = localStorage.getItem(EXPRESSION_KEY) || '';
+    return EXPRESSIONS.some((expression) => expression.name === value) ? value : '';
+  } catch { return ''; }
+}
+
 function getAvatarWidth(viewportWidth, size) {
   const baseWidth = viewportWidth <= 640
     ? Math.min(148, Math.max(104, viewportWidth * 0.31))
@@ -53,10 +65,11 @@ function readPosition(page) {
 function clampPosition(position, width, height, elementWidth, elementHeight) {
   const halfWidth = elementWidth / (2 * width);
   const halfHeight = elementHeight / (2 * height);
+  const horizontalOverflow = Math.min(96, elementWidth * 0.32) / width;
   const bottomOverflow = 20 + elementHeight * 0.12;
   const maxY = Math.max(halfHeight, 1 - halfHeight + bottomOverflow / height);
   return {
-    x: Math.min(1 - halfWidth, Math.max(halfWidth, position.x)),
+    x: Math.min(1 - halfWidth + horizontalOverflow, Math.max(halfWidth - horizontalOverflow, position.x)),
     y: Math.min(maxY, Math.max(halfHeight, position.y)),
   };
 }
@@ -72,11 +85,14 @@ export default function Live2DAvatar({ page }) {
   const clickAudioRef = useRef(null);
   const dragRef = useRef(null);
   const settingsPanelRef = useRef(null);
+  const settingsAnchorRef = useRef(null);
   const [positions, setPositions] = useState(() => ({ chat: readPosition('chat'), workflow: readPosition('workflow') }));
   const [size, setSize] = useState(readSize);
   const [isFlipped, setIsFlipped] = useState(readFlipped);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [settingsMenu, setSettingsMenu] = useState(null);
+  const [selectedExpression, setSelectedExpression] = useState(readExpression);
+  const selectedExpressionRef = useRef(selectedExpression);
   const [loadError, setLoadError] = useState('');
   const position = positions[page] || DEFAULT_POSITIONS.chat;
   const avatarWidth = getAvatarWidth(viewportWidth, size);
@@ -124,6 +140,9 @@ export default function Live2DAvatar({ page }) {
         model.anchor.set(0.5, 0.5);
         modelRef.current = model;
         app.stage.addChild(model);
+        const expressionManager = model.internalModel.motionManager.expressionManager;
+        if (selectedExpressionRef.current) expressionManager?.setExpression(selectedExpressionRef.current).catch(() => {});
+        else expressionManager?.resetExpression();
 
         clickBlinkListener = () => {
           const blink = clickBlinkRef.current;
@@ -215,6 +234,22 @@ export default function Live2DAvatar({ page }) {
     setSettingsMenu(null);
   }, [page]);
 
+  useLayoutEffect(() => {
+    if (!settingsMenu) return;
+    const panel = settingsPanelRef.current;
+    const anchor = settingsAnchorRef.current;
+    if (!panel || !anchor) return;
+    const gap = 8;
+    const { width, height } = panel.getBoundingClientRect();
+    let x = anchor.x + gap;
+    let y = anchor.y + gap;
+    if (x + width > window.innerWidth - gap) x = anchor.x - width - gap;
+    if (y + height > window.innerHeight - gap) y = anchor.y - height - gap;
+    x = Math.max(8, Math.min(x, window.innerWidth - width - 8));
+    y = Math.max(8, Math.min(y, window.innerHeight - height - 8));
+    if (x !== settingsMenu.x || y !== settingsMenu.y) setSettingsMenu((current) => current ? { ...current, x, y } : current);
+  }, [settingsMenu]);
+
   useEffect(() => {
     if (!settingsMenu) return undefined;
     const closeOnOutsidePointer = (event) => {
@@ -248,19 +283,32 @@ export default function Live2DAvatar({ page }) {
     const next = !isFlipped;
     setIsFlipped(next);
     try { localStorage.setItem(FLIP_KEY, String(next)); } catch { /* Keep the session setting if storage is unavailable. */ }
+    bounce();
+  };
+
+  const chooseExpression = (expressionName) => {
+    selectedExpressionRef.current = expressionName;
+    setSelectedExpression(expressionName);
+    try {
+      if (expressionName) localStorage.setItem(EXPRESSION_KEY, expressionName);
+      else localStorage.removeItem(EXPRESSION_KEY);
+    } catch { /* Keep the selected expression for this page session. */ }
+
+    const manager = modelRef.current?.internalModel.motionManager.expressionManager;
+    if (expressionName) manager?.setExpression(expressionName).catch(() => {});
+    else manager?.resetExpression();
   };
 
   const openSettingsAt = (clientX, clientY) => {
     const menuWidth = Math.min(248, window.innerWidth - 16);
-    const menuHeight = Math.min(164, window.innerHeight - 16);
     const gap = 8;
     let preferredX = clientX + gap;
     let preferredY = clientY + gap;
     if (preferredX + menuWidth > window.innerWidth - gap) preferredX = clientX - menuWidth - gap;
-    if (preferredY + menuHeight > window.innerHeight - gap) preferredY = clientY - menuHeight - gap;
+    settingsAnchorRef.current = { x: clientX, y: clientY };
     setSettingsMenu({
       x: Math.max(8, Math.min(preferredX, window.innerWidth - menuWidth - 8)),
-      y: Math.max(8, Math.min(preferredY, window.innerHeight - menuHeight - 8)),
+      y: Math.max(8, Math.min(preferredY, window.innerHeight - 8)),
     });
   };
 
@@ -436,6 +484,24 @@ export default function Live2DAvatar({ page }) {
               onChange={(event) => saveSize(Number(event.target.value))}
             />
           </label>
+          <section className="live2d-expression-section" aria-label="角色表情">
+            <div className="live2d-expression-heading"><span>表情</span><span>保持显示</span></div>
+            <div className="live2d-expression-grid">
+              <button
+                type="button"
+                className={`live2d-expression-button live2d-expression-default ${selectedExpression === '' ? 'is-active' : ''}`}
+                aria-pressed={selectedExpression === ''}
+                onClick={() => chooseExpression('')}
+              ><RotateCcw size={13} aria-hidden="true" /><span>初始表情</span></button>
+              {EXPRESSIONS.map((expression) => <button
+                type="button"
+                key={expression.name}
+                className={`live2d-expression-button ${selectedExpression === expression.name ? 'is-active' : ''}`}
+                aria-pressed={selectedExpression === expression.name}
+                onClick={() => chooseExpression(expression.name)}
+              >{expression.label}</button>)}
+            </div>
+          </section>
           <div className="live2d-settings-actions">
             <button
               type="button"

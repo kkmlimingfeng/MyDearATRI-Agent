@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertCircle, ArrowUp, Bot, Check, ChevronDown, FileClock, MessageSquarePlus, PanelLeftClose, Pencil, Plus, Save, Trash2, Workflow, X, Zap } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Activity, AlertCircle, ArrowUp, Bot, Check, ChevronDown, FileClock, Image as ImageIcon, MessageSquarePlus, Minimize2, PanelLeftClose, Pencil, Plus, RotateCcw, Save, Trash2, Upload, Workflow, X, Zap } from 'lucide-react';
 import { ThemePicker } from '../theme.jsx';
 import { modelChoices } from '../workflow/catalog';
 import TraceView from '../workflow/TraceView';
@@ -8,6 +9,7 @@ import { runWorkflowRequest } from '../workflow/runApi';
 import VoiceOutput from '../workflow/VoiceOutput';
 import { createStreamingTtsSession, primeAudioPlayback, splitSpeakableText } from '../workflow/streamingTts';
 import { getChatActivity, getRecentActions } from './activityStatus';
+import { createAvatarImage, readAvatarPreferences, removeAvatarPreference, saveAvatarPreference } from './avatarPreferences';
 
 const CHAT_STORAGE_KEY = 'atri.chat.sessions.v1';
 const ACTIVE_CHAT_STORAGE_KEY = 'atri.chat.active.v1';
@@ -205,7 +207,11 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [liveDraft, setLiveDraft] = useState('');
   const liveEventsRef = useRef([]);
   const threadRef = useRef(null);
+  const contextRingRef = useRef(null);
+  const contextPopoverRef = useRef(null);
   const followThreadRef = useRef(true);
+  const [contextPopoverOpen, setContextPopoverOpen] = useState(false);
+  const [contextPopoverPosition, setContextPopoverPosition] = useState({ left: 0, top: 0 });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState(null);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -215,6 +221,11 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileError, setProfileError] = useState('');
   const [profileSaved, setProfileSaved] = useState(false);
+  const [avatars, setAvatars] = useState(readAvatarPreferences);
+  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const [avatarError, setAvatarError] = useState('');
+  const userAvatarInputRef = useRef(null);
+  const agentAvatarInputRef = useRef(null);
   const { sessions, activeSessionId } = chatState;
   const activeSession = sessions.find((session) => session.id === activeSessionId) || sessions[0];
   const messages = activeSession?.messages || [];
@@ -347,6 +358,46 @@ export default function ChatHome({ onNavigate, active = true }) {
     }
     return null;
   }, [activeSessionId, busy, busySessionId, liveEvents, messages]);
+
+  useLayoutEffect(() => {
+    if (!contextPopoverOpen) return undefined;
+    const updatePosition = () => {
+      const anchor = contextRingRef.current?.getBoundingClientRect();
+      const popover = contextPopoverRef.current?.getBoundingClientRect();
+      if (!anchor || !popover) return;
+      const gap = 8;
+      const left = Math.max(8, Math.min(
+        anchor.left + (anchor.width - popover.width) / 2,
+        window.innerWidth - popover.width - 8,
+      ));
+      const top = Math.max(8, anchor.top - popover.height - gap);
+      setContextPopoverPosition((current) => current.left === left && current.top === top ? current : { left, top });
+    };
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [contextPopoverOpen, contextTokens, activeModel.contextWindow]);
+
+  useEffect(() => {
+    if (!contextPopoverOpen) return undefined;
+    const closeOnOutsidePointer = (event) => {
+      if (contextRingRef.current?.contains(event.target) || contextPopoverRef.current?.contains(event.target)) return;
+      setContextPopoverOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setContextPopoverOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [contextPopoverOpen]);
 
   const appendMessage = (sessionId, message, title) => {
     setChatState((current) => ({
@@ -507,6 +558,30 @@ export default function ChatHome({ onNavigate, active = true }) {
     }
   };
 
+  const handleAvatarUpload = async (role, event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setAvatarError('');
+    try {
+      const image = await createAvatarImage(file);
+      saveAvatarPreference(role, image);
+      setAvatars((current) => ({ ...current, [role]: image }));
+    } catch (error) {
+      setAvatarError(error.message || '头像保存失败');
+    }
+  };
+
+  const resetAvatar = (role) => {
+    try {
+      removeAvatarPreference(role);
+      setAvatars((current) => ({ ...current, [role]: '' }));
+      setAvatarError('');
+    } catch {
+      setAvatarError('无法重置头像，请检查浏览器存储空间');
+    }
+  };
+
   const selectConversation = (sessionId) => {
     if (sessionId === activeSessionId) return;
     followThreadRef.current = true;
@@ -531,13 +606,13 @@ export default function ChatHome({ onNavigate, active = true }) {
         </div>)}
         <div className="sidebar-bottom">
           <button className="sidebar-workflow-link" onClick={() => onNavigate('workflow')}><Workflow size={16} /><span><strong>工作流编辑器</strong><small>调整 Agent 的底层逻辑</small></span><ChevronDown size={14} className="side-link-chevron" /></button>
-          <button className="profile-row" onClick={openUserProfile} title="编辑 modules/prompt/SystemPrompt/USER.md"><div className="profile-avatar">W</div><span><strong>编辑用户信息</strong><small>USER.md</small></span><Pencil size={15} /></button>
+          <button className="profile-row" onClick={openUserProfile} title="编辑 modules/prompt/SystemPrompt/USER.md"><div className="profile-avatar">{avatars.user ? <img src={avatars.user} alt="" /> : 'W'}</div><span><strong>编辑用户信息</strong><small>USER.md</small></span><Pencil size={15} /></button>
         </div>
       </aside>
       <main className="chat-main">
         <header className="chat-topbar">
           {!sidebarOpen && <button className="icon-button" onClick={() => setSidebarOpen(true)} title="展开侧栏"><PanelLeftClose size={15} /></button>}
-          <div className="chat-agent-title"><span className="agent-status-icon"><Bot size={16} /></span><div><strong>ATRI</strong><span>陪伴型 Agent</span></div></div>
+          <div className="chat-agent-title"><button type="button" className="agent-status-icon" onClick={() => { setAvatarError(''); setAvatarPickerOpen(true); }} title="更换用户和 Agent 头像" aria-label="更换头像">{avatars.agent ? <img src={avatars.agent} alt="" /> : <Bot size={16} />}</button><div><strong>ATRI</strong><span>陪伴型 Agent</span></div></div>
           <div className="chat-top-spacer" />
           <ThemePicker />
           <div className="active-config" title={runtimeStatus.loading ? '检查工作流状态…' : runtimeStatus.running ? workflow?.name || '工作流已启动' : '工作流未启动'}><span className={`config-dot ${runtimeStatus.running ? '' : 'warn'}`} /><span>{runtimeStatus.loading ? '检查工作流状态…' : runtimeStatus.running ? workflow?.name || '工作流已启动' : '工作流未启动'}</span></div>
@@ -549,7 +624,7 @@ export default function ChatHome({ onNavigate, active = true }) {
           followThreadRef.current = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 100;
         }}>
           {messages.map((message, index) => <article className={`chat-message ${message.role}`} key={`${message.role}-${index}`}>
-            {message.role === 'assistant' && <div className="message-avatar"><Bot size={16} /></div>}
+            {message.role === 'assistant' && <div className="message-avatar">{avatars.agent ? <img src={avatars.agent} alt="" /> : <Bot size={16} />}</div>}
             <div className={`message-content ${message.voice ? 'has-voice' : ''}`}>
               <MessageTime message={message} language={interfaceLanguage} />
               {message.error ? <div className="message-error">{message.error}</div> : message.voice ? <div className="message-bubble-row has-voice">
@@ -558,10 +633,10 @@ export default function ChatHome({ onNavigate, active = true }) {
               </div> : <div className="message-bubble">{message.content}</div>}
               {message.events?.length > 0 && <MessageTrace events={message.events} mode={mode} language={interfaceLanguage} durationMs={message.durationMs} />}
             </div>
-            {message.role === 'user' && <div className="user-avatar">W</div>}
+            {message.role === 'user' && <div className="user-avatar">{avatars.user ? <img src={avatars.user} alt="" /> : 'W'}</div>}
           </article>)}
           {busy && busySessionId === activeSessionId && <div className="chat-message assistant">
-            <div className="message-avatar"><Bot size={16} /></div>
+            <div className="message-avatar">{avatars.agent ? <img src={avatars.agent} alt="" /> : <Bot size={16} />}</div>
             <div className="message-content">
               <div className="chat-live-panel">
                 <div className="chat-live-status" role="status" aria-live="polite"><Activity size={15} aria-hidden="true" /><span className="chat-live-status-text">{liveDraft ? interfaceLanguage === 'en' ? 'Generating reply…' : '正在生成回复…' : getChatActivity(liveEvents, workflow, interfaceLanguage)}</span></div>
@@ -582,9 +657,22 @@ export default function ChatHome({ onNavigate, active = true }) {
                   {activeModel.supportsReasoning ? <><option value="workflow">跟随</option><option value="auto">自动</option><option value="minimal">极低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">极高</option></> : <option value="unsupported">不支持</option>}
                 </select>
               </label>}
-              {activeModel.hasModel && <span className="composer-context" title="最近一次模型请求的输入 token 数 / 当前模型上下文上限" aria-label={`上下文 ${contextTokens === null ? '未知' : contextTokens.toLocaleString()} / ${activeModel.contextWindow === null ? '未知' : activeModel.contextWindow.toLocaleString()}`}>
-                <span>上下文</span>{contextTokens === null ? '—' : contextTokens.toLocaleString()} / {activeModel.contextWindow === null ? '—' : activeModel.contextWindow.toLocaleString()}
-              </span>}
+              {activeModel.hasModel && (() => {
+                const contextRatio = contextTokens !== null && activeModel.contextWindow
+                  ? Math.min(100, contextTokens / activeModel.contextWindow * 100)
+                  : 0;
+                return <span className="composer-context">
+                  <button
+                    ref={contextRingRef}
+                    type="button"
+                    className="context-ring-trigger"
+                    aria-label="查看当前对话上下文"
+                    aria-haspopup="dialog"
+                    aria-expanded={contextPopoverOpen}
+                    onClick={() => setContextPopoverOpen((open) => !open)}
+                  ><span className="context-usage-ring" style={{ '--context-ratio': `${contextRatio}%` }} aria-hidden="true" /></button>
+                </span>;
+              })()}
               <span className="composer-hint">Enter 发送 · Shift + Enter 换行</span>
               <button className="send-button" disabled={!input.trim() || busy || runtimeStatus.loading || !runtimeStatus.running} onClick={sendMessage} title={runtimeStatus.running ? '发送消息' : '先启动工作流'}><ArrowUp size={17} /></button>
             </div>
@@ -592,6 +680,34 @@ export default function ChatHome({ onNavigate, active = true }) {
           <div className="composer-caption">ATRI 会根据当前激活的工作流配置运行。<button onClick={() => onNavigate('workflow')}>编辑工作流</button></div>
         </footer>
       </main>
+      {contextPopoverOpen && createPortal(
+        <div
+          ref={contextPopoverRef}
+          className="context-usage-popover"
+          role="dialog"
+          aria-label="当前对话上下文"
+          style={{ left: `${contextPopoverPosition.left}px`, top: `${contextPopoverPosition.top}px` }}
+        >
+          <strong>当前对话上下文</strong>
+          <span>{contextTokens === null ? '—' : contextTokens.toLocaleString()} / {activeModel.contextWindow === null ? '—' : activeModel.contextWindow.toLocaleString()}</span>
+          <button type="button" disabled><Minimize2 size={13} aria-hidden="true" />压缩上下文</button>
+        </div>,
+        document.body,
+      )}
+      {avatarPickerOpen && <div className="profile-editor-backdrop avatar-picker-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAvatarPickerOpen(false); }}><section className="avatar-picker-modal" role="dialog" aria-modal="true" aria-labelledby="avatar-picker-title" onKeyDown={(event) => { if (event.key === 'Escape') setAvatarPickerOpen(false); }}>
+        <header><div><span className="eyebrow">CHAT AVATARS</span><h2 id="avatar-picker-title">对话头像</h2></div><button className="icon-button" onClick={() => setAvatarPickerOpen(false)} title="关闭" aria-label="关闭"><X size={17} /></button></header>
+        <input ref={userAvatarInputRef} className="avatar-file-input" type="file" accept="image/*" onChange={(event) => handleAvatarUpload('user', event)} />
+        <input ref={agentAvatarInputRef} className="avatar-file-input" type="file" accept="image/*" onChange={(event) => handleAvatarUpload('agent', event)} />
+        <div className="avatar-picker-options">
+          {[['user', '用户头像', userAvatarInputRef, 'W'], ['agent', 'Agent 头像', agentAvatarInputRef, <Bot size={20} />]].map(([role, label, inputRef, fallback]) => <div className="avatar-picker-row" key={role}>
+            <div className={`avatar-picker-preview ${role}`}>{avatars[role] ? <img src={avatars[role]} alt="" /> : fallback}</div>
+            <strong>{label}</strong>
+            <button className="secondary-button" onClick={() => inputRef.current?.click()}><Upload size={14} />更换</button>
+            <button className="icon-button" onClick={() => resetAvatar(role)} disabled={!avatars[role]} title="恢复默认头像" aria-label={`恢复默认${label}`}><RotateCcw size={15} /></button>
+          </div>)}
+        </div>
+        <footer><span className={avatarError ? 'profile-editor-error' : 'profile-editor-status'} role={avatarError ? 'alert' : undefined}>{avatarError || '支持常见图片格式，图片保存在当前浏览器中'}</span><button className="secondary-button" onClick={() => setAvatarPickerOpen(false)}><ImageIcon size={15} />完成</button></footer>
+      </section></div>}
       {profileOpen && <div className="profile-editor-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !profileSaving) setProfileOpen(false); }}><section className="profile-editor-modal" role="dialog" aria-modal="true" aria-labelledby="profile-editor-title">
         <header><div><span className="eyebrow">USER PROFILE</span><h2 id="profile-editor-title">编辑用户信息</h2><span className="profile-file-path">modules/prompt/SystemPrompt/USER.md</span></div><button className="icon-button" disabled={profileSaving} onClick={() => setProfileOpen(false)} title="关闭"><X size={17} /></button></header>
         <textarea spellCheck="false" value={profileText} onChange={(event) => { setProfileText(event.target.value); setProfileSaved(false); }} disabled={!profileLoaded || profileLoading || profileSaving} placeholder={profileLoading ? '正在读取 USER.md…' : ''} />
