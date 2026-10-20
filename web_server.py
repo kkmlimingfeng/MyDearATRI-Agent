@@ -367,6 +367,9 @@ def _model_catalog() -> list[dict]:
             ready = True
             reason = "请在 API 模型配置中保存密钥，或设置 OPENAI_API_KEY"
             label = f"{config.get('model_name') or model_id} · API"
+        input_token_limit = config.get("input_token_limit") or config.get("context_window")
+        if input_token_limit is None and kind == "gguf":
+            input_token_limit = config.get("n_ctx", 8192)
         catalog.append({
             "id": model_id,
             "label": label,
@@ -377,7 +380,7 @@ def _model_catalog() -> list[dict]:
             "base_url": config.get("base_url", ""),
             "api_style": config.get("api_style", "chat_completions"),
             "supports_images": config.get("supports_images", False),
-            "input_token_limit": config.get("input_token_limit", config.get("context_window")),
+            "input_token_limit": input_token_limit,
             "max_output_tokens": config.get("max_tokens"),
             "has_saved_key": bool(credentials.get(f"model:{model_id}")) if kind == "api" else False,
             "configured": bool(credentials.get(f"model:{model_id}") or os.environ.get("OPENAI_API_KEY")) if kind == "api" else False,

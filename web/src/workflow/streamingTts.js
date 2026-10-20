@@ -15,6 +15,66 @@ export function stripSpeechEmoji(text) {
     .replace(/[ \t]{2,}/g, ' ');
 }
 
+let activePlayback = null;
+let playbackId = 0;
+const elementPlaybackLeases = new WeakMap();
+
+export function claimExclusivePlayback(stop) {
+  const previous = activePlayback;
+  activePlayback = null;
+  playbackId += 1;
+  previous?.stop();
+
+  const id = playbackId;
+  let stopped = false;
+  const release = () => {
+    if (activePlayback?.id === id) activePlayback = null;
+  };
+  const interrupt = () => {
+    if (stopped) return;
+    stopped = true;
+    if (activePlayback?.id === id) activePlayback = null;
+    stop?.();
+  };
+  activePlayback = { id, stop: interrupt };
+  return { release, stop: interrupt };
+}
+
+export function playAudioElement(audio) {
+  let lease;
+  let cleanup = () => {};
+  const finish = () => {
+    cleanup();
+    if (elementPlaybackLeases.get(audio) === lease) elementPlaybackLeases.delete(audio);
+    lease?.release();
+  };
+  lease = claimExclusivePlayback(() => {
+    audio.pause();
+    audio.currentTime = 0;
+    cleanup();
+    if (elementPlaybackLeases.get(audio) === lease) elementPlaybackLeases.delete(audio);
+  });
+  elementPlaybackLeases.set(audio, lease);
+  const onFinish = () => finish();
+  cleanup = () => {
+    audio.removeEventListener('ended', onFinish);
+  };
+  audio.addEventListener('ended', onFinish, { once: true });
+  try {
+    return Promise.resolve(audio.play()).then(() => {}, (error) => {
+      finish();
+      throw error;
+    });
+  } catch (error) {
+    finish();
+    return Promise.reject(error);
+  }
+}
+
+export function stopAudioElement(audio) {
+  if (audio) elementPlaybackLeases.get(audio)?.stop();
+}
+
 function hasSpeakableText(text) {
   return /[\p{L}\p{N}]/u.test(stripSpeechEmoji(text));
 }
@@ -104,11 +164,25 @@ export function createStreamingTtsSession(request, signal) {
   let context;
   let player;
   let playerReady;
+  let playbackLease;
   let queue = Promise.resolve();
   let finished = false;
   let failure = null;
+  const controller = new AbortController();
   const chunks = [];
   let byteLength = 0;
+
+  const stop = () => {
+    finished = true;
+    signal?.removeEventListener('abort', stop);
+    controller.abort();
+    player?.disconnect();
+    player = null;
+    playbackLease?.release();
+    playbackLease = null;
+  };
+  if (signal?.aborted) stop();
+  else signal?.addEventListener('abort', stop, { once: true });
 
   const ensurePlayer = async () => {
     if (player) return player;
@@ -134,7 +208,14 @@ export function createStreamingTtsSession(request, signal) {
         });
         node.connect(context.destination);
         node.port.addEventListener('message', (event) => {
-          if (event.data?.type === 'drained') node.disconnect();
+          if (event.data?.type === 'drained') {
+            node.disconnect();
+            if (player === node) {
+              player = null;
+              playbackLease?.release();
+              playbackLease = null;
+            }
+          }
         });
         node.port.start();
         player = node;
@@ -145,14 +226,19 @@ export function createStreamingTtsSession(request, signal) {
   };
 
   const synthesize = async (text) => {
-    if (signal?.aborted) return;
+    if (controller.signal.aborted) return;
     const node = await ensurePlayer();
+    if (controller.signal.aborted) {
+      node?.disconnect();
+      if (player === node) player = null;
+      return;
+    }
     if (!node) throw new Error('当前浏览器不支持流式音频播放');
     const response = await fetch(request.endpoint || '/api/tts/speech', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...request, text, response_format: 'pcm' }),
-      signal,
+      signal: controller.signal,
     });
     if (!response.ok) {
       const detail = await response.text();
@@ -175,6 +261,7 @@ export function createStreamingTtsSession(request, signal) {
         chunks.push(retained);
         byteLength += retained.length;
         const samples = decodePCM(retained, context.sampleRate);
+        if (!playbackLease) playbackLease = claimExclusivePlayback(stop);
         node.port.postMessage(samples.buffer, [samples.buffer]);
       }
       if (carry.length) throw new Error('TTS 音频流末尾包含不完整 PCM 样本');
@@ -188,29 +275,39 @@ export function createStreamingTtsSession(request, signal) {
       const speakableText = stripSpeechEmoji(text).trim();
       if (finished || !hasSpeakableText(speakableText)) return;
       queue = queue.then(() => synthesize(speakableText)).catch((error) => {
-        failure ||= error;
+        if (!controller.signal.aborted && error?.name !== 'AbortError') failure ||= error;
       });
     },
     async finish() {
       finished = true;
       await queue;
       if (player) player.port.postMessage({ type: 'end' });
+      signal?.removeEventListener('abort', stop);
       return {
         blob: byteLength ? toWaveBlob(chunks, byteLength) : null,
         error: failure,
       };
     },
-    stop() {
-      finished = true;
-      player?.disconnect();
-    },
+    stop,
   };
 }
 
 export async function streamTtsRequest(request, signal) {
-  const context = await primeAudioPlayback();
   let player = null;
+  let reader;
+  let playbackLease;
   let streamed = false;
+  const controller = new AbortController();
+  const stop = () => {
+    signal?.removeEventListener('abort', stop);
+    controller.abort();
+    player?.disconnect();
+    try { reader?.cancel().catch(() => {}); } catch { /* The stream may already have released its reader. */ }
+    playbackLease?.release();
+  };
+  if (signal?.aborted) stop();
+  else signal?.addEventListener('abort', stop, { once: true });
+  const context = await primeAudioPlayback();
   if (context?.audioWorklet && typeof window.AudioWorkletNode === 'function') {
     if (workletContext !== context) {
       workletContext = context;
@@ -238,7 +335,8 @@ export async function streamTtsRequest(request, signal) {
 
   const speakableText = stripSpeechEmoji(request.text);
   if (!hasSpeakableText(speakableText)) {
-    player?.disconnect();
+    stop();
+    signal?.removeEventListener('abort', stop);
     throw new Error('回复没有可朗读的文字');
   }
   const endpoint = request.endpoint || '/api/tts/speech';
@@ -248,35 +346,38 @@ export async function streamTtsRequest(request, signal) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...request, text: speakableText, response_format: 'pcm' }),
-      signal,
+      signal: controller.signal,
     });
   } catch (error) {
-    player?.disconnect();
+    stop();
+    signal?.removeEventListener('abort', stop);
     throw error;
   }
   if (!response.ok) {
     const detail = await response.text();
-    player?.disconnect();
+    stop();
+    signal?.removeEventListener('abort', stop);
     throw new Error(detail || `语音生成失败 (${response.status})`);
   }
   if (!response.body) {
-    player?.disconnect();
+    stop();
+    signal?.removeEventListener('abort', stop);
     throw new Error('浏览器不支持语音流读取');
   }
 
-  const reader = response.body.getReader();
+  reader = response.body.getReader();
   const chunks = [];
   let byteLength = 0;
   let carry = new Uint8Array(0);
-  const stop = () => {
-    player?.disconnect();
-    try { reader.cancel().catch(() => {}); } catch { /* The stream may already have released its reader. */ }
-  };
-  signal?.addEventListener('abort', stop, { once: true });
-  player?.port.addEventListener('message', (event) => {
-    if (event.data?.type === 'drained') player.disconnect();
+  const workletPlayer = player;
+  workletPlayer?.port.addEventListener('message', (event) => {
+    if (event.data?.type === 'drained') {
+      workletPlayer.disconnect();
+      playbackLease?.release();
+      playbackLease = null;
+    }
   });
-  player?.port.start();
+  workletPlayer?.port.start();
 
   try {
     while (true) {
@@ -292,6 +393,7 @@ export async function streamTtsRequest(request, signal) {
       byteLength += retained.length;
       if (player) {
         const samples = decodePCM(retained, context.sampleRate);
+        if (!playbackLease) playbackLease = claimExclusivePlayback(stop);
         player.port.postMessage(samples.buffer, [samples.buffer]);
       }
     }

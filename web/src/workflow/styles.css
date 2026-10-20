@@ -544,8 +544,11 @@ button { color: inherit; cursor: pointer; }
 .composer-tools > span:first-child { display: flex; align-items: center; gap: 5px; color: #839087; font-size: 8px; }
 .composer-tools > span:first-child svg { color: #bd9950; }
 .composer-tools .composer-model { min-width: 0; max-width: 35%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.composer-reasoning { display: flex; align-items: center; gap: 6px; flex: none; color: var(--muted); font-size: 12px; }
-.composer-reasoning select { max-width: 120px; min-height: 29px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 12px; }
+.composer-reasoning { display: flex; align-items: center; flex: none; color: var(--muted); }
+.composer-reasoning select { width: 58px; min-height: 27px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 10px; }
+.composer-reasoning.is-unsupported select { width: 68px; border-color: var(--line); background: var(--surface-hover); color: #929d96; cursor: not-allowed; }
+.composer-context { display: flex; flex: none; align-items: center; gap: 4px; color: var(--muted); font-size: 9px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.composer-context > span { color: var(--muted); }
 .composer-hint { margin-left: auto; color: #adb6b1; font-size: 8px; }
 .send-button { width: 31px; height: 31px; display: grid; place-items: center; border: 0; border-radius: 6px; background: var(--green); color: white; }
 .send-button:hover:not(:disabled) { background: #2d7058; }
@@ -798,6 +801,8 @@ button { color: inherit; cursor: pointer; }
 
 @media (max-width: 640px) {
   .api-model-key-row, .api-model-token-row { grid-template-columns: 1fr; }
-  .composer-reasoning > span { display: none; }
-  .composer-reasoning select { max-width: 106px; }
+  .composer-reasoning select { width: 58px; }
+  .composer-reasoning.is-unsupported select { width: 68px; }
+  .composer-context { font-size: 8px; }
+  .composer-hint { display: none; }
 }

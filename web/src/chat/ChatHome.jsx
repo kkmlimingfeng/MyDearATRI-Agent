@@ -86,6 +86,16 @@ function tokenCount(usage, primary, alternative) {
   return value !== null && value !== undefined && value !== '' && Number.isFinite(count) && count >= 0 ? count : null;
 }
 
+function latestPromptTokenCount(events) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.event_type !== 'model_response' && event.event_type !== 'llm_completed') continue;
+    const count = tokenCount(event.data?.usage, 'prompt_tokens', 'input_tokens');
+    if (count !== null) return count;
+  }
+  return null;
+}
+
 function traceMetrics(events, durationMs) {
   let inputTokens = 0;
   let outputTokens = 0;
@@ -188,6 +198,7 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [input, setInput] = useState('');
   const [mode, setMode] = useState('normal');
   const [reasoningEffort, setReasoningEffort] = useState('workflow');
+  const [modelCatalog, setModelCatalog] = useState(modelChoices);
   const [busy, setBusy] = useState(false);
   const [busySessionId, setBusySessionId] = useState(null);
   const [liveEvents, setLiveEvents] = useState([]);
@@ -258,6 +269,19 @@ export default function ChatHome({ onNavigate, active = true }) {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    fetch('/api/models')
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('模型目录不可用')))
+      .then((payload) => {
+        if (!disposed && Array.isArray(payload.models) && payload.models.length) {
+          setModelCatalog(payload.models.map((model) => ({ ...model, value: model.id })));
+        }
+      })
+      .catch(() => { /* Keep the built-in labels available while the API is offline. */ });
+    return () => { disposed = true; };
+  }, []);
+
+  useEffect(() => {
     const load = (preferApplied = false) => {
       const active = localStorage.getItem('atri.active.workflow.v2');
       if (preferApplied && active) {
@@ -299,9 +323,30 @@ export default function ChatHome({ onNavigate, active = true }) {
       && workflow.nodes.some((item) => item.type === 'core.chat_input')
       && workflow.nodes.some((item) => item.type === 'core.chat_output')
       && workflow.edges?.length === 1;
-    const choice = modelChoices.find((option) => option.value === modelId);
-    return { label: choice?.label || modelId || (direct ? '无模型直通' : '未选择模型'), hasModel: Boolean(node), supportsReasoning: node?.type === 'llm.openai_loader' || (node?.type === 'llm.provider' && choice?.type === 'api') };
-  }, [workflow]);
+    const choice = modelCatalog.find((option) => option.value === modelId);
+    const rawContextWindow = node?.data?.config?.n_ctx ?? choice?.input_token_limit;
+    const parsedContextWindow = Number(rawContextWindow);
+    return {
+      label: choice?.label || modelId || (direct ? '无模型直通' : '未选择模型'),
+      hasModel: Boolean(node),
+      supportsReasoning: node?.type === 'llm.openai_loader' || (node?.type === 'llm.provider' && choice?.type === 'api'),
+      contextWindow: Number.isFinite(parsedContextWindow) && parsedContextWindow > 0 ? parsedContextWindow : null,
+    };
+  }, [workflow, modelCatalog]);
+
+  const contextTokens = useMemo(() => {
+    if (busy && busySessionId === activeSessionId) {
+      const liveCount = latestPromptTokenCount(liveEvents);
+      if (liveCount !== null) return liveCount;
+    }
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role !== 'assistant') continue;
+      const count = latestPromptTokenCount(message.events || []);
+      if (count !== null) return count;
+    }
+    return null;
+  }, [activeSessionId, busy, busySessionId, liveEvents, messages]);
 
   const appendMessage = (sessionId, message, title) => {
     setChatState((current) => ({
@@ -528,7 +573,22 @@ export default function ChatHome({ onNavigate, active = true }) {
           </div>}
         </section>
         <footer className="composer-area">
-          <div className="composer-box"><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder={runtimeStatus.running ? '给 ATRI 发消息…' : '请先在工作流页启动 Agent'} rows={1} /><div className="composer-tools"><span className="composer-model"><Zap size={13} />{activeModel.label}</span>{activeModel.hasModel && <label className="composer-reasoning" title={activeModel.supportsReasoning ? '本次对话的思考强度' : '当前 GGUF 模型暂不支持思考强度参数'}><span>思考强度</span><select aria-label="思考强度" value={activeModel.supportsReasoning ? reasoningEffort : 'unsupported'} disabled={!activeModel.supportsReasoning} onChange={(event) => setReasoningEffort(event.target.value)}>{activeModel.supportsReasoning ? <><option value="workflow">跟随工作流</option><option value="auto">自动</option><option value="minimal">极低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">极高</option></> : <option value="unsupported">GGUF 暂不支持</option>}</select></label>}<span className="composer-hint">Enter 发送 · Shift + Enter 换行</span><button className="send-button" disabled={!input.trim() || busy || runtimeStatus.loading || !runtimeStatus.running} onClick={sendMessage} title={runtimeStatus.running ? '发送消息' : '先启动工作流'}><ArrowUp size={17} /></button></div></div>
+          <div className="composer-box">
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder={runtimeStatus.running ? '给 ATRI 发消息…' : '请先在工作流页启动 Agent'} rows={1} />
+            <div className="composer-tools">
+              <span className="composer-model"><Zap size={13} />{activeModel.label}</span>
+              {activeModel.hasModel && <label className={`composer-reasoning ${activeModel.supportsReasoning ? '' : 'is-unsupported'}`} title={activeModel.supportsReasoning ? '本次使用的思考强度' : '当前模型不支持思考强度'}>
+                <select aria-label="思考强度" value={activeModel.supportsReasoning ? reasoningEffort : 'unsupported'} disabled={!activeModel.supportsReasoning} onChange={(event) => setReasoningEffort(event.target.value)}>
+                  {activeModel.supportsReasoning ? <><option value="workflow">跟随</option><option value="auto">自动</option><option value="minimal">极低</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">极高</option></> : <option value="unsupported">不支持</option>}
+                </select>
+              </label>}
+              {activeModel.hasModel && <span className="composer-context" title="最近一次模型请求的输入 token 数 / 当前模型上下文上限" aria-label={`上下文 ${contextTokens === null ? '未知' : contextTokens.toLocaleString()} / ${activeModel.contextWindow === null ? '未知' : activeModel.contextWindow.toLocaleString()}`}>
+                <span>上下文</span>{contextTokens === null ? '—' : contextTokens.toLocaleString()} / {activeModel.contextWindow === null ? '—' : activeModel.contextWindow.toLocaleString()}
+              </span>}
+              <span className="composer-hint">Enter 发送 · Shift + Enter 换行</span>
+              <button className="send-button" disabled={!input.trim() || busy || runtimeStatus.loading || !runtimeStatus.running} onClick={sendMessage} title={runtimeStatus.running ? '发送消息' : '先启动工作流'}><ArrowUp size={17} /></button>
+            </div>
+          </div>
           <div className="composer-caption">ATRI 会根据当前激活的工作流配置运行。<button onClick={() => onNavigate('workflow')}>编辑工作流</button></div>
         </footer>
       </main>

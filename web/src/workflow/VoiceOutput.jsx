@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Volume2 } from 'lucide-react';
-import { primeAudioPlayback, streamTtsRequest } from './streamingTts';
+import { playAudioElement, primeAudioPlayback, stopAudioElement, streamTtsRequest } from './streamingTts';
 
 export default function VoiceOutput({ request, dataUrl, blob, error: initialError = '', autoGenerate = true, label = '语音输出' }) {
   const audioRef = useRef(null);
@@ -26,6 +26,7 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
       setReplayUrl(url);
       return () => {
         controller.abort();
+        stopAudioElement(audioRef.current);
         if (objectUrlRef.current === url) {
           URL.revokeObjectURL(url);
           objectUrlRef.current = null;
@@ -37,12 +38,21 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
       const audio = audioRef.current;
       if (audio) {
         audio.currentTime = 0;
-        audio.play().catch(() => {});
+        playAudioElement(audio).catch(() => {});
       }
-      return () => controller.abort();
+      return () => {
+        controller.abort();
+        stopAudioElement(audioRef.current);
+      };
     }
-    if (!requestKey || requestKey === 'null') return () => controller.abort();
-    if (!autoGenerate && retry === 0) return () => controller.abort();
+    if (!requestKey || requestKey === 'null') return () => {
+      controller.abort();
+      stopAudioElement(audioRef.current);
+    };
+    if (!autoGenerate && retry === 0) return () => {
+      controller.abort();
+      stopAudioElement(audioRef.current);
+    };
 
     setStreaming(true);
     streamTtsRequest(JSON.parse(requestKey), controller.signal)
@@ -58,13 +68,13 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
         setStreaming(false);
         if (!streamed && audioRef.current) {
           audioRef.current.src = url;
-          audioRef.current.play().catch(() => {});
+          playAudioElement(audioRef.current).catch(() => {});
         }
       })
       .catch((error) => {
         if (!controller.signal.aborted) {
-          setPlaybackError(error.message || '语音生成失败');
           setStreaming(false);
+          if (error?.name !== 'AbortError') setPlaybackError(error.message || '语音生成失败');
         }
       });
 
@@ -72,6 +82,7 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
       controller.abort();
       stopRef.current?.();
       stopRef.current = null;
+      stopAudioElement(audioRef.current);
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
     };
@@ -88,7 +99,9 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
     const audio = audioRef.current;
     if (!audio) return;
     audio.currentTime = 0;
-    audio.play().catch(() => setPlaybackError('浏览器阻止了音频播放'));
+    playAudioElement(audio).catch((error) => {
+      if (error?.name !== 'AbortError') setPlaybackError('浏览器阻止了音频播放');
+    });
   };
 
   return (
