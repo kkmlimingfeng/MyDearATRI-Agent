@@ -15,6 +15,7 @@ from array import array
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 
@@ -23,6 +24,7 @@ REFERENCE_DIR = ROOT / "data" / "ATRI语音包"
 RUNTIME_DIR = ROOT / "Qwen" / "qwentts.cpp"
 MODEL_DIR = ROOT / "models" / "TTS"
 DEFAULT_REFERENCE = "atri"
+DEFAULT_TTS_URL = "http://127.0.0.1:8767"
 PRESET_FILES = ("阿里嘎多.wav", "请多指教.wav", "早上好.wav")
 REFERENCE_TEXTS = {
     "阿里嘎多.wav": "ありがとう。",
@@ -44,7 +46,17 @@ class TTSRuntimeError(RuntimeError):
 
 class QwenGGUFTTS:
     def __init__(self) -> None:
-        self.url = os.environ.get("ATRI_TTS_URL", "http://127.0.0.1:8766").rstrip("/")
+        self.url = os.environ.get("ATRI_TTS_URL", DEFAULT_TTS_URL).rstrip("/")
+        self._url_parts = urlsplit(self.url)
+        self._local_port = self._url_parts.port
+        self._can_start_local = (
+            self._url_parts.scheme == "http"
+            and self._url_parts.hostname == "127.0.0.1"
+            and self._local_port is not None
+            and self._url_parts.path in {"", "/"}
+            and not self._url_parts.query
+            and not self._url_parts.fragment
+        )
         self.device = os.environ.get("ATRI_TTS_DEVICE", "CUDA0")
         self.binary = Path(os.environ.get("ATRI_TTS_BINARY", RUNTIME_DIR / "build-cuda" / "tts-server"))
         self.model = os.environ.get("ATRI_TTS_MODEL", DEFAULT_MODEL)
@@ -126,7 +138,7 @@ class QwenGGUFTTS:
                 for label, path in (("runtime", self.binary), ("talker GGUF", talker), ("codec GGUF", codec)):
                     if not path.is_file():
                         raise TTSRuntimeError(f"Missing {label}: {path}")
-                if self.url != "http://127.0.0.1:8766":
+                if not self._can_start_local:
                     raise TTSRuntimeError(f"Start the configured Qwen TTS service at {self.url}")
                 try:
                     with self._request("/health", timeout=1):
@@ -145,7 +157,7 @@ class QwenGGUFTTS:
                     )
                 self._process = subprocess.Popen(
                     [str(self.binary), "--model", str(talker), "--codec", str(codec),
-                     "--device", self.device, "--host", "127.0.0.1", "--port", "8766",
+                     "--device", self.device, "--host", "127.0.0.1", "--port", str(self._local_port),
                      "--alias", self.model],
                     cwd=ROOT,
                     env=environment,

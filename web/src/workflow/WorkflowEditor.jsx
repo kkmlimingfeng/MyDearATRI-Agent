@@ -22,7 +22,9 @@ import CapabilityPanel from './CapabilityPanel';
 import ApiModelPanel from './ApiModelPanel';
 import TraceView from './TraceView';
 import IterationStepper from './IterationStepper';
+import VoiceOutput from './VoiceOutput';
 import { runWorkflowRequest } from './runApi';
+import { primeAudioPlayback } from './streamingTts';
 
 const nodeTypes = { workflow: WorkflowNode };
 const MIN_NODE_WIDTH = 216;
@@ -135,7 +137,7 @@ function supportsReasoningForNode(node, nodes, edges, modelOptions) {
   return modelOptions.some((model) => model.value === source.data.config?.model && model.type === 'api');
 }
 
-function validateGraph(nodes, edges, modelOptions = [], language = 'zh') {
+function validateGraph(nodes, edges, modelOptions = [], language = 'zh', ttsModels = []) {
   const issues = [];
   const incoming = new Set(edges.map((edge) => `${edge.target}:${edge.targetHandle}`));
   const nodeMap = Object.fromEntries(nodes.map((node) => [node.id, node]));
@@ -165,13 +167,18 @@ function validateGraph(nodes, edges, modelOptions = [], language = 'zh') {
         else if (mmproj.ready === false) issues.push(`${node.data.label}: ${mmproj.reason || '所选 mmproj 尚未就绪'}`);
       }
     }
+    if (node.data.kind === 'audio.tts_model') {
+      const model = ttsModels.find((option) => option.id === node.data.config?.model);
+      if (!model) issues.push(`${node.data.label}: 请选择 TTS 模型`);
+      else if (!model.available) issues.push(`${node.data.label}: TTS 模型文件未就绪 (${model.id})`);
+    }
     for (const port of definition.inputs) {
       if (!port.optional && !incoming.has(`${node.id}:${port.id}`)) {
         issues.push(`${node.data.label}: ${language === 'en' ? 'missing' : '缺少'} ${portLabel(node.data.kind, port, language)} ${language === 'en' ? 'input' : '输入'}`);
       }
     }
   }
-  if (!nodes.some((node) => ['agent.react_runtime', 'llm.chat'].includes(node.data.kind)) && !isDirectChatGraph(nodes, edges)) issues.push('无模型工作流需要将对话输入直接连接到回复输出');
+  if (!nodes.some((node) => ['agent.react_runtime', 'llm.chat'].includes(node.data.kind)) && !nodes.some((node) => node.data.kind === 'audio.tts_model') && !isDirectChatGraph(nodes, edges)) issues.push('无模型工作流需要将对话输入直接连接到回复输出');
   if (!nodes.some((node) => node.data.kind === 'core.chat_input')) issues.push('工作流需要一个对话输入节点');
   if (!nodes.some((node) => node.data.kind === 'core.chat_output')) issues.push('工作流需要一个回复输出节点');
   return issues;
@@ -223,7 +230,7 @@ function PaletteItem({ definition, onAdd }) {
   );
 }
 
-function Inspector({ node, edges = [], language, modelOptions = modelChoices, promptFiles = [], reasoningAvailable = false, onOpenConfig, onChange, onDelete }) {
+function Inspector({ node, edges = [], language, modelOptions = modelChoices, ttsModels = [], promptFiles = [], reasoningAvailable = false, onOpenConfig, onChange, onDelete }) {
   if (!node) return (
     <aside className="inspector empty-inspector">
       <div className="panel-heading"><div><span className="eyebrow">属性</span><h2>节点设置</h2></div></div>
@@ -275,6 +282,11 @@ function Inspector({ node, edges = [], language, modelOptions = modelChoices, pr
                 const next = Number(event.target.value);
                 if (Number.isFinite(next)) setConfig(key, Math.min(field.maximum ?? Infinity, Math.max(field.minimum ?? -Infinity, field.type === 'integer' ? Math.trunc(next) : next)));
               }} />
+            ) : key === 'model' && node.data.kind === 'audio.tts_model' ? (
+              <select value={value ?? ''} onChange={(event) => setConfig(key, event.target.value)}>
+                {value && !ttsModels.some((option) => option.id === value) && <option value={value}>当前模型不可用：{value}</option>}
+                {ttsModels.map((option) => <option key={option.id} value={option.id} disabled={!option.available}>{option.label}{option.available ? '' : ' · 未就绪'}</option>)}
+              </select>
             ) : (key === 'model' && ['llm.gguf_loader', 'llm.openai_loader', 'llm.provider'].includes(node.data.kind)) || (key === 'mmproj' && node.data.kind === 'llm.gguf_loader') ? (
               (() => {
                 const isMmproj = key === 'mmproj';
@@ -367,6 +379,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   const [liveDraft, setLiveDraft] = useState('');
   const lastEventsRef = useRef([]);
   const [modelOptions, setModelOptions] = useState(modelChoices);
+  const [ttsModels, setTtsModels] = useState([]);
   const [promptFiles, setPromptFiles] = useState([]);
   const [configKind, setConfigKind] = useState(null);
   const [configModelId, setConfigModelId] = useState('');
@@ -432,6 +445,16 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
         if (Array.isArray(payload.models) && payload.models.length) setModelOptions(payload.models.map((model) => ({ ...model, value: model.id })));
       })
       .catch(() => { /* 开发服务器未启动时保留内置模型目录 */ });
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/tts/models')
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('TTS 模型目录不可用')))
+      .then((payload) => setTtsModels((payload.models || []).map((model) => ({
+        ...model,
+        label: model.id === 'qwen3-0.6b-q8' ? 'Qwen3-TTS 0.6B · Q8' : model.id === 'qwen3-1.7b-q4' ? 'Qwen3-TTS 1.7B · Q4' : model.id,
+      }))))
+      .catch(() => setTtsModels([]));
   }, []);
 
   useEffect(() => {
@@ -504,7 +527,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
       };
     });
   }, [edges, nodes, edgeMode, nodeCatalog.length]);
-  const issues = useMemo(() => validateGraph(nodes, edges, modelOptions, interfaceLanguage), [nodes, edges, modelOptions, interfaceLanguage, nodeCatalog.length]);
+  const issues = useMemo(() => validateGraph(nodes, edges, modelOptions, interfaceLanguage, ttsModels), [nodes, edges, modelOptions, interfaceLanguage, ttsModels, nodeCatalog.length]);
   const groups = useMemo(() => {
     const filtered = nodeCatalog.filter((node) => !node.legacy && (node.label.toLowerCase().includes(search.toLowerCase()) || node.type.toLowerCase().includes(search.toLowerCase())));
     const categories = [...new Set([...Object.keys(categoryMeta), ...nodeCatalog.map((node) => node.category)])];
@@ -628,7 +651,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     setNotice('所有节点已按内容自适应尺寸');
     window.setTimeout(() => setNotice(''), 2400);
   }, [setNodes]);
-  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, dragHandle: '.workflow-node-header', data: { ...node.data, interfaceLanguage, reasoningAvailable: supportsReasoningForNode(node, nodes, edges, modelOptions), connectedPorts: { inputs: edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle), outputs: edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle) }, connectionState: connectionEligibility?.get(node.id) || null, modelOptions, promptFiles, onOpenConfig: (kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, edges, interfaceLanguage, connectionEligibility, modelOptions, promptFiles, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
+  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, dragHandle: '.workflow-node-header', data: { ...node.data, interfaceLanguage, reasoningAvailable: supportsReasoningForNode(node, nodes, edges, modelOptions), connectedPorts: { inputs: edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle), outputs: edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle) }, connectionState: connectionEligibility?.get(node.id) || null, modelOptions, ttsModels, promptFiles, onOpenConfig: (kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, edges, interfaceLanguage, connectionEligibility, modelOptions, ttsModels, promptFiles, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
   const deleteNode = (id) => {
     setNodes((current) => current.filter((node) => node.id !== id));
     setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));
@@ -715,7 +738,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     event.target.value = '';
   };
   const runValidation = () => {
-    const currentIssues = validateGraph(nodes, edges, modelOptions);
+    const currentIssues = validateGraph(nodes, edges, modelOptions, interfaceLanguage, ttsModels);
     setNotice(currentIssues.length ? `发现 ${currentIssues.length} 个接口问题` : '接口完整，JSON 结构可导出');
     window.setTimeout(() => setNotice(''), 2800);
   };
@@ -822,6 +845,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
       setNotice(`请先停止运行中的工作流：${serverWorkflowId}`);
       return;
     }
+    void primeAudioPlayback().catch(() => {});
     setRunning(true);
     setRunResult(null);
     setLiveEvents([]);
@@ -839,7 +863,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
       });
       setRunResult(payload);
       lastEventsRef.current = payload.events || [];
-      setAgentModelLoaded(!isDirectChatGraph(nodes, edges));
+      setAgentModelLoaded(nodes.some((node) => ['llm.chat', 'agent.react_runtime'].includes(node.data.kind)));
       setNodes((current) => current.map((node) => {
         let data = node.data;
         if (Object.hasOwn(payload.previews || {}, node.id)) data = { ...node.data, outputPreview: payload.previews[node.id] };
@@ -1000,14 +1024,14 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
               <div className="run-drawer-actions"><span>{agentRunning && serverWorkflowId !== workflow.id ? `请先停止运行中的工作流：${serverWorkflowId}` : issues[0] || '将使用当前画布配置运行工作流'}</span><button className="run-top-button" disabled={!runtimeStatusLoaded || running || issues.length > 0 || (agentRunning && serverWorkflowId !== workflow.id)} onClick={runWorkflow}>{running ? <span className="spinner" /> : <Play size={13} fill="currentColor" />}{running ? '运行中…' : '运行工作流'}</button></div>
               {running && liveDraft && <div className="run-output is-streaming"><strong>正在生成</strong><p>{liveDraft}<span className="stream-caret" aria-hidden="true" /></p></div>}
               {running && liveEvents.length > 0 && <TraceView events={liveEvents} />}
-              {runResult && <div className={`run-output ${runResult.error ? 'has-error' : ''}`}><strong>{runResult.error ? '运行失败' : '工作流输出'}</strong><p>{runResult.error || runResult.answer}</p>{runResult.events?.length > 0 && <TraceView events={runResult.events} />}</div>}
+              {runResult && <div className={`run-output ${runResult.error ? 'has-error' : ''}`}><strong>{runResult.error ? '运行失败' : '工作流输出'}</strong><p>{runResult.error || runResult.answer}</p>{runResult.voice?.type === 'audio' && <VoiceOutput request={runResult.voice} />}{runResult.events?.length > 0 && <TraceView events={runResult.events} />}</div>}
             </div>}
             {notice && <div className={`toast ${notice.startsWith('发现') || notice.startsWith('JSON 错误') ? 'warning' : ''}`}>{notice}</div>}
           </div>
           <div className="canvas-status"><div className="status-left"><span className={`status-light ${issues.length ? 'warn' : 'ok'}`} />{issues.length ? `${issues.length} 项待检查` : '接口连接正常'}<span className="status-sep">|</span><span>自动布局关闭</span></div><button onClick={runValidation}><Check size={13} />验证图结构</button></div>
         </section>
 
-        <Inspector node={selectedNode} edges={edges} language={interfaceLanguage} modelOptions={modelOptions} promptFiles={promptFiles} reasoningAvailable={supportsReasoningForNode(selectedNode, nodes, edges, modelOptions)} onOpenConfig={(kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }} onChange={updateNode} onDelete={deleteNode} />
+        <Inspector node={selectedNode} edges={edges} language={interfaceLanguage} modelOptions={modelOptions} ttsModels={ttsModels} promptFiles={promptFiles} reasoningAvailable={supportsReasoningForNode(selectedNode, nodes, edges, modelOptions)} onOpenConfig={(kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }} onChange={updateNode} onDelete={deleteNode} />
       </main>
 
       <footer className="app-footer"><span>ATRI · LOCAL WORKSPACE</span><span className="execution-note"><span className="note-dot" />试运行调用当前 Agent · 应用后在对话页使用</span></footer>

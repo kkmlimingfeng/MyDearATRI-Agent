@@ -83,6 +83,9 @@ class GraphExecutor:
 
     @staticmethod
     def _preview(value: Any) -> Any:
+        if isinstance(value, dict) and value.get("type") == "audio":
+            preview = {key: item for key, item in value.items() if key not in {"data_url", "text", "endpoint"}}
+            return json.dumps(preview, ensure_ascii=False, indent=2)
         if isinstance(value, (str, int, float, bool)) or value is None:
             return value
         try:
@@ -132,6 +135,7 @@ class GraphExecutor:
         self.services["user_input"] = user_input
         iteration = 1
         feedback = {}
+        terminal_outputs = {}
         while True:
             if iteration > 1:
                 self.values = {key: value for key, value in self.values.items() if key[0] not in self.dynamic}
@@ -146,9 +150,12 @@ class GraphExecutor:
                 outputs = self._execute(node_id, iteration)
                 if self.nodes[node_id]["type"] == "core.chat_output" and "answer" in outputs:
                     answer = str(outputs["answer"])
+                    terminal_outputs = outputs
             if answer is not None:
                 self._event("workflow_completed", None, {"answer": answer})
-                return {"answer": answer, "run_id": self.run_id, "previews": self.previews, "workflow_id": self.graph.workflow_id}
+                result = {"answer": answer, "run_id": self.run_id, "previews": self.previews, "workflow_id": self.graph.workflow_id}
+                result.update({key: terminal_outputs[key] for key in ("voice", "animation") if key in terminal_outputs})
+                return result
             feedback = {}
             for edge in self.feedback_edges:
                 source_key = (edge["source"], edge.get("sourceHandle"))

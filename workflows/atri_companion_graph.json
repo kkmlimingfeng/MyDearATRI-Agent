@@ -154,7 +154,7 @@
         "module_id": "llm",
         "implementation": "modules.llm.gguf_llm.GGUFLLM",
         "config": {
-          "model": "qwen3.5-4b-q4km",
+          "model": "qwen3-1.7b-q4km",
           "mmproj": "",
           "n_gpu_layers": -1
         },
@@ -212,8 +212,8 @@
     {
       "id": "chat_output",
       "position": {
-        "x": 1809.3456954483236,
-        "y": 590.9262630006833
+        "x": 2025.2724577307997,
+        "y": 528.9270752887923
       },
       "data": {
         "label": "回复输出",
@@ -311,6 +311,23 @@
         }
       },
       "type": "llm.openai_loader"
+    },
+    {
+      "id": "tts_model_01ec0",
+      "position": {
+        "x": 1735.927834259948,
+        "y": 653.811845592703
+      },
+      "data": {
+        "label": "Qwen3-TTS 音频模型",
+        "category": "audio",
+        "module_id": "",
+        "config": {
+          "model": "qwen3-0.6b-q8",
+          "language": "Chinese"
+        }
+      },
+      "type": "audio.tts_model"
     }
   ],
   "edges": [
@@ -742,7 +759,7 @@
         "width": 15,
         "height": 15
       },
-      "source": "openai_loader_72238",
+      "source": "llm_qwen",
       "sourceHandle": "llm",
       "target": "llm_chat",
       "targetHandle": "llm",
@@ -750,12 +767,52 @@
       "data": {
         "feedback": false
       }
+    },
+    {
+      "style": {
+        "strokeWidth": 2,
+        "stroke": "#be374e"
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#be374e",
+        "width": 15,
+        "height": 15
+      },
+      "source": "tts_model_01ec0",
+      "sourceHandle": "audio",
+      "target": "chat_output",
+      "targetHandle": "voice",
+      "id": "e_4ffd669b",
+      "data": {
+        "feedback": false
+      }
+    },
+    {
+      "style": {
+        "strokeWidth": 2,
+        "stroke": "#7874d8"
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#7874d8",
+        "width": 15,
+        "height": 15
+      },
+      "source": "response_router",
+      "sourceHandle": "answer",
+      "target": "tts_model_01ec0",
+      "targetHandle": "text",
+      "id": "e_0d370f1a",
+      "data": {
+        "feedback": false
+      }
     }
   ],
   "viewport": {
-    "x": 576.3954603307986,
-    "y": -122.25606246517805,
-    "zoom": 0.9189586663259086
+    "x": 9.737016914309152,
+    "y": -266.9467802794501,
+    "zoom": 0.7999999887366224
   },
   "metadata": {
     "status": "active",

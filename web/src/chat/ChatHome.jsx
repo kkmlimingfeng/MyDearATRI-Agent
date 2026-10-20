@@ -5,10 +5,27 @@ import { modelChoices } from '../workflow/catalog';
 import TraceView from '../workflow/TraceView';
 import { useInterfaceLanguage } from '../workflow/interfaceLanguage';
 import { runWorkflowRequest } from '../workflow/runApi';
+import VoiceOutput from '../workflow/VoiceOutput';
+import { createStreamingTtsSession, primeAudioPlayback, splitSpeakableText } from '../workflow/streamingTts';
 import { getChatActivity, getRecentActions } from './activityStatus';
 
 const CHAT_STORAGE_KEY = 'atri.chat.sessions.v1';
 const ACTIVE_CHAT_STORAGE_KEY = 'atri.chat.active.v1';
+
+function getVoiceRequest(workflow) {
+  const nodes = workflow?.nodes || [];
+  const output = nodes.find((node) => node.type === 'core.chat_output');
+  if (!output) return null;
+  const edge = (workflow?.edges || []).find((item) => item.target === output.id && item.targetHandle === 'voice');
+  const ttsNode = nodes.find((node) => node.id === edge?.source && node.type === 'audio.tts_model');
+  if (!ttsNode) return null;
+  return {
+    endpoint: '/api/tts/speech',
+    model: ttsNode.data?.config?.model || 'qwen3-0.6b-q8',
+    language: ttsNode.data?.config?.language || 'Chinese',
+    reference: 'atri',
+  };
+}
 const STATIC_GREETING_MESSAGES = new Set([
   '早上好。我是 ATRI。今天有什么想聊的？',
   '新对话已开始。你想从哪里聊起？',
@@ -199,7 +216,11 @@ export default function ChatHome({ onNavigate, active = true }) {
 
   useEffect(() => {
     try {
-      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(sessions));
+      const savedSessions = sessions.map((session) => ({
+        ...session,
+        messages: session.messages.map(({ voice, voiceBlob, voiceError, ...message }) => message),
+      }));
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(savedSessions));
       localStorage.setItem(ACTIVE_CHAT_STORAGE_KEY, activeSessionId);
     } catch {
       // The conversation remains usable when browser storage is unavailable.
@@ -300,6 +321,7 @@ export default function ChatHome({ onNavigate, active = true }) {
     const text = input.trim();
     const sessionId = activeSession?.id;
     if (!text || busy || !workflow || !sessionId) return;
+    void primeAudioPlayback().catch(() => {});
     if (!runtimeStatus.running) {
       appendMessage(sessionId, { role: 'assistant', error: '工作流尚未启动，请先到工作流页点击“启动工作流”后再对话。', sentAt: Date.now() });
       return;
@@ -314,6 +336,23 @@ export default function ChatHome({ onNavigate, active = true }) {
     setLiveEvents([]);
     setLiveDraft('');
     liveEventsRef.current = [];
+    const voiceRequest = getVoiceRequest(workflow);
+    const voiceAbort = new AbortController();
+    const voiceSession = voiceRequest ? createStreamingTtsSession(voiceRequest, voiceAbort.signal) : null;
+    let lastDraft = '';
+    let pendingSpeechText = '';
+    const updateSpeechDraft = (draft) => {
+      if (!voiceSession) return;
+      if (draft.startsWith(lastDraft)) {
+        pendingSpeechText += draft.slice(lastDraft.length);
+      } else {
+        pendingSpeechText = draft;
+      }
+      lastDraft = draft;
+      const { segments, remainder } = splitSpeakableText(pendingSpeechText);
+      pendingSpeechText = remainder;
+      segments.forEach((segment) => voiceSession.enqueue(segment));
+    };
     try {
       const onProgress = (events, draft) => {
         if (events.length !== liveEventsRef.current.length) {
@@ -321,15 +360,30 @@ export default function ChatHome({ onNavigate, active = true }) {
           setLiveEvents(events);
         }
         setLiveDraft(draft);
+        updateSpeechDraft(draft);
       };
       const history = activeSession.messages
         .filter((message) => !message.error && typeof message.content === 'string' && ['user', 'assistant'].includes(message.role))
         .map(({ role, content }) => ({ role, content }));
       const result = await runWorkflowRequest({ workflow, input: text, mode, require_started: true, history, ...(activeModel.supportsReasoning && reasoningEffort !== 'workflow' ? { reasoning_effort: reasoningEffort } : {}) }, onProgress);
       if (!result.answer && result.error) throw new Error(result.error);
+      let voiceBlob;
+      let voiceError = '';
+      if (voiceSession) {
+        const answer = String(result.answer || '');
+        pendingSpeechText = answer.startsWith(lastDraft) ? pendingSpeechText + answer.slice(lastDraft.length) : answer;
+        lastDraft = answer;
+        const { segments, remainder } = splitSpeakableText(pendingSpeechText, true);
+        segments.forEach((segment) => voiceSession.enqueue(segment));
+        const voiceResult = await voiceSession.finish();
+        voiceBlob = voiceResult.blob;
+        voiceError = voiceResult.error?.message || '';
+      }
       liveEventsRef.current = result.events || liveEventsRef.current;
-      appendMessage(sessionId, { role: 'assistant', content: result.answer, events: result.events, sentAt: Date.now(), durationMs: performance.now() - started });
+      appendMessage(sessionId, { role: 'assistant', content: result.answer, voice: result.voice || (voiceRequest ? { ...voiceRequest, text: result.answer } : undefined), voiceBlob, voiceError, events: result.events, sentAt: Date.now(), durationMs: performance.now() - started });
     } catch (error) {
+      voiceAbort.abort();
+      voiceSession?.stop();
       appendMessage(sessionId, { role: 'assistant', error: error.message, events: liveEventsRef.current, sentAt: Date.now(), durationMs: performance.now() - started });
     } finally {
       setBusy(false);
@@ -451,9 +505,12 @@ export default function ChatHome({ onNavigate, active = true }) {
         }}>
           {messages.map((message, index) => <article className={`chat-message ${message.role}`} key={`${message.role}-${index}`}>
             {message.role === 'assistant' && <div className="message-avatar"><Bot size={16} /></div>}
-            <div className="message-content">
+            <div className={`message-content ${message.voice ? 'has-voice' : ''}`}>
               <MessageTime message={message} language={interfaceLanguage} />
-              {message.error ? <div className="message-error">{message.error}</div> : <div className="message-bubble">{message.content}</div>}
+              {message.error ? <div className="message-error">{message.error}</div> : message.voice ? <div className="message-bubble-row has-voice">
+                <div className="message-bubble">{message.content}</div>
+                <VoiceOutput request={message.voice} blob={message.voiceBlob} error={message.voiceError} autoGenerate={false} label="语音回复" />
+              </div> : <div className="message-bubble">{message.content}</div>}
               {message.events?.length > 0 && <MessageTrace events={message.events} mode={mode} language={interfaceLanguage} durationMs={message.durationMs} />}
             </div>
             {message.role === 'user' && <div className="user-avatar">W</div>}

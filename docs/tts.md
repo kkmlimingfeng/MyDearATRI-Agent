@@ -42,9 +42,12 @@ curl -x http://127.0.0.1:7897 -L --fail -o models/TTS/qwen-tokenizer-12hz-Q4_K_M
   https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-tokenizer-12hz-Q4_K_M.gguf
 ```
 
-The first synthesis starts the native service on `127.0.0.1:8766` using CUDA0.
+Starting a workflow with a Qwen3-TTS node loads the selected native model on
+CUDA0 ahead of the first response. The first synthesis starts the native service
+on `127.0.0.1:8767` when it is not already running. Set `ATRI_TTS_URL` to a
+different `127.0.0.1` port to avoid conflicts with other local services.
 The default is `qwen3-0.6b-q8`; set `ATRI_TTS_MODEL=qwen3-1.7b-q4` to change
-the startup selection. `ATRI_TTS_URL` can point to a matching already running
+the startup selection. `ATRI_TTS_URL` can also point to a matching already running
 `qwentts.cpp` service. `ATRI_TTS_BINARY`, `ATRI_TTS_TALKER`, and
 `ATRI_TTS_CODEC` override the default paths.
 
@@ -54,6 +57,11 @@ Start only the Python backend and run a smoke test:
 python web_server.py
 python scripts/tts_smoke.py --port 8765 --text '你好，早上好。'
 ```
+
+To exercise streamed local Qwen3 1.7B text with Qwen3 0.6B speech without the
+frontend, run `python scripts/stream_tts_pair_smoke.py`. It writes a WAV under
+`Qwen/` and reports when the first sentence is queued and when its first audio
+chunk arrives.
 
 ## HTTP API
 

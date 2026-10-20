@@ -64,6 +64,49 @@ class OpenAILoaderNode(LLMProviderNode):
     preview = "首次运行时建立 API 模块；编辑画布不会发起请求。"
 
 
+class TTSAudioNode(BaseNode):
+    node_type = "audio.tts_model"
+    title = "Qwen3-TTS 音频模型"
+    category = "audio"
+    description = "从 models/TTS 选择本地 Qwen3-TTS GGUF，将文本合成为流式语音。"
+    defaults = {"model": "qwen3-0.6b-q8", "language": "Chinese"}
+    preview = "接收回复文本，输出流式语音。"
+    inputs = (PortDefinition("text", "text", label_zh="文本", label_en="Text"),)
+    outputs = (PortDefinition("audio", "audio", label_zh="语音", label_en="Voice"),)
+    config_schema = {"type": "object", "properties": {
+        "model": {"type": "string", "title": "TTS 模型", "default": "qwen3-0.6b-q8"},
+        "language": {"type": "string", "title": "目标语言", "enum": ["Chinese", "Japanese", "English"], "default": "Chinese"},
+    }}
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        text = inputs.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("音频模型需要非空文本")
+        if len(text.strip()) > 1000:
+            raise ValueError("语音文本不能超过 1000 字")
+        language = self.config.get("language", "Chinese")
+        if language not in {"Chinese", "Japanese", "English"}:
+            raise ValueError("不支持的目标语言")
+        tts_service = context.services.get("tts")
+        if tts_service is None:
+            raise RuntimeError("缺少 Qwen3-TTS 服务")
+        model = self.config.get("model", "qwen3-0.6b-q8")
+        available = {item["id"]: item["available"] for item in tts_service.models()["models"]}
+        if model not in available:
+            raise ValueError(f"未知 TTS 模型: {model}")
+        if not available[model]:
+            raise RuntimeError(f"TTS 模型文件不存在: {model}")
+        return NodeResult(outputs={"audio": {
+            "type": "audio",
+            "content_type": "audio/pcm",
+            "endpoint": "/api/tts/speech",
+            "text": text.strip(),
+            "model": model,
+            "language": language,
+            "reference": "atri",
+        }})
+
+
 class PromptProviderNode(ModuleProviderNode):
     node_type = "prompt.provider"
     title = "提示词与人格"
@@ -646,11 +689,23 @@ class ChatOutputNode(BaseNode):
     description = "对话工作流的最终输出。"
     defaults = {"show_trace": False}
     preview = "工作流最终输出。"
-    inputs = (PortDefinition("answer", "text"),)
-    outputs = (PortDefinition("answer", "text", hidden=True),)
+    inputs = (
+        PortDefinition("answer", "text"),
+        PortDefinition("voice", "audio", required=False, label_zh="语音输出", label_en="Voice output"),
+        PortDefinition("animation", "animation", required=False, label_zh="动画输出", label_en="Animation output"),
+    )
+    outputs = (
+        PortDefinition("answer", "text", hidden=True),
+        PortDefinition("voice", "audio", required=False, hidden=True),
+        PortDefinition("animation", "animation", required=False, hidden=True),
+    )
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
-        return NodeResult(outputs={"answer": inputs.get("answer", "")})
+        outputs = {"answer": inputs.get("answer", "")}
+        for name in ("voice", "animation"):
+            if name in inputs:
+                outputs[name] = inputs[name]
+        return NodeResult(outputs=outputs)
 
 
 node_registry.register_many((
@@ -668,6 +723,7 @@ node_registry.register_many((
     LLMProviderNode,
     GGUFLoaderNode,
     OpenAILoaderNode,
+    TTSAudioNode,
     PromptProviderNode,
     MarkdownPromptNode,
     TextPromptNode,

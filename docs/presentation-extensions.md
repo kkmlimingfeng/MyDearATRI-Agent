@@ -17,12 +17,12 @@ presentation events with stable payloads:
 | `speech_finished` | `run_id`, `utterance_id` | Avatar idle state |
 | `assistant_finished` | `run_id` | Avatar idle state |
 
-The TTS provider should be a replaceable speech module. It consumes text chunks
-and emits utterance lifecycle events; the avatar renderer only observes those
-events. This keeps model choice, speech synthesis, and avatar appearance
-independently replaceable. The current HTTP run endpoint returns a completed
-answer, so chunk and speech events are a future streaming contract, not active
-runtime behavior yet.
+The chat page polls the active run's cumulative draft while the model streams.
+When a Qwen3-TTS node is connected to reply voice output, it sends completed
+sentences from that draft to TTS and plays the returned PCM chunks through one
+AudioWorklet queue. The final audio is retained in browser memory for replay.
+Dedicated `assistant_chunk` and speech lifecycle events remain a future trace
+contract; the current UI consumes the existing draft field.
 
 ## Theme Extensions
 

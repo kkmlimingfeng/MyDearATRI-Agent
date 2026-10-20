@@ -703,8 +703,11 @@ def _validate_runtime_graph(graph_data: Any):
         raise GraphWorkflowError(
             "当前运行器暂不支持这些节点: " + ", ".join(unsupported)
         )
-    if not any(node["type"] in {"agent.react_runtime", "llm.chat"} for node in graph.nodes):
-        raise GraphWorkflowError("无模型工作流目前支持：对话输入的 message 直接连接回复输出的 answer")
+    has_model_runtime = any(node["type"] in {"agent.react_runtime", "llm.chat"} for node in graph.nodes)
+    if not has_model_runtime:
+        if any(node["type"] == "audio.tts_model" for node in graph.nodes):
+            return graph, {}
+        raise GraphWorkflowError("无模型工作流目前支持：对话输入直接回复，或连接音频模型输出语音")
     bindings, _ = _graph_bindings(graph_data)
     node_map = {node["id"]: node for node in graph.nodes}
     for edge in graph.edges:
@@ -736,6 +739,28 @@ def _is_direct_chat_graph(graph) -> bool:
         and edge.get("sourceHandle") == "message"
         and edge.get("targetHandle") == "answer"
     )
+
+
+def _is_tts_graph(graph) -> bool:
+    node_types = {node["type"] for node in graph.nodes}
+    return "audio.tts_model" in node_types and not node_types.intersection({"llm.chat", "agent.react_runtime"})
+
+
+def _voice_tts_model(graph) -> str | None:
+    nodes = {node["id"]: node for node in graph.nodes}
+    output = next((node for node in graph.nodes if node["type"] == "core.chat_output"), None)
+    if output is not None:
+        for edge in graph.edges:
+            if edge.get("target") == output["id"] and edge.get("targetHandle") == "voice":
+                source = nodes.get(edge.get("source"))
+                if source and source.get("type") == "audio.tts_model":
+                    config = (source.get("data") or {}).get("config") or {}
+                    return config.get("model", "qwen3-0.6b-q8")
+    tts_node = next((node for node in graph.nodes if node["type"] == "audio.tts_model"), None)
+    if tts_node:
+        config = (tts_node.get("data") or {}).get("config") or {}
+        return config.get("model", "qwen3-0.6b-q8")
+    return None
 
 
 def _runtime_model_loaded() -> bool:
@@ -796,10 +821,26 @@ def start_graph(graph_data: Any) -> dict:
     serialized_graph = json.dumps(graph_data, ensure_ascii=False, sort_keys=True)
     execution_key = _execution_graph_key(graph_data)
     with _runtime_lock:
+        voice_tts_model = _voice_tts_model(graph)
+        if voice_tts_model:
+            tts.select_model(voice_tts_model)
+            tts.ensure_started()
+        else:
+            tts.close()
         if _is_direct_chat_graph(graph):
             if _runtime_agent is not None:
                 _runtime_agent.stop()
             _runtime_agent = None
+            _runtime_bindings = {}
+            _runtime_graph_key = serialized_graph
+            _runtime_execution_key = execution_key
+            _runtime_started = True
+            _runtime_workflow_id = graph.workflow_id
+            return {"running": True, "model_loaded": False, "workflow_id": graph.workflow_id}
+        if _is_tts_graph(graph):
+            if _runtime_agent is not None:
+                _runtime_agent.stop()
+            _runtime_agent = WorkflowRuntime()
             _runtime_bindings = {}
             _runtime_graph_key = serialized_graph
             _runtime_execution_key = execution_key
@@ -830,6 +871,7 @@ def start_graph(graph_data: Any) -> dict:
             _runtime_bindings = {}
             _runtime_started = False
             _runtime_workflow_id = None
+            tts.close()
             raise
         return {
             "running": True,
@@ -847,6 +889,7 @@ def stop_runtime() -> dict:
             if agent is not None:
                 agent.stop()
         finally:
+            tts.close()
             _runtime_agent = None
             _runtime_graph_key = None
             _runtime_execution_key = None
@@ -879,6 +922,10 @@ def run_graph(
             raise GraphWorkflowError(
                 "Agent 尚未启动，或当前工作流与运行中的配置不同；请先在工作流页启动"
             )
+        voice_tts_model = _voice_tts_model(graph)
+        if voice_tts_model:
+            tts.select_model(voice_tts_model)
+            tts.ensure_started()
         if _is_direct_chat_graph(graph):
             if _runtime_execution_key != execution_key:
                 _runtime_started = False
@@ -907,6 +954,32 @@ def run_graph(
             ]
             return {"answer": user_input, "run_id": run_id, "events": [event.as_dict() for event in events],
                     "previews": {input_id: user_input, output_id: user_input}, "workflow_id": graph.workflow_id}
+        if _is_tts_graph(graph):
+            if _runtime_agent is None or _runtime_execution_key != execution_key:
+                if _runtime_agent is not None:
+                    _runtime_agent.stop()
+                _runtime_agent = WorkflowRuntime()
+                _runtime_bindings = {}
+                _runtime_execution_key = execution_key
+                _runtime_started = False
+                _runtime_workflow_id = None
+            _runtime_graph_key = serialized_graph
+            agent = _runtime_agent
+            agent.trace_sink.clear()
+            run_id = uuid.uuid4().hex
+            agent._active_run_id = run_id
+            executor = GraphExecutor(graph, {}, {"tts": tts, "stream_update": stream_update}, agent._trace)
+            executor.run_id = run_id
+            if job_id:
+                with _jobs_lock:
+                    _run_jobs[job_id]["trace_ready"] = True
+            try:
+                result = executor.run(user_input)
+            except Exception as exc:
+                agent._trace("workflow_failed", {"error": str(exc)})
+                raise
+            result["events"] = [event.as_dict() for event in agent.get_trace_events()]
+            return result
         if _runtime_agent is None or _runtime_execution_key != execution_key:
             if _runtime_agent is not None:
                 _runtime_agent.stop()
@@ -948,6 +1021,7 @@ def run_graph(
                 "tool_schemas": tool_schemas,
                 "tools_id": tools_id,
                 "skills_id": _runtime_bindings.get("skills_id"),
+                "tts": tts,
                 "stream_update": stream_update,
                 "reasoning_effort": reasoning_effort,
             }
