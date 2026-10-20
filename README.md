@@ -118,3 +118,8 @@ python myagent.py --select-model --mode transparent
 在画布空白处双击可搜索并添加节点。编辑后点击顶部的“保存”将 JSON 写入 `workflows/`；“试运行”用于检查数据在节点间的传递，确认后可点击“启动”让对话页使用当前工作流。节点的输出预览和透明模式的执行轨迹可帮助查看每一步的结果。
 
 新增 Python 节点的接口与示例见 [节点扩展说明](agent/nodes/extensions/README.md)，运行时、模块和工具调用的设计见 [架构说明](docs/architecture.md)。节点返回的输出端口决定数据走向；分支可以只输出一侧，带反馈标记的连线会在下一轮送回数据。当前能力分发支持工具调用和读取技能详情；MCP 需要接入相应的扩展能力节点。
+
+## 素材来源
+
+- `data/ATRI语音包/` 中的语音包素材来源：[语音包来源](https://re.xcdream.com/article/430.html)。
+- `data/atri-liv2d/` 中的 Live2D 模型来源：[Bilibili 专栏](https://www.bilibili.com/opus/777050104809914386)。
