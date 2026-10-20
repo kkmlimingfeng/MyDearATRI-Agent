@@ -7,8 +7,9 @@ implement Qwen3-TTS audio encoding, decoding, or voice cloning.
 ## Local setup
 
 Run in WSL with the existing `atri` Conda environment. The runtime checkout,
-models, generated audio, and runtime log stay under the Git-ignored `Qwen/`
-directory. The URLs below use the local proxy on port 7897.
+generated audio, and runtime log stay under the Git-ignored `Qwen/` directory.
+TTS model weights live in `models/TTS`; LLM GGUF weights live in `models/LLM`.
+The URLs below use the local proxy on port 7897.
 
 ```bash
 source ~/anaconda3/etc/profile.d/conda.sh
@@ -30,14 +31,14 @@ PATH="$CONDA_PREFIX/bin:/usr/bin:/bin" LIBRARY_PATH="$CONDA_PREFIX/targets/x86_6
   -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,$CONDA_PREFIX/lib"
 PATH="$CONDA_PREFIX/bin:/usr/bin:/bin" LIBRARY_PATH="$CONDA_PREFIX/targets/x86_64-linux/lib" \
   cmake --build Qwen/qwentts.cpp/build-cuda -j 4
-mkdir -p Qwen/tts-models
-curl -x http://127.0.0.1:7897 -L --fail -o Qwen/tts-models/qwen-talker-0.6b-base-Q8_0.gguf \
+mkdir -p models/TTS
+curl -x http://127.0.0.1:7897 -L --fail -o models/TTS/qwen-talker-0.6b-base-Q8_0.gguf \
   https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-0.6b-base-Q8_0.gguf
-curl -x http://127.0.0.1:7897 -L --fail -o Qwen/tts-models/qwen-tokenizer-12hz-Q8_0.gguf \
+curl -x http://127.0.0.1:7897 -L --fail -o models/TTS/qwen-tokenizer-12hz-Q8_0.gguf \
   https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-tokenizer-12hz-Q8_0.gguf
-curl -x http://127.0.0.1:7897 -L --fail -o Qwen/tts-models/qwen-talker-1.7b-base-Q4_K_M.gguf \
+curl -x http://127.0.0.1:7897 -L --fail -o models/TTS/qwen-talker-1.7b-base-Q4_K_M.gguf \
   https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-talker-1.7b-base-Q4_K_M.gguf
-curl -x http://127.0.0.1:7897 -L --fail -o Qwen/tts-models/qwen-tokenizer-12hz-Q4_K_M.gguf \
+curl -x http://127.0.0.1:7897 -L --fail -o models/TTS/qwen-tokenizer-12hz-Q4_K_M.gguf \
   https://huggingface.co/Serveurperso/Qwen3-TTS-GGUF/resolve/main/qwen-tokenizer-12hz-Q4_K_M.gguf
 ```
 

@@ -177,11 +177,11 @@ def _load_models() -> dict:
     if not isinstance(payload, dict):
         raise ModuleConfigError("config/models.json 必须是对象")
     payload.update(_read_json_map(API_MODELS_PATH))
-    # Local GGUF files are models too. Explicit config entries remain
-    # authoritative, while new files in models/ become selectable automatically.
-    models_dir = ROOT / "models"
+    # Only LLM weights belong in the chat model catalog; TTS keeps its own
+    # GGUF files under models/TTS.
+    models_dir = ROOT / "models" / "LLM"
     if models_dir.is_dir():
-        for path in sorted(models_dir.glob("*.gguf")):
+        for path in sorted(models_dir.rglob("*.gguf")):
             is_mmproj = "mmproj" in path.stem.lower()
             stem = path.stem.lower().replace("_", "-")
             stem = re.sub(r"-q([2-8])-k-m$", r"-q\1km", stem)
@@ -628,7 +628,7 @@ def _make_agent(graph: dict):
         model_path = resolve_config_value(selected_model.get("model_path", ""), str(ROOT))
         if not model_path or not os.path.isfile(model_path):
             raise GraphWorkflowError(
-                f"GGUF 模型文件不存在: {model_path or '(未配置路径)'}。请先放入 models 目录"
+                f"GGUF 模型文件不存在: {model_path or '(未配置路径)'}。请先放入 models/LLM 目录"
             )
         mmproj_key = str(model_config.get("mmproj", "") or "").strip()
         if mmproj_key:

@@ -6,7 +6,7 @@ __pycache__/
 # Windows 特殊附属文件
 *Zone.Identifier
 
-# 大模型权重目录（核心，屏蔽整个Qwen模型文件夹，避免几十MB/GB模型上传GitHub）
+# 本地模型权重和 Qwen 推理运行时，不提交大型二进制文件
 Qwen/
 models/*.gguf
 models/**/*.gguf
