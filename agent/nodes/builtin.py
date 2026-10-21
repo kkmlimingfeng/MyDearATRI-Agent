@@ -401,7 +401,12 @@ class LLMChatNode(ReactRuntimeNode):
                 messages.append({"role": "user", "content": str(feedback["feedback"])})
         else:
             prompt = str(inputs.get("prompt", ""))
-            extra = str(inputs.get("context", ""))
+            extra = "\n\n".join(
+                part for part in (
+                    str(context.services.get("conversation_summary", "")),
+                    str(inputs.get("context", "")),
+                ) if part
+            )
             tools_text = str(context.services.get("tools_text", ""))
             skills_text = str(context.services.get("skills_text", ""))
             prompt = prompt.replace("{{TOOLS}}", "" if tools_text and tools_text in extra else tools_text)

@@ -20,6 +20,7 @@ config/.env
 # Jupyter 缓存
 .ipynb_checkpoints/
 config/.env
+config/sandbox.json*
 config/skills.json
 config/tools.json
 config/model_credentials.json
