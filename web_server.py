@@ -52,7 +52,7 @@ THEME_BACKGROUND_PATH = ROOT / "data" / "theme" / "background.webp"
 AVATAR_DATA_DIR = ROOT / "data" / "pets"
 CLICK_AUDIO_DIR = AVATAR_DATA_DIR / "atri" / "click"
 CLICK_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".webm"}
-AVATAR_IMAGE_EXTENSIONS = {".jpeg", ".jpg", ".png", ".webp"}
+AVATAR_IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
 MAX_AVATAR_UPLOAD_BYTES = 512 * 1024 * 1024
 MAX_AVATAR_UPLOAD_FILES = 2000
 MAX_VOICE_UPLOAD_BYTES = 512 * 1024 * 1024
@@ -174,18 +174,18 @@ def _create_avatar(avatar_name: str, files: list[tuple[str, bytes]], data_dir: P
             raise ValueError("桌宠文件总大小不能超过 512 MB")
         normalized.append(("/".join(parts), content))
 
-    is_png = (
+    is_static_image = (
         len(normalized) == 1
         and len(normalized[0][0].split("/")) == 1
-        and Path(normalized[0][0]).suffix.lower() == ".png"
+        and Path(normalized[0][0]).suffix.lower() in AVATAR_IMAGE_EXTENSIONS
     )
     is_live2d = all(path.startswith("live2d/") for path, _ in normalized)
     has_model = any(
         len(Path(path).parts) == 2 and path.lower().endswith(".model3.json")
         for path, _ in normalized
     )
-    if not is_png and not (is_live2d and has_model):
-        raise ValueError("请拖入一张 PNG 图片，或名为 live2d 且包含 .model3.json 的文件夹")
+    if not is_static_image and not (is_live2d and has_model):
+        raise ValueError("请拖入一张 PNG、JPG、JPEG、GIF、WebP 图片，或名为 live2d 且包含 .model3.json 的文件夹")
 
     data_root = (data_dir or AVATAR_DATA_DIR).resolve()
     data_root.mkdir(parents=True, exist_ok=True)

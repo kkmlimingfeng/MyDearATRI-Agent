@@ -184,7 +184,7 @@ function AvatarManagerPage({ onClose }) {
     }
   };
 
-  const choosePng = (event) => {
+  const chooseImage = (event) => {
     const file = event.target.files?.[0];
     if (file) setFiles([{ file, path: file.name }]);
     event.target.value = '';
@@ -211,7 +211,7 @@ function AvatarManagerPage({ onClose }) {
       return;
     }
     if (!uploadFiles.length) {
-      setError('请先拖入桌宠的 PNG 图片或 live2d 文件夹。');
+      setError('请先拖入桌宠图片或 live2d 文件夹。');
       return;
     }
     setBusy(true);
@@ -289,13 +289,13 @@ function AvatarManagerPage({ onClose }) {
             <div className="avatar-manager-create-heading"><strong>新建桌宠</strong><span>桌宠名称同时作为 data/pets 下的文件夹名</span></div>
             <label className="avatar-manager-name-field"><span>文件夹名称</span><input value={avatarName} maxLength={64} onChange={(event) => setAvatarName(event.target.value)} placeholder="例如：my-pet 或 亚托莉" autoComplete="off" /></label>
             <div className={`avatar-manager-dropzone ${dragging ? 'is-dragging' : ''} ${uploadFiles.length ? 'has-files' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false); }} onDrop={handleDrop}>
-              {uploadFiles.length ? <div className="avatar-manager-upload-summary"><span className="avatar-manager-upload-icon"><Check size={17} /></span><div><strong>{uploadFiles[0].path === uploadFiles[0].file.name ? uploadFiles[0].file.name : `live2d 文件夹 · ${uploadFiles.length} 个文件`}</strong><small>{formatBytes(uploadBytes)}</small></div><button type="button" className="avatar-manager-clear-files" onClick={() => setFiles([])} aria-label="移除上传文件"><X size={14} /></button></div> : <div className="avatar-manager-drop-prompt"><ImagePlus size={19} /><strong>拖入 live2d 文件夹或 PNG 图片</strong><span>文件会原样保存，图片透明背景也会保留</span></div>}
+              {uploadFiles.length ? <div className="avatar-manager-upload-summary"><span className="avatar-manager-upload-icon"><Check size={17} /></span><div><strong>{uploadFiles[0].path === uploadFiles[0].file.name ? uploadFiles[0].file.name : `live2d 文件夹 · ${uploadFiles.length} 个文件`}</strong><small>{formatBytes(uploadBytes)}</small></div><button type="button" className="avatar-manager-clear-files" onClick={() => setFiles([])} aria-label="移除上传文件"><X size={14} /></button></div> : <div className="avatar-manager-drop-prompt"><ImagePlus size={19} /><strong>拖入 live2d 文件夹或图片</strong><span>支持 PNG、JPG、JPEG、GIF、WebP；图片会原样保存</span></div>}
               <div className="avatar-manager-file-actions">
-                <button type="button" className="avatar-manager-file-button" onClick={() => imageInputRef.current?.click()}><ImagePlus size={14} />选择 PNG</button>
+                <button type="button" className="avatar-manager-file-button" onClick={() => imageInputRef.current?.click()}><ImagePlus size={14} />选择图片</button>
                 <button type="button" className="avatar-manager-file-button" onClick={() => folderInputRef.current?.click()}><FolderOpen size={14} />选择 live2d 文件夹</button>
               </div>
-              <input ref={imageInputRef} type="file" accept=".png,image/png" hidden onChange={choosePng} />
-              <input ref={folderInputRef} type="file" accept=".json,.png,.jpg,.jpeg,.webp,.moc3,.motion3,.exp3,.physics3,.pose3,.userdata3,.cdi3,.wav,.mp3,.ogg" webkitdirectory="" directory="" multiple hidden onChange={chooseFolder} />
+              <input ref={imageInputRef} type="file" accept=".png,.jpg,.jpeg,.gif,.webp,image/png,image/jpeg,image/gif,image/webp" hidden onChange={chooseImage} />
+              <input ref={folderInputRef} type="file" accept=".json,.png,.jpg,.jpeg,.gif,.webp,.moc3,.motion3,.exp3,.physics3,.pose3,.userdata3,.cdi3,.wav,.mp3,.ogg" webkitdirectory="" directory="" multiple hidden onChange={chooseFolder} />
             </div>
             <div className="avatar-manager-create-footer"><p className={error ? 'is-error' : 'is-message'} role={error ? 'alert' : 'status'}>{error || message}</p><button type="submit" className="avatar-manager-create-button" disabled={busy || !uploadFiles.length}>{busy ? '正在保存…' : '创建桌宠'}</button></div>
           </form>

@@ -87,6 +87,24 @@ class AvatarAssetTests(unittest.TestCase):
             self.assertEqual((data_dir / "静态桌宠" / "custom.png").read_bytes(), b"png-bytes")
             self.assertEqual((data_dir / "model-pet" / "live2d" / "textures" / "texture_00.png").read_bytes(), b"texture")
 
+    def test_create_avatar_accepts_common_static_image_formats(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            data_dir = Path(temporary_dir)
+            for extension in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+                name = f"pet-{extension[1:]}"
+                content = f"image-{extension}".encode("ascii")
+                _create_avatar(name, [(f"pet{extension}", content)], data_dir)
+
+            avatars = _avatar_catalog(data_dir)
+            self.assertEqual(
+                {avatar["characterId"] for avatar in avatars},
+                {"pet-png", "pet-jpg", "pet-jpeg", "pet-gif", "pet-webp"},
+            )
+            self.assertEqual(
+                {avatar["assetUrl"].rsplit(".", 1)[-1] for avatar in avatars},
+                {"png", "jpg", "jpeg", "gif", "webp"},
+            )
+
     def test_create_avatar_rejects_existing_names_and_unsafe_upload_paths(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
             data_dir = Path(temporary_dir)
@@ -97,6 +115,7 @@ class AvatarAssetTests(unittest.TestCase):
             for name, files in (
                 ("existing", [("new.png", b"new")]),
                 ("../escape", [("new.png", b"new")]),
+                ("unsupported-image", [("pet.svg", b"svg")]),
                 ("unsafe", [("live2d/../keep.png", b"bad")]),
                 ("not-model", [("live2d/readme.txt", b"text")]),
             ):
@@ -135,8 +154,8 @@ class AvatarAssetTests(unittest.TestCase):
             boundary = "avatar-http-test"
             body = (
                 f"--{boundary}\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nhttp-pet\r\n"
-                f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"pet.png\"\r\n"
-                "Content-Type: image/png\r\n\r\npng-bytes\r\n"
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; filename=\"pet.gif\"\r\n"
+                "Content-Type: image/gif\r\n\r\ngif-bytes\r\n"
                 f"--{boundary}--\r\n"
             ).encode("ascii")
             try:
@@ -151,7 +170,15 @@ class AvatarAssetTests(unittest.TestCase):
                 self.assertEqual(response.status, 201)
                 self.assertEqual(payload["avatar"]["characterId"], "http-pet")
                 self.assertEqual(payload["avatars"][0]["type"], "image")
-                self.assertEqual((Path(temporary_dir) / "http-pet" / "pet.png").read_bytes(), b"png-bytes")
+                self.assertEqual((Path(temporary_dir) / "http-pet" / "pet.gif").read_bytes(), b"gif-bytes")
+
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+                connection.request("GET", "/api/avatar-assets/http-pet/pet.gif")
+                image_response = connection.getresponse()
+                self.assertEqual(image_response.status, 200)
+                self.assertEqual(image_response.getheader("Content-Type"), "image/gif")
+                self.assertEqual(image_response.read(), b"gif-bytes")
+                connection.close()
             finally:
                 server.shutdown()
                 server.server_close()

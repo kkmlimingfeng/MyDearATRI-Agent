@@ -69,7 +69,7 @@ npm run dev
 
 打开 `http://localhost:5173`。后端 API 默认监听 `127.0.0.1:8765`；本地模型由后端进程加载，无需单独启动模型服务。
 
-首次使用网页内的 Live2D 形象时，在 `web/` 目录运行 `npm run download:cubism-core` 获取 Live2D Cubism Core Web 运行库。运行库保存在 Git 忽略的 `web/public/vendor/`。桌宠素材按人物放在 `data/pets/<人物名>/`：Live2D 模型放在 `live2d/` 子目录，静态图片放在人物目录根部，点击音效放在人物目录下的 `click/`。TTS 参考音频单独放在 `data/voice/<音色名>/`。启动后会自动读取可用的 Live2D 模型和根目录图片。静态图片保留文件原有透明度或背景，也能拖动、弹跳、播放点击音效并显示语音气泡。人物设置菜单可切换桌宠；对话页和工作流页分别记住位置。点击音效和 TTS 参考音频都会动态读取。
+首次使用网页内的 Live2D 形象时，在 `web/` 目录运行 `npm run download:cubism-core` 获取 Live2D Cubism Core Web 运行库。运行库保存在 Git 忽略的 `web/public/vendor/`。桌宠素材按人物放在 `data/pets/<人物名>/`：Live2D 模型放在 `live2d/` 子目录，静态图片放在人物目录根部，支持 PNG、JPG、JPEG、GIF 和 WebP；点击音效放在人物目录下的 `click/`。TTS 参考音频单独放在 `data/voice/<音色名>/`。启动后会自动读取可用的 Live2D 模型和根目录图片。静态图片保留文件原有透明度或背景，也能拖动、弹跳、播放点击音效并显示语音气泡。人物设置菜单可切换桌宠；对话页和工作流页分别记住位置。点击音效和 TTS 参考音频都会动态读取。
 
 ## 接入模型
 
