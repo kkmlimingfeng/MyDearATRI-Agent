@@ -1,6 +1,8 @@
 import pcmWorkletUrl from './pcmStream.worklet.js?url&no-inline';
 
 const SAMPLE_RATE = 24_000;
+export const MAX_SPOKEN_CHARACTERS = 200;
+export const LONG_REPLY_SPEECH = '内容太多，我不读了，你自己看吧！';
 
 let audioContext;
 let workletContext;
@@ -15,9 +17,42 @@ export function stripSpeechEmoji(text) {
     .replace(/[ \t]{2,}/g, ' ');
 }
 
+export function getSpeakableCharacterCount(text) {
+  return Array.from(stripSpeechEmoji(text)).length;
+}
+
 let activePlayback = null;
 let playbackId = 0;
 const elementPlaybackLeases = new WeakMap();
+const SPEECH_PLAYBACK_EVENT = 'atri:speech-playback';
+
+function publishSpeechPlayback(detail) {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(SPEECH_PLAYBACK_EVENT, { detail }));
+}
+
+export function subscribeSpeechPlayback(listener) {
+  if (typeof window === 'undefined') return () => {};
+  const handleEvent = (event) => listener(event.detail || {});
+  window.addEventListener(SPEECH_PLAYBACK_EVENT, handleEvent);
+  return () => window.removeEventListener(SPEECH_PLAYBACK_EVENT, handleEvent);
+}
+
+function observePlayer(player, onDrained) {
+  player.port.addEventListener('message', (event) => {
+    const message = event.data;
+    if (message?.type === 'segment-started' || message?.type === 'segment-finished') {
+      if (activePlayback?.id !== message.playbackId) return;
+      publishSpeechPlayback({
+        type: message.type === 'segment-started' ? 'start' : 'end',
+        playbackId: message.playbackId,
+        text: message.text,
+      });
+    }
+    if (message?.type === 'drained') onDrained?.();
+  });
+  player.port.start();
+}
 
 export function claimExclusivePlayback(stop) {
   const previous = activePlayback;
@@ -37,28 +72,41 @@ export function claimExclusivePlayback(stop) {
     stop?.();
   };
   activePlayback = { id, stop: interrupt };
-  return { release, stop: interrupt };
+  return { id, release, stop: interrupt };
 }
 
-export function playAudioElement(audio) {
+export function playAudioElement(audio, speechText = '') {
   let lease;
+  let speechStarted = false;
+  const speechLabel = stripSpeechEmoji(speechText).trim();
   let cleanup = () => {};
+  const onPlaying = () => {
+    if (!speechLabel || speechStarted) return;
+    speechStarted = true;
+    publishSpeechPlayback({ type: 'start', playbackId: lease.id, text: speechLabel });
+  };
   const finish = () => {
     cleanup();
     if (elementPlaybackLeases.get(audio) === lease) elementPlaybackLeases.delete(audio);
+    if (speechStarted) publishSpeechPlayback({ type: 'end', playbackId: lease.id });
+    speechStarted = false;
     lease?.release();
   };
   lease = claimExclusivePlayback(() => {
     audio.pause();
     audio.currentTime = 0;
+    if (speechStarted) publishSpeechPlayback({ type: 'stop', playbackId: lease.id });
+    speechStarted = false;
     cleanup();
     if (elementPlaybackLeases.get(audio) === lease) elementPlaybackLeases.delete(audio);
   });
   elementPlaybackLeases.set(audio, lease);
   const onFinish = () => finish();
   cleanup = () => {
+    audio.removeEventListener('playing', onPlaying);
     audio.removeEventListener('ended', onFinish);
   };
+  audio.addEventListener('playing', onPlaying);
   audio.addEventListener('ended', onFinish, { once: true });
   try {
     return Promise.resolve(audio.play()).then(() => {}, (error) => {
@@ -176,6 +224,7 @@ export function createStreamingTtsSession(request, signal) {
     finished = true;
     signal?.removeEventListener('abort', stop);
     controller.abort();
+    if (playbackLease) publishSpeechPlayback({ type: 'stop', playbackId: playbackLease.id });
     player?.disconnect();
     player = null;
     playbackLease?.release();
@@ -207,17 +256,14 @@ export function createStreamingTtsSession(request, signal) {
           outputChannelCount: [1],
         });
         node.connect(context.destination);
-        node.port.addEventListener('message', (event) => {
-          if (event.data?.type === 'drained') {
-            node.disconnect();
-            if (player === node) {
-              player = null;
-              playbackLease?.release();
-              playbackLease = null;
-            }
+        observePlayer(node, () => {
+          node.disconnect();
+          if (player === node) {
+            player = null;
+            playbackLease?.release();
+            playbackLease = null;
           }
         });
-        node.port.start();
         player = node;
         return node;
       })();
@@ -248,6 +294,7 @@ export function createStreamingTtsSession(request, signal) {
 
     const reader = response.body.getReader();
     let carry = new Uint8Array(0);
+    let segmentQueued = false;
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -262,10 +309,17 @@ export function createStreamingTtsSession(request, signal) {
         byteLength += retained.length;
         const samples = decodePCM(retained, context.sampleRate);
         if (!playbackLease) playbackLease = claimExclusivePlayback(stop);
+        if (!segmentQueued) {
+          node.port.postMessage({ type: 'segment-start', playbackId: playbackLease.id, text });
+          segmentQueued = true;
+        }
         node.port.postMessage(samples.buffer, [samples.buffer]);
       }
       if (carry.length) throw new Error('TTS 音频流末尾包含不完整 PCM 样本');
     } finally {
+      if (segmentQueued && !controller.signal.aborted) {
+        node.port.postMessage({ type: 'segment-end', playbackId: playbackLease?.id, text });
+      }
       reader.releaseLock();
     }
   };
@@ -301,6 +355,7 @@ export async function streamTtsRequest(request, signal) {
   const stop = () => {
     signal?.removeEventListener('abort', stop);
     controller.abort();
+    if (playbackLease) publishSpeechPlayback({ type: 'stop', playbackId: playbackLease.id });
     player?.disconnect();
     try { reader?.cancel().catch(() => {}); } catch { /* The stream may already have released its reader. */ }
     playbackLease?.release();
@@ -369,15 +424,13 @@ export async function streamTtsRequest(request, signal) {
   const chunks = [];
   let byteLength = 0;
   let carry = new Uint8Array(0);
+  let segmentQueued = false;
   const workletPlayer = player;
-  workletPlayer?.port.addEventListener('message', (event) => {
-    if (event.data?.type === 'drained') {
-      workletPlayer.disconnect();
-      playbackLease?.release();
-      playbackLease = null;
-    }
+  if (workletPlayer) observePlayer(workletPlayer, () => {
+    workletPlayer.disconnect();
+    playbackLease?.release();
+    playbackLease = null;
   });
-  workletPlayer?.port.start();
 
   try {
     while (true) {
@@ -394,11 +447,16 @@ export async function streamTtsRequest(request, signal) {
       if (player) {
         const samples = decodePCM(retained, context.sampleRate);
         if (!playbackLease) playbackLease = claimExclusivePlayback(stop);
+        if (!segmentQueued) {
+          player.port.postMessage({ type: 'segment-start', playbackId: playbackLease.id, text: speakableText });
+          segmentQueued = true;
+        }
         player.port.postMessage(samples.buffer, [samples.buffer]);
       }
     }
     if (carry.length) throw new Error('TTS 音频流末尾包含不完整 PCM 样本');
     if (!byteLength) throw new Error('TTS 返回了空音频流');
+    if (segmentQueued) player.port.postMessage({ type: 'segment-end', playbackId: playbackLease?.id, text: speakableText });
     player?.port.postMessage({ type: 'end' });
     return { url: URL.createObjectURL(toWaveBlob(chunks, byteLength)), streamed, stop };
   } catch (error) {

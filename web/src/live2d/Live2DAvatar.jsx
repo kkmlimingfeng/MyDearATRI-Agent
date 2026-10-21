@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { FlipHorizontal2, MessageSquare, RotateCcw, X } from 'lucide-react';
 import { Application, Ticker } from 'pixi.js';
 import { Live2DModel } from 'pixi-live2d-display/cubism4';
-import { playAudioElement, stopAudioElement } from '../workflow/streamingTts';
+import { playAudioElement, stopAudioElement, subscribeSpeechPlayback } from '../workflow/streamingTts';
 import './Live2DAvatar.css';
 
 const POSITION_KEYS = {
@@ -12,6 +12,7 @@ const POSITION_KEYS = {
 };
 const SIZE_KEY = 'atri.live2d.size.v1';
 const FLIP_KEY = 'atri.live2d.flip.v1';
+const SPEECH_BUBBLE_FLIP_KEY = 'atri.live2d.speech-bubble-flip.v1';
 const EXPRESSION_KEY = 'atri.live2d.expression.v1';
 const EXPRESSIONS = Array.from({ length: 16 }, (_, index) => ({
   name: `expression${index + 1}`,
@@ -24,6 +25,7 @@ const DEFAULT_POSITIONS = {
 const MODEL_URL = '/api/live2d/atri_8.model3.json';
 const MIN_SIZE = 60;
 const MAX_SIZE = 180;
+const SPEECH_BUBBLE_ANCHOR_SCALE = 0.42;
 
 function readSize() {
   try {
@@ -37,6 +39,11 @@ function readSize() {
 
 function readFlipped() {
   try { return localStorage.getItem(FLIP_KEY) === 'true'; }
+  catch { return false; }
+}
+
+function readSpeechBubbleFlipped() {
+  try { return localStorage.getItem(SPEECH_BUBBLE_FLIP_KEY) === 'true'; }
   catch { return false; }
 }
 
@@ -74,6 +81,51 @@ function clampPosition(position, width, height, elementWidth, elementHeight) {
   };
 }
 
+function getRenderedAvatarRect(container, model) {
+  const containerRect = container.getBoundingClientRect();
+  const canvas = container.querySelector('canvas');
+  if (!model || !canvas?.clientWidth || !canvas.clientHeight) return containerRect;
+  try {
+    const bounds = model.getBounds();
+    const canvasRect = canvas.getBoundingClientRect();
+    const scaleX = canvasRect.width / canvas.clientWidth;
+    const scaleY = canvasRect.height / canvas.clientHeight;
+    const width = Math.min(canvasRect.width, bounds.width * scaleX);
+    const left = canvasRect.left + (canvasRect.width - width) / 2;
+    const right = left + width;
+    const height = Math.min(canvasRect.height, bounds.height * scaleY);
+    const top = Math.max(canvasRect.top, Math.min(canvasRect.bottom - height, canvasRect.top + bounds.y * scaleY));
+    return {
+      left: Math.max(canvasRect.left, left),
+      right: Math.min(canvasRect.right, right),
+      top,
+      height,
+    };
+  } catch {
+    return containerRect;
+  }
+}
+
+function getSpeechBubblePlacement(avatarRect, viewportWidth, viewportHeight, reverseSide) {
+  const bubbleWidth = Math.max(0, Math.min(320, viewportWidth - 24));
+  const gap = 10;
+  const centerAxis = (avatarRect.left + avatarRect.right) / 2;
+  const anchorHalfWidth = (avatarRect.right - avatarRect.left) * SPEECH_BUBBLE_ANCHOR_SCALE / 2;
+  const rightX = centerAxis + anchorHalfWidth + gap;
+  const leftX = centerAxis - anchorHalfWidth - gap - bubbleWidth;
+  const rightSpace = viewportWidth - 8 - rightX;
+  const leftSpace = centerAxis - anchorHalfWidth - gap - 8;
+  const autoSide = rightSpace >= bubbleWidth || rightSpace >= leftSpace ? 'right' : 'left';
+  const baseLeft = autoSide === 'right' ? rightX : leftX;
+  const mirroredLeft = 2 * centerAxis - (baseLeft + bubbleWidth);
+  const side = reverseSide ? (autoSide === 'right' ? 'left' : 'right') : autoSide;
+  const requestedLeft = reverseSide ? mirroredLeft : baseLeft;
+  const left = Math.max(8, Math.min(viewportWidth - bubbleWidth - 8, requestedLeft));
+  const bubbleHeight = Math.min(230, viewportHeight * 0.38);
+  const top = Math.max(12, Math.min(viewportHeight - bubbleHeight - 12, avatarRect.top + avatarRect.height * 0.06));
+  return { left: `${left}px`, top: `${top}px`, width: `${bubbleWidth}px`, side };
+}
+
 export default function Live2DAvatar({ page }) {
   const containerRef = useRef(null);
   const modelRef = useRef(null);
@@ -86,13 +138,18 @@ export default function Live2DAvatar({ page }) {
   const dragRef = useRef(null);
   const settingsPanelRef = useRef(null);
   const settingsAnchorRef = useRef(null);
+  const speechPlaybackIdRef = useRef(null);
   const [positions, setPositions] = useState(() => ({ chat: readPosition('chat'), workflow: readPosition('workflow') }));
   const [size, setSize] = useState(readSize);
   const [isFlipped, setIsFlipped] = useState(readFlipped);
+  const [isSpeechBubbleFlipped, setIsSpeechBubbleFlipped] = useState(readSpeechBubbleFlipped);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const [settingsMenu, setSettingsMenu] = useState(null);
   const [selectedExpression, setSelectedExpression] = useState(readExpression);
   const selectedExpressionRef = useRef(selectedExpression);
+  const [speakingText, setSpeakingText] = useState('');
+  const [speechBubblePlacement, setSpeechBubblePlacement] = useState(null);
   const [loadError, setLoadError] = useState('');
   const position = positions[page] || DEFAULT_POSITIONS.chat;
   const avatarWidth = getAvatarWidth(viewportWidth, size);
@@ -213,11 +270,42 @@ export default function Live2DAvatar({ page }) {
     clickAudioRef.current = null;
   }, []);
 
+  useEffect(() => subscribeSpeechPlayback(({ type, playbackId: currentPlaybackId, text }) => {
+    if (type === 'start') {
+      speechPlaybackIdRef.current = currentPlaybackId;
+      setSpeakingText(text || '');
+      return;
+    }
+    if (speechPlaybackIdRef.current !== currentPlaybackId) return;
+    if (type === 'end' || type === 'stop') {
+      speechPlaybackIdRef.current = null;
+      setSpeakingText('');
+    }
+  }), []);
+
+  useLayoutEffect(() => {
+    if (!speakingText) return undefined;
+    const avatar = containerRef.current;
+    if (!avatar) return undefined;
+    const updatePlacement = () => setSpeechBubblePlacement(
+      getSpeechBubblePlacement(
+        getRenderedAvatarRect(avatar, modelRef.current),
+        window.innerWidth,
+        window.innerHeight,
+        isSpeechBubbleFlipped,
+      ),
+    );
+    updatePlacement();
+    window.addEventListener('resize', updatePlacement);
+    return () => window.removeEventListener('resize', updatePlacement);
+  }, [page, position, avatarWidth, viewportWidth, viewportHeight, isFlipped, isSpeechBubbleFlipped, speakingText]);
+
   useEffect(() => {
     const clampToViewport = () => {
       const element = containerRef.current;
       if (!element) return;
       setViewportWidth(window.innerWidth);
+      setViewportHeight(window.innerHeight);
       setPositions((current) => {
         const next = clampPosition(current[page], window.innerWidth, window.innerHeight, element.offsetWidth, element.offsetHeight);
         if (next.x === current[page].x && next.y === current[page].y) return current;
@@ -284,6 +372,12 @@ export default function Live2DAvatar({ page }) {
     setIsFlipped(next);
     try { localStorage.setItem(FLIP_KEY, String(next)); } catch { /* Keep the session setting if storage is unavailable. */ }
     bounce();
+  };
+
+  const toggleSpeechBubbleFlip = () => {
+    const next = !isSpeechBubbleFlipped;
+    setIsSpeechBubbleFlipped(next);
+    try { localStorage.setItem(SPEECH_BUBBLE_FLIP_KEY, String(next)); } catch { /* Keep the session setting if storage is unavailable. */ }
   };
 
   const chooseExpression = (expressionName) => {
@@ -450,6 +544,12 @@ export default function Live2DAvatar({ page }) {
       >
         {loadError && <div className="live2d-avatar-error" role="status">{loadError}</div>}
       </div>
+      {speakingText && speechBubblePlacement && <div
+        className={`live2d-speaking-bubble is-${speechBubblePlacement.side}`}
+        style={{ left: speechBubblePlacement.left, top: speechBubblePlacement.top, width: speechBubblePlacement.width }}
+        role="status"
+        aria-live="polite"
+      ><div className="live2d-speaking-bubble-content">{speakingText}</div></div>}
       {settingsMenu && createPortal(
         <div
           ref={settingsPanelRef}
@@ -514,9 +614,9 @@ export default function Live2DAvatar({ page }) {
             </button>
             <button
               type="button"
-              className="live2d-settings-action is-reserved"
-              title="预留"
-              disabled
+              className={`live2d-settings-action ${isSpeechBubbleFlipped ? 'is-active' : ''}`}
+              aria-pressed={isSpeechBubbleFlipped}
+              onClick={toggleSpeechBubbleFlip}
             >
               <MessageSquare size={15} aria-hidden="true" />
               <span>反转消息框</span>

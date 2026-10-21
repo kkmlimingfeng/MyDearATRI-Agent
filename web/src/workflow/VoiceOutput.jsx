@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Volume2 } from 'lucide-react';
-import { playAudioElement, primeAudioPlayback, stopAudioElement, streamTtsRequest } from './streamingTts';
+import { Pause, Play, Volume2 } from 'lucide-react';
+import { getSpeakableCharacterCount, LONG_REPLY_SPEECH, MAX_SPOKEN_CHARACTERS, playAudioElement, primeAudioPlayback, stopAudioElement, streamTtsRequest } from './streamingTts';
 
 export default function VoiceOutput({ request, dataUrl, blob, error: initialError = '', autoGenerate = true, label = '语音输出' }) {
   const audioRef = useRef(null);
@@ -9,8 +9,12 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
   const [replayUrl, setReplayUrl] = useState(dataUrl || '');
   const [streaming, setStreaming] = useState(false);
   const [playbackError, setPlaybackError] = useState('');
+  const [playbackStatus, setPlaybackStatus] = useState('idle');
   const [retry, setRetry] = useState(0);
-  const requestKey = JSON.stringify(request || null);
+  const playbackRequest = request && getSpeakableCharacterCount(request.text) > MAX_SPOKEN_CHARACTERS
+    ? { ...request, text: LONG_REPLY_SPEECH }
+    : request;
+  const requestKey = JSON.stringify(playbackRequest || null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -38,7 +42,7 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
       const audio = audioRef.current;
       if (audio) {
         audio.currentTime = 0;
-        playAudioElement(audio).catch(() => {});
+        playAudioElement(audio, playbackRequest?.text).catch(() => {});
       }
       return () => {
         controller.abort();
@@ -68,7 +72,7 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
         setStreaming(false);
         if (!streamed && audioRef.current) {
           audioRef.current.src = url;
-          playAudioElement(audioRef.current).catch(() => {});
+          playAudioElement(audioRef.current, playbackRequest?.text).catch(() => {});
         }
       })
       .catch((error) => {
@@ -86,7 +90,7 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
     };
-  }, [autoGenerate, blob, dataUrl, initialError, requestKey, retry]);
+  }, [autoGenerate, blob, dataUrl, initialError, playbackRequest?.text, requestKey, retry]);
 
   const replay = async () => {
     if (!replayUrl) {
@@ -94,21 +98,53 @@ export default function VoiceOutput({ request, dataUrl, blob, error: initialErro
       else await primeAudioPlayback().catch(() => {});
       return;
     }
-    stopRef.current?.();
-    stopRef.current = null;
     const audio = audioRef.current;
     if (!audio) return;
+    if (playbackStatus === 'playing') {
+      audio.pause();
+      return;
+    }
+    if (playbackStatus === 'paused' && audio.currentTime > 0 && !audio.ended) {
+      audio.play().catch(() => setPlaybackError('浏览器阻止了音频播放'));
+      return;
+    }
+    stopRef.current?.();
+    stopRef.current = null;
     audio.currentTime = 0;
-    playAudioElement(audio).catch((error) => {
-      if (error?.name !== 'AbortError') setPlaybackError('浏览器阻止了音频播放');
+    playAudioElement(audio, playbackRequest?.text).catch((error) => {
+      if (error?.name !== 'AbortError') {
+        setPlaybackStatus('idle');
+        setPlaybackError('浏览器阻止了音频播放');
+      }
     });
   };
 
+  const isPlaying = playbackStatus === 'playing';
+  const isPaused = playbackStatus === 'paused';
+  const buttonLabel = isPlaying ? `暂停${label}` : isPaused ? `继续${label}` : `重新播放${label}`;
+
   return (
     <div className="voice-output-control">
-      <audio ref={audioRef} src={replayUrl || undefined} preload="auto" hidden />
-      <button type="button" className="voice-output-button" onClick={replay} disabled={streaming && !replayUrl} title={playbackError || '重新播放语音'} aria-label={`${label}，重新播放`}>
-        <Volume2 size={16} />
+      <audio
+        ref={audioRef}
+        src={replayUrl || undefined}
+        preload="auto"
+        hidden
+        onPlaying={() => {
+          setPlaybackStatus('playing');
+          setPlaybackError('');
+        }}
+        onPause={(event) => setPlaybackStatus(event.currentTarget.ended || event.currentTarget.currentTime === 0 ? 'idle' : 'paused')}
+        onEnded={() => setPlaybackStatus('idle')}
+      />
+      <button
+        type="button"
+        className={`voice-output-button ${isPlaying ? 'is-playing' : ''}`}
+        onClick={replay}
+        disabled={streaming && !replayUrl}
+        aria-label={buttonLabel}
+      >
+        {isPlaying ? <Pause size={16} aria-hidden="true" /> : isPaused ? <Play size={16} aria-hidden="true" /> : <Volume2 size={16} aria-hidden="true" />}
       </button>
       {playbackError && <small className="voice-output-error" role="status">{playbackError}</small>}
     </div>

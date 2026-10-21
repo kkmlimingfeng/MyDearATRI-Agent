@@ -335,9 +335,10 @@ button { color: inherit; cursor: pointer; }
 .run-drawer-actions { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 0 11px; border-top: 1px solid #edf0ee; color: #929d97; font-size: 9px; }
 .run-drawer-actions .run-top-button { min-height: 28px; padding: 0 9px; }
 .run-output { max-height: 280px; overflow: auto; padding: 11px 13px; border-top: 1px solid #e8eeea; background: #f7faf8; }
-.voice-output-control { min-height: 30px; display: flex; align-items: center; gap: 7px; margin-top: 6px; }
+.voice-output-control { position: relative; min-height: 30px; display: flex; align-items: center; gap: 7px; margin-top: 6px; }
 .voice-output-button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--theme-accent); cursor: pointer; }
 .voice-output-button:hover:not(:disabled), .voice-output-button:focus-visible { background: var(--surface-hover); outline: none; }
+.voice-output-button.is-playing { background: var(--accent-soft); }
 .voice-output-button:disabled { cursor: default; opacity: .45; }
 .voice-output-error { color: #ad5c53; font-size: 11px; }
 .run-output > strong { color: #4b795f; font-size: 10px; }

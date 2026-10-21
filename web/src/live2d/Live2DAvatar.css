@@ -18,6 +18,52 @@
 .live2d-avatar:focus-visible { outline: 1px dashed var(--theme-accent); outline-offset: 3px; border-radius: 5px; }
 .live2d-avatar-error { position: absolute; inset: 35% 0 auto; padding: 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--muted); font-size: 11px; line-height: 1.5; text-align: center; user-select: text; }
 
+.live2d-speaking-bubble {
+  position: fixed;
+  z-index: 41;
+  overflow: visible;
+  border: 1.5px solid var(--theme-accent);
+  border-radius: 13px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--theme-accent) 20%, transparent);
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  pointer-events: none;
+  user-select: none;
+  animation: live2d-bubble-enter .16s ease-out both;
+}
+
+.live2d-speaking-bubble-content {
+  max-height: min(38dvh, 230px);
+  overflow: hidden;
+  padding: 11px 14px;
+  border-radius: inherit;
+}
+
+.live2d-speaking-bubble::before,
+.live2d-speaking-bubble::after {
+  position: absolute;
+  top: 20px;
+  width: 0;
+  height: 0;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  content: '';
+}
+
+.live2d-speaking-bubble.is-right::before { left: -10px; border-right: 10px solid var(--theme-accent); }
+.live2d-speaking-bubble.is-right::after { left: -8px; border-right: 9px solid var(--panel); }
+.live2d-speaking-bubble.is-left::before { right: -10px; border-left: 10px solid var(--theme-accent); }
+.live2d-speaking-bubble.is-left::after { right: -8px; border-left: 9px solid var(--panel); }
+
+@keyframes live2d-bubble-enter {
+  from { opacity: 0; transform: scale(.94) translateY(4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
 .live2d-settings-menu {
   position: fixed;
   z-index: 10000;

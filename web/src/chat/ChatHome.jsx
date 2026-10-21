@@ -7,13 +7,12 @@ import TraceView from '../workflow/TraceView';
 import { useInterfaceLanguage } from '../workflow/interfaceLanguage';
 import { runWorkflowRequest } from '../workflow/runApi';
 import VoiceOutput from '../workflow/VoiceOutput';
-import { createStreamingTtsSession, primeAudioPlayback, splitSpeakableText } from '../workflow/streamingTts';
+import { createStreamingTtsSession, getSpeakableCharacterCount, LONG_REPLY_SPEECH, MAX_SPOKEN_CHARACTERS, primeAudioPlayback, splitSpeakableText } from '../workflow/streamingTts';
 import { getChatActivity, getRecentActions } from './activityStatus';
 import { createAvatarImage, readAvatarPreferences, removeAvatarPreference, saveAvatarPreference } from './avatarPreferences';
 
 const CHAT_STORAGE_KEY = 'atri.chat.sessions.v1';
 const ACTIVE_CHAT_STORAGE_KEY = 'atri.chat.active.v1';
-
 function getVoiceRequest(workflow) {
   const nodes = workflow?.nodes || [];
   const output = nodes.find((node) => node.type === 'core.chat_output');
@@ -433,12 +432,28 @@ export default function ChatHome({ onNavigate, active = true }) {
     setLiveDraft('');
     liveEventsRef.current = [];
     const voiceRequest = getVoiceRequest(workflow);
-    const voiceAbort = new AbortController();
-    const voiceSession = voiceRequest ? createStreamingTtsSession(voiceRequest, voiceAbort.signal) : null;
+    let voiceAbort = new AbortController();
+    let voiceSession = voiceRequest ? createStreamingTtsSession(voiceRequest, voiceAbort.signal) : null;
+    let usingLongReplySpeech = false;
     let lastDraft = '';
     let pendingSpeechText = '';
+    const useLongReplySpeech = () => {
+      if (!voiceRequest || usingLongReplySpeech) return;
+      usingLongReplySpeech = true;
+      voiceAbort.abort();
+      voiceSession?.stop();
+      voiceAbort = new AbortController();
+      voiceSession = createStreamingTtsSession(voiceRequest, voiceAbort.signal);
+      pendingSpeechText = '';
+      voiceSession.enqueue(LONG_REPLY_SPEECH);
+    };
     const updateSpeechDraft = (draft) => {
       if (!voiceSession) return;
+      if (getSpeakableCharacterCount(draft) > MAX_SPOKEN_CHARACTERS) {
+        useLongReplySpeech();
+        lastDraft = draft;
+        return;
+      }
       if (draft.startsWith(lastDraft)) {
         pendingSpeechText += draft.slice(lastDraft.length);
       } else {
@@ -467,16 +482,23 @@ export default function ChatHome({ onNavigate, active = true }) {
       let voiceError = '';
       if (voiceSession) {
         const answer = String(result.answer || '');
-        pendingSpeechText = answer.startsWith(lastDraft) ? pendingSpeechText + answer.slice(lastDraft.length) : answer;
-        lastDraft = answer;
-        const { segments, remainder } = splitSpeakableText(pendingSpeechText, true);
-        segments.forEach((segment) => voiceSession.enqueue(segment));
+        if (!usingLongReplySpeech && getSpeakableCharacterCount(answer) > MAX_SPOKEN_CHARACTERS) {
+          useLongReplySpeech();
+        } else if (!usingLongReplySpeech) {
+          pendingSpeechText = answer.startsWith(lastDraft) ? pendingSpeechText + answer.slice(lastDraft.length) : answer;
+          lastDraft = answer;
+          const { segments, remainder } = splitSpeakableText(pendingSpeechText, true);
+          segments.forEach((segment) => voiceSession.enqueue(segment));
+        }
         const voiceResult = await voiceSession.finish();
         voiceBlob = voiceResult.blob;
         voiceError = voiceResult.error?.message || '';
       }
       liveEventsRef.current = result.events || liveEventsRef.current;
-      appendMessage(sessionId, { role: 'assistant', content: result.answer, voice: result.voice || (voiceRequest ? { ...voiceRequest, text: result.answer } : undefined), voiceBlob, voiceError, events: result.events, sentAt: Date.now(), durationMs: performance.now() - started });
+      const voice = usingLongReplySpeech && voiceRequest
+        ? { ...voiceRequest, text: LONG_REPLY_SPEECH }
+        : result.voice || (voiceRequest ? { ...voiceRequest, text: result.answer } : undefined);
+      appendMessage(sessionId, { role: 'assistant', content: result.answer, voice, voiceBlob, voiceError, events: result.events, sentAt: Date.now(), durationMs: performance.now() - started });
     } catch (error) {
       voiceAbort.abort();
       voiceSession?.stop();
