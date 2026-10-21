@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Application, Ticker } from 'pixi.js';
 import { Live2DModel } from 'pixi-live2d-display/cubism4';
 import { Check, Eye, EyeOff, FolderOpen, ImagePlus, PawPrint, X } from 'lucide-react';
+import { normalizeLive2dFolder } from './avatarImport.js';
 import './AvatarManager.css';
 
 const AVATAR_KEY = 'atri.desktop-pet.selected.v1';
@@ -171,8 +172,13 @@ function AvatarManagerPage({ onClose }) {
     try {
       const entries = items.map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
       let files;
-      if (entries.length === 1 && entries[0].isDirectory && entries[0].name.toLowerCase() === 'live2d') {
-        files = await collectDirectory(entries[0], '');
+      if (entries.length === 1 && entries[0].isDirectory) {
+        files = normalizeLive2dFolder(await collectDirectory(entries[0], ''));
+        if (!files) {
+          setFiles([]);
+          setError('请选择单个模型文件夹，根目录或 live2d 子目录需包含 .model3.json 文件。');
+          return;
+        }
       } else if (entries.length === 1 && entries[0].isFile) {
         files = await collectDirectory(entries[0], '');
       } else {
@@ -191,13 +197,16 @@ function AvatarManagerPage({ onClose }) {
   };
 
   const chooseFolder = (event) => {
-    const files = [...(event.target.files || [])];
-    const paths = files.map((file) => file.webkitRelativePath || file.name);
-    if (!paths.length || paths.some((path) => path.split('/')[0].toLowerCase() !== 'live2d')) {
-      setError('请选择文件夹名为 live2d 的文件夹。');
+    const selectedFiles = [...(event.target.files || [])];
+    const files = normalizeLive2dFolder(selectedFiles.map((file) => ({
+      file,
+      path: file.webkitRelativePath || file.name,
+    })));
+    if (!files) {
+      setError('请选择单个模型文件夹，根目录或 live2d 子目录需包含 .model3.json 文件。');
       setFiles([]);
     } else {
-      setFiles(files.map((file, index) => ({ file, path: paths[index] })));
+      setFiles(files);
     }
     event.target.value = '';
   };
@@ -267,7 +276,7 @@ function AvatarManagerPage({ onClose }) {
           <div className="avatar-manager-pet-list">
             {pets.map((avatar) => <button type="button" key={avatar.characterId} className={`avatar-manager-pet-row ${selectedCharacterId === avatar.characterId ? 'is-selected' : ''}`} onClick={() => setSelectedCharacterId(avatar.characterId)}>
               <span className="avatar-manager-pet-thumb">{avatar.type === 'image' ? <img src={avatar.assetUrl} alt="" /> : <PawPrint size={15} />}</span>
-              <span className="avatar-manager-pet-text"><strong>{avatar.characterId}</strong><small>{avatar.type === 'image' ? 'PNG 图片' : 'Live2D'}</small></span>
+              <span className="avatar-manager-pet-text"><strong>{avatar.characterId}</strong><small>{avatar.type === 'image' ? '静态图片' : 'Live2D'}</small></span>
               {(activeAvatarId === avatar.id || activeAvatarId === avatar.characterId) && <span className="avatar-manager-active-dot" title="当前桌宠" />}
             </button>)}
             {pets.length === 0 && !error && <p className="avatar-manager-empty">还没有可用桌宠</p>}
@@ -289,13 +298,13 @@ function AvatarManagerPage({ onClose }) {
             <div className="avatar-manager-create-heading"><strong>新建桌宠</strong><span>桌宠名称同时作为 data/pets 下的文件夹名</span></div>
             <label className="avatar-manager-name-field"><span>文件夹名称</span><input value={avatarName} maxLength={64} onChange={(event) => setAvatarName(event.target.value)} placeholder="例如：my-pet 或 亚托莉" autoComplete="off" /></label>
             <div className={`avatar-manager-dropzone ${dragging ? 'is-dragging' : ''} ${uploadFiles.length ? 'has-files' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDragging(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false); }} onDrop={handleDrop}>
-              {uploadFiles.length ? <div className="avatar-manager-upload-summary"><span className="avatar-manager-upload-icon"><Check size={17} /></span><div><strong>{uploadFiles[0].path === uploadFiles[0].file.name ? uploadFiles[0].file.name : `live2d 文件夹 · ${uploadFiles.length} 个文件`}</strong><small>{formatBytes(uploadBytes)}</small></div><button type="button" className="avatar-manager-clear-files" onClick={() => setFiles([])} aria-label="移除上传文件"><X size={14} /></button></div> : <div className="avatar-manager-drop-prompt"><ImagePlus size={19} /><strong>拖入 live2d 文件夹或图片</strong><span>支持 PNG、JPG、JPEG、GIF、WebP；图片会原样保存</span></div>}
+              {uploadFiles.length ? <div className="avatar-manager-upload-summary"><span className="avatar-manager-upload-icon"><Check size={17} /></span><div><strong>{uploadFiles[0].path === uploadFiles[0].file.name ? uploadFiles[0].file.name : `Live2D 模型文件夹 · ${uploadFiles.length} 个文件`}</strong><small>{formatBytes(uploadBytes)}</small></div><button type="button" className="avatar-manager-clear-files" onClick={() => setFiles([])} aria-label="移除上传文件"><X size={14} /></button></div> : <div className="avatar-manager-drop-prompt"><ImagePlus size={19} /><strong>拖入单个 Live2D 模型文件夹或图片</strong><span>目录根部或 live2d 子目录需有 .model3.json；图片支持 PNG、JPG、JPEG、GIF、WebP</span></div>}
               <div className="avatar-manager-file-actions">
                 <button type="button" className="avatar-manager-file-button" onClick={() => imageInputRef.current?.click()}><ImagePlus size={14} />选择图片</button>
-                <button type="button" className="avatar-manager-file-button" onClick={() => folderInputRef.current?.click()}><FolderOpen size={14} />选择 live2d 文件夹</button>
+                <button type="button" className="avatar-manager-file-button" onClick={() => folderInputRef.current?.click()}><FolderOpen size={14} />选择模型文件夹</button>
               </div>
               <input ref={imageInputRef} type="file" accept=".png,.jpg,.jpeg,.gif,.webp,image/png,image/jpeg,image/gif,image/webp" hidden onChange={chooseImage} />
-              <input ref={folderInputRef} type="file" accept=".json,.png,.jpg,.jpeg,.gif,.webp,.moc3,.motion3,.exp3,.physics3,.pose3,.userdata3,.cdi3,.wav,.mp3,.ogg" webkitdirectory="" directory="" multiple hidden onChange={chooseFolder} />
+              <input ref={folderInputRef} type="file" webkitdirectory="" directory="" multiple hidden onChange={chooseFolder} />
             </div>
             <div className="avatar-manager-create-footer"><p className={error ? 'is-error' : 'is-message'} role={error ? 'alert' : 'status'}>{error || message}</p><button type="submit" className="avatar-manager-create-button" disabled={busy || !uploadFiles.length}>{busy ? '正在保存…' : '创建桌宠'}</button></div>
           </form>

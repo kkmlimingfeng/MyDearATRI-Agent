@@ -71,6 +71,12 @@ npm run dev
 
 首次使用网页内的 Live2D 形象时，在 `web/` 目录运行 `npm run download:cubism-core` 获取 Live2D Cubism Core Web 运行库。运行库保存在 Git 忽略的 `web/public/vendor/`。桌宠素材按人物放在 `data/pets/<人物名>/`：Live2D 模型放在 `live2d/` 子目录，静态图片放在人物目录根部，支持 PNG、JPG、JPEG、GIF 和 WebP；点击音效放在人物目录下的 `click/`。TTS 参考音频单独放在 `data/voice/<音色名>/`。启动后会自动读取可用的 Live2D 模型和根目录图片。静态图片保留文件原有透明度或背景，也能拖动、弹跳、播放点击音效并显示语音气泡。人物设置菜单可切换桌宠；对话页和工作流页分别记住位置。点击音效和 TTS 参考音频都会动态读取。
 
+### 导入 Live2D 桌宠
+
+可以从 [Eikanya/Live2d-model](https://github.com/Eikanya/Live2d-model/) 下载单个模型目录，并在“桌宠设置”中直接选择或拖入该目录；不需要手动改名为 `live2d`。目录根部需包含 `.model3.json`，或包含一层 `live2d/` 子目录并在其中放置 `.model3.json`；同时保留配置引用的 `.moc3`、贴图及其他资源。应用会将模型文件放入 `data/pets/<人物名>/live2d/`。不要把整个模型仓库作为一个桌宠导入，应下载并导入其中的单个模型目录。
+
+本项目通过 Cubism 4 Web Core 加载 Cubism 3/4 的 `.model3.json` 模型。上游仓库是模型收集项目，其说明不保证每个模型的配置都正确；旧版 Cubism 2 `.model.json` 模型，以及配置损坏或缺少依赖资源的模型，不能保证直接加载。导入后可在桌宠设置右侧预览中确认模型是否正常显示。
+
 ## 接入模型
 
 **本地 GGUF：** 将模型文件放入项目根目录的 `models/`。刷新工作流页面后，在 GGUF 模型节点的下拉框中选择文件。多模态模型如果需要单独的 `mmproj`，可在第二个下拉框选择；纯文本模型留空。`models/` 下的 GGUF 文件已被 Git 忽略。
