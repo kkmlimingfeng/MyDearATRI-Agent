@@ -69,7 +69,7 @@ npm run dev
 
 打开 `http://localhost:5173`。后端 API 默认监听 `127.0.0.1:8765`；本地模型由后端进程加载，无需单独启动模型服务。
 
-首次使用网页内的 Live2D 形象时，在 `web/` 目录运行 `npm run download:cubism-core` 获取 Live2D Cubism Core Web 运行库。运行库保存在 Git 忽略的 `web/public/vendor/`；`data/atri-liv2d/` 中的 Live2D 模型和 `data/ATRI语音包/` 中的语音、点击音效随项目提交。点击音效目录会动态读取，新增音频后无需修改代码。形象可在页面内拖动，对话页和工作流页会分别记住位置，点击形象可触发弹跳。
+首次使用网页内的 Live2D 形象时，在 `web/` 目录运行 `npm run download:cubism-core` 获取 Live2D Cubism Core Web 运行库。运行库保存在 Git 忽略的 `web/public/vendor/`；`data/atri/live2d/` 中的 Live2D 模型和 `data/atri/voice/` 中的语音、点击音效随项目提交。新增人物时，可在 `data/<人物名>/live2d/` 和 `data/<人物名>/voice/` 下分别放置形象与语音资源。点击音效目录会动态读取，新增音频后无需修改代码。形象可在页面内拖动，对话页和工作流页会分别记住位置，点击形象可触发弹跳。
 
 ## 接入模型
 
@@ -121,5 +121,5 @@ python myagent.py --select-model --mode transparent
 
 ## 素材来源
 
-- `data/ATRI语音包/` 中的语音包素材来源：[语音包来源](https://re.xcdream.com/article/430.html)。
-- `data/atri-liv2d/` 中的 Live2D 模型来源：[Bilibili 专栏](https://www.bilibili.com/opus/777050104809914386)。
+- `data/atri/voice/` 中的语音包素材来源：[语音包来源](https://re.xcdream.com/article/430.html)。
+- `data/atri/live2d/` 中的 Live2D 模型来源：[Bilibili 专栏](https://www.bilibili.com/opus/777050104809914386)。

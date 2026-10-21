@@ -87,13 +87,17 @@ button { color: inherit; cursor: pointer; }
 .workflow-open-menu > label { display: flex; align-items: center; gap: 7px; padding: 9px 11px; border-bottom: 1px solid var(--line); color: var(--muted); }
 .workflow-open-menu input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 13px; }
 .workflow-open-list { overflow: auto; padding: 5px; }
-.workflow-open-list button { width: 100%; min-height: 48px; display: flex; align-items: center; gap: 9px; padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; text-align: left; }
-.workflow-open-list button:hover { background: var(--surface-hover); }
-.workflow-open-list button > svg { flex: none; color: var(--theme-accent); }
-.workflow-open-list button > span { min-width: 0; flex: 1; }
-.workflow-open-list strong, .workflow-open-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-open-list strong { color: var(--ink); font-size: 13px; }
-.workflow-open-list small { color: var(--muted); font-size: 10px; }
+.workflow-open-row { min-height: 48px; display: flex; align-items: center; gap: 2px; }
+.workflow-open-select { min-width: 0; min-height: 46px; flex: 1; display: flex; align-items: center; gap: 9px; padding: 5px 8px; border: 0; border-radius: 4px; background: transparent; text-align: left; }
+.workflow-open-select:hover { background: var(--surface-hover); }
+.workflow-open-select > svg { flex: none; color: var(--theme-accent); }
+.workflow-open-select > span { min-width: 0; flex: 1; }
+.workflow-open-select strong, .workflow-open-select small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-open-select strong { color: var(--ink); font-size: 13px; }
+.workflow-open-select small { color: var(--muted); font-size: 10px; }
+.workflow-open-delete { width: 31px; height: 31px; flex: none; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #9a706a; cursor: pointer; }
+.workflow-open-delete:hover:not(:disabled), .workflow-open-delete:focus-visible { outline: 0; background: #faece9; color: #aa574e; }
+.workflow-open-delete:disabled { cursor: not-allowed; opacity: .4; }
 .workflow-create-button { min-height: 39px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 0; border-top: 1px solid var(--line); background: var(--surface); color: var(--theme-accent); font-size: 13px; text-align: left; }
 .workflow-create-button:hover { background: var(--surface-hover); }
 
@@ -415,6 +419,13 @@ button { color: inherit; cursor: pointer; }
 .workflow-save-modal input { width: 100%; min-width: 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font: inherit; }
 .workflow-save-modal small { color: var(--muted); font-size: 12px; font-weight: 400; }
 .workflow-save-modal footer { justify-content: flex-end; }
+.workflow-delete-modal { width: min(400px, 100%); display: grid; gap: 12px; padding: 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 20px 70px #14221b40; color: var(--ink); }
+.workflow-delete-modal header, .workflow-delete-modal footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.workflow-delete-modal h2 { margin: 0; font-size: 17px; }
+.workflow-delete-modal p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.workflow-delete-modal footer { justify-content: flex-end; }
+.workflow-delete-modal footer button { min-height: 36px; }
+.workflow-delete-confirm { display: inline-flex; align-items: center; gap: 6px; }
 .json-modal { width: min(760px, 100%); height: min(650px, 90vh); display: flex; flex-direction: column; overflow: hidden; border: 1px solid #dce5df; border-radius: 8px; background: #fbfcfb; box-shadow: 0 20px 70px #14221b40; }
 .json-modal > header { height: 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 17px; border-bottom: 1px solid #e7ece9; }
 .json-modal h2 { margin: 4px 0 0; font-size: 13px; }

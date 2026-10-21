@@ -37,8 +37,8 @@ ROOT = Path(__file__).resolve().parent
 WORKFLOW_DIR = ROOT / "workflows"
 USER_PROFILE_PATH = ROOT / "modules" / "prompt" / "SystemPrompt" / "USER.md"
 THEME_BACKGROUND_PATH = ROOT / "data" / "theme" / "background.webp"
-LIVE2D_ASSET_DIR = ROOT / "data" / "atri-liv2d"
-CLICK_AUDIO_DIR = ROOT / "data" / "ATRI语音包" / "click"
+LIVE2D_ASSET_DIR = ROOT / "data" / "atri" / "live2d"
+CLICK_AUDIO_DIR = ROOT / "data" / "atri" / "voice" / "click"
 CLICK_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".webm"}
 PROMPT_DIR = ROOT / "modules" / "prompt" / "SystemPrompt"
 MEMORY_DIR = ROOT / "modules" / "mem"
@@ -142,6 +142,31 @@ def _save_graph_workflow(document: Any, previous_id: Any = None, create_only: bo
         finally:
             temporary.unlink(missing_ok=True)
     return {"id": graph.workflow_id, "name": graph.name, "path": str(destination)}
+
+
+def _delete_graph_workflow(workflow_id: Any) -> dict:
+    if not isinstance(workflow_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", workflow_id):
+        raise GraphWorkflowError("工作流 ID 无效")
+    destination = WORKFLOW_DIR / f"{workflow_id}.json"
+    with _runtime_lock:
+        if _runtime_started and _runtime_workflow_id == workflow_id:
+            raise GraphWorkflowError("请先停止运行中的工作流，再删除文件")
+        with _workflow_file_lock:
+            if destination.is_symlink():
+                raise GraphWorkflowError("不能删除指向其他位置的工作流符号链接")
+            if not destination.is_file():
+                raise GraphWorkflowError("工作流文件不存在")
+            try:
+                document = json.loads(destination.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise GraphWorkflowError("无法读取工作流文件") from exc
+            if not isinstance(document, dict) or document.get("workflow_version") != 2 or document.get("id") != workflow_id:
+                raise GraphWorkflowError("目标文件不是可删除的图工作流")
+            try:
+                destination.unlink()
+            except OSError as exc:
+                raise GraphWorkflowError(f"删除工作流失败: {exc}") from exc
+    return {"id": workflow_id, "deleted": True}
 
 
 def _read_user_profile() -> dict:
@@ -1328,7 +1353,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory", "/api/tts/speech", "/api/tts/model"}:
+        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/workflows/delete", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory", "/api/tts/speech", "/api/tts/model"}:
             self._send(404, {"error": "Not found"})
             return
         try:
@@ -1389,6 +1414,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/workflows/save":
                 self._send(200, _save_graph_workflow(payload.get("workflow"), payload.get("previous_id"), payload.get("create_only", False)))
+                return
+            if self.path == "/api/workflows/delete":
+                self._send(200, _delete_graph_workflow(payload.get("id")))
                 return
             if self.path == "/api/stop":
                 self._send(200, stop_runtime())

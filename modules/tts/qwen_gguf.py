@@ -20,7 +20,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 ROOT = Path(__file__).resolve().parents[2]
-REFERENCE_DIR = ROOT / "data" / "ATRI语音包"
+REFERENCE_DIR = ROOT / "data" / "atri" / "voice"
 RUNTIME_DIR = ROOT / "Qwen" / "qwentts.cpp"
 MODEL_DIR = ROOT / "models" / "TTS"
 DEFAULT_REFERENCE = "atri"

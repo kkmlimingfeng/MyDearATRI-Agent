@@ -339,7 +339,7 @@ function Inspector({ node, edges = [], language, modelOptions = modelChoices, tt
   );
 }
 
-function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, availableWorkflows, onRefreshWorkflows, onOpenDocument, onSwitchWorkflow, onCloseWorkflow, onSaved }) {
+function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, availableWorkflows, onRefreshWorkflows, onOpenDocument, onSwitchWorkflow, onCloseWorkflow, onSaved, onWorkflowDeleted }) {
   const [interfaceLanguage, setInterfaceLanguage] = useInterfaceLanguage();
   const initialGraph = fromDocument(initialDocument);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialGraph.nodes);
@@ -356,6 +356,8 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   const [nodePickerSearch, setNodePickerSearch] = useState('');
   const [workflowMenuOpen, setWorkflowMenuOpen] = useState(false);
   const [workflowSearch, setWorkflowSearch] = useState('');
+  const [pendingWorkflowDelete, setPendingWorkflowDelete] = useState(null);
+  const [deletingWorkflowId, setDeletingWorkflowId] = useState(null);
   const workflowMenuRef = useRef(null);
   const [paletteCollapsed, setPaletteCollapsed] = useState(true);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(true);
@@ -760,6 +762,29 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     setWorkflowMenuOpen(true);
     try { await onRefreshWorkflows(); } catch { setNotice('无法读取工作流文件夹，请检查后端服务'); }
   };
+  const deleteWorkflow = async () => {
+    const item = pendingWorkflowDelete;
+    if (!item || deletingWorkflowId) return;
+    setDeletingWorkflowId(item.id);
+    try {
+      const response = await fetch('/api/workflows/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+      onWorkflowDeleted(item.id);
+      setPendingWorkflowDelete(null);
+      setNotice(`已删除工作流：${item.name}`);
+      await onRefreshWorkflows().catch(() => {});
+    } catch (error) {
+      setNotice(`删除失败：${error.message}`);
+    } finally {
+      setDeletingWorkflowId(null);
+      window.setTimeout(() => setNotice(''), 4000);
+    }
+  };
   const createWorkflow = () => {
     const document = {
       workflow_version: 2,
@@ -912,7 +937,14 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
           <button className="workflow-open-button" onClick={openWorkflowMenu} disabled={running || agentStarting || agentStopping} aria-expanded={workflowMenuOpen} title="打开工作流"><FolderOpen size={16} /><span>打开工作流</span><ChevronDown size={14} /></button>
           {workflowMenuOpen && <div className="workflow-open-menu" onKeyDown={(event) => { if (event.key === 'Escape') setWorkflowMenuOpen(false); }}>
             <label><Search size={14} /><input autoFocus value={workflowSearch} onChange={(event) => setWorkflowSearch(event.target.value)} placeholder="搜索工作流" /></label>
-            <div className="workflow-open-list">{availableWorkflows.filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(workflowSearch.toLowerCase())).map((item) => <button key={item.id} onClick={() => { onOpenDocument(item.document, currentDocument(), true); setWorkflowMenuOpen(false); }} title={item.validation_error || item.id}><WorkflowIcon size={15} /><span><strong>{item.name}</strong><small>{item.validation_error ? `需要修复：${item.validation_error}` : item.id}</small></span>{openTabs.some((tab) => tab.id === item.id) && <small>已打开</small>}</button>)}
+            <div className="workflow-open-list">{availableWorkflows.filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(workflowSearch.toLowerCase())).map((item) => <div className="workflow-open-row" key={item.id}>
+                <button type="button" className="workflow-open-select" onClick={() => { onOpenDocument(item.document, currentDocument(), true); setWorkflowMenuOpen(false); }} title={item.validation_error || item.id}>
+                  <WorkflowIcon size={15} /><span><strong>{item.name}</strong><small>{item.validation_error ? `需要修复：${item.validation_error}` : item.id}</small></span>{openTabs.some((tab) => tab.id === item.id) && <small>已打开</small>}
+                </button>
+                <button type="button" className="workflow-open-delete" onClick={() => setPendingWorkflowDelete(item)} disabled={deletingWorkflowId !== null || (agentRunning && serverWorkflowId === item.id)} title={agentRunning && serverWorkflowId === item.id ? '请先停止运行中的工作流' : `删除工作流：${item.name}`} aria-label={`删除工作流：${item.name}`}>
+                  <Trash2 size={15} aria-hidden="true" />
+                </button>
+              </div>)}
               {availableWorkflows.length === 0 && <span className="no-results">工作流文件夹为空</span>}
             </div>
             <button className="workflow-create-button" onClick={createWorkflow}><Plus size={16} />新建空白工作流</button>
@@ -1037,6 +1069,11 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
       <footer className="app-footer"><span>ATRI · LOCAL WORKSPACE</span><span className="execution-note"><span className="note-dot" />试运行调用当前 Agent · 应用后在对话页使用</span></footer>
 
       {jsonOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setJsonOpen(false); }}><section className="json-modal"><header><div><span className="eyebrow">WORKFLOW DOCUMENT</span><h2>工作流 JSON</h2></div><button className="icon-button" onClick={() => setJsonOpen(false)} title="关闭"><X size={17} /></button></header><textarea spellCheck="false" value={jsonText} onChange={(event) => { setJsonText(event.target.value); setJsonCopied(false); }} /><div className="modal-footer"><span>版本 2 · 节点 {nodes.length} · 连接 {edges.length}</span><div><button className="secondary-button" onClick={copyJson}>{jsonCopied ? <Check size={14} /> : <Copy size={14} />}{jsonCopied ? '已复制' : '复制'}</button><button className="primary-button" onClick={applyJson}><Check size={14} />应用到画布</button></div></div></section></div>}
+      {pendingWorkflowDelete && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !deletingWorkflowId) setPendingWorkflowDelete(null); }}><section className="workflow-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="workflow-delete-title" aria-describedby="workflow-delete-description" onKeyDown={(event) => { if (event.key === 'Escape' && !deletingWorkflowId) setPendingWorkflowDelete(null); }}>
+        <header><h2 id="workflow-delete-title">删除工作流</h2><button type="button" className="icon-button" onClick={() => setPendingWorkflowDelete(null)} disabled={Boolean(deletingWorkflowId)} title="关闭"><X size={17} /></button></header>
+        <p id="workflow-delete-description">确定永久删除“{pendingWorkflowDelete.name}”吗？已打开的画布会保留为未保存草稿。</p>
+        <footer><button type="button" className="secondary-button" onClick={() => setPendingWorkflowDelete(null)} disabled={Boolean(deletingWorkflowId)}>取消</button><button type="button" className="danger-button workflow-delete-confirm" onClick={deleteWorkflow} disabled={Boolean(deletingWorkflowId)}><Trash2 size={15} />{deletingWorkflowId ? '删除中…' : '删除'}</button></footer>
+      </section></div>}
       {saveDialog && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setSaveDialog(null); }}><form className="workflow-save-modal" onSubmit={submitSaveDialog} role="dialog" aria-label={saveDialog.mode === 'new' ? '保存新工作流' : '重命名工作流'}><header><h2>{saveDialog.mode === 'new' ? '保存新工作流' : '重命名工作流'}</h2><button type="button" className="icon-button" onClick={() => setSaveDialog(null)} disabled={saving} title="关闭"><X size={17} /></button></header><label>显示名称<input autoFocus value={saveDialog.name} onChange={(event) => setSaveDialog((current) => ({ ...current, name: event.target.value }))} placeholder="工作流名称" /></label><label>文件名<input value={saveDialog.id} onChange={(event) => setSaveDialog((current) => ({ ...current, id: event.target.value }))} placeholder="my_workflow" spellCheck="false" /><small>保存在 workflows/ 目录，自动添加 .json</small></label><footer><button type="button" className="secondary-button" onClick={() => setSaveDialog(null)} disabled={saving}>取消</button><button type="submit" className="primary-button" disabled={saving}><Save size={15} />{saving ? '保存中' : '保存'}</button></footer></form></div>}
       {configKind === 'api-models' && <ApiModelPanel initialModelId={configModelId} onClose={() => setConfigKind(null)} onChanged={() => { refreshModelOptions(); setPreviewRevision((value) => value + 1); }} />}
       {configKind && configKind !== 'api-models' && <CapabilityPanel kind={configKind} onClose={() => setConfigKind(null)} onChanged={() => setPreviewRevision((value) => value + 1)} />}
@@ -1123,7 +1160,12 @@ export default function WorkflowApp() {
     tabs: current.tabs.map((tab) => tab.id === current.activeId ? { ...tab, id: document.id, document, savedDocument: document, persisted: true } : tab),
     available: current.available.filter((item) => item.id !== previousId && item.id !== document.id).concat({ id: document.id, name: document.name, document }),
   } : current);
+  const workflowDeleted = (id) => setWorkspaceState((current) => current ? {
+    ...current,
+    tabs: current.tabs.map((tab) => tab.id === id ? { ...tab, persisted: false } : tab),
+    available: current.available.filter((item) => item.id !== id),
+  } : current);
   if (!workspaceState) return <div className="loading-screen">ATRI WORKFLOW STUDIO</div>;
   const activeTab = workspaceState.tabs.find((tab) => tab.id === workspaceState.activeId);
-  return <ReactFlowProvider key={activeTab.id}><EditorFrame initialDocument={activeTab.document} savedDocument={activeTab.savedDocument} persisted={activeTab.persisted} openTabs={workspaceState.tabs} availableWorkflows={workspaceState.available} onRefreshWorkflows={refreshWorkflows} onOpenDocument={openDocument} onSwitchWorkflow={switchWorkflow} onCloseWorkflow={closeWorkflow} onSaved={savedWorkflow} /></ReactFlowProvider>;
+  return <ReactFlowProvider key={activeTab.id}><EditorFrame initialDocument={activeTab.document} savedDocument={activeTab.savedDocument} persisted={activeTab.persisted} openTabs={workspaceState.tabs} availableWorkflows={workspaceState.available} onRefreshWorkflows={refreshWorkflows} onOpenDocument={openDocument} onSwitchWorkflow={switchWorkflow} onCloseWorkflow={closeWorkflow} onSaved={savedWorkflow} onWorkflowDeleted={workflowDeleted} /></ReactFlowProvider>;
 }

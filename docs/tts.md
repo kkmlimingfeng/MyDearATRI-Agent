@@ -70,7 +70,7 @@ chunk arrives.
 - `POST /api/tts/model`: JSON `{"model":"qwen3-0.6b-q8"}` or
   `{"model":"qwen3-1.7b-q4"}`. The current GPU model stops; the selected one
   loads on the next speech request. An active stream finishes before switching.
-- `GET /api/tts/references`: WAV files in `data/ATRI语音包/` and the `atri` preset.
+- `GET /api/tts/references`: WAV files in `data/atri/voice/` and the `atri` preset.
 - `POST /api/tts/speech`: JSON body with `text`, optional `model` (switches to it),
   `reference` (default `atri`), `ref_text`, `language` (default `Chinese`), and `response_format`
   (`pcm` or `wav`). `pcm` streams signed 16-bit little-endian, 24 kHz mono;
@@ -83,5 +83,6 @@ conditioning, pass `ありがとう。よろしくお願いします。おはよ
 explicitly. The single clips have matching Japanese transcripts in the code.
 Other WAV files have no known transcript.
 
-Place those three reference WAV files under `data/ATRI语音包/` locally. The voice
-pack and GGUF weights are not part of the GitHub source commit.
+The three preset WAV files are stored under `data/atri/voice/` and included in
+the GitHub source. Add extra reference clips to that directory. Qwen3-TTS GGUF
+weights are not included.
