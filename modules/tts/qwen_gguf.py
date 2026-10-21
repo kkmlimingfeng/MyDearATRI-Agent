@@ -15,12 +15,13 @@ from array import array
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 
 ROOT = Path(__file__).resolve().parents[2]
-REFERENCE_DIR = ROOT / "data" / "atri" / "voice"
+VOICE_DATA_DIR = ROOT / "data" / "voice"
+REFERENCE_DIR = VOICE_DATA_DIR / "atri"
 RUNTIME_DIR = ROOT / "Qwen" / "qwentts.cpp"
 MODEL_DIR = ROOT / "models" / "TTS"
 DEFAULT_REFERENCE = "atri"
@@ -33,6 +34,7 @@ REFERENCE_TEXTS = {
 }
 PRESET_TEXT = "".join(REFERENCE_TEXTS[name] for name in PRESET_FILES)
 SAMPLE_RATE = 24_000
+VOICE_UPLOAD_MAX_FILES = 500
 MODELS = {
     "qwen3-0.6b-q8": ("qwen-talker-0.6b-base-Q8_0.gguf", "qwen-tokenizer-12hz-Q8_0.gguf"),
     "qwen3-1.7b-q4": ("qwen-talker-1.7b-base-Q4_K_M.gguf", "qwen-tokenizer-12hz-Q4_K_M.gguf"),
@@ -189,64 +191,228 @@ class QwenGGUFTTS:
 
     def references(self) -> list[dict]:
         result = []
-        if all((REFERENCE_DIR / name).is_file() for name in PRESET_FILES):
-            result.append({"id": DEFAULT_REFERENCE, "files": list(PRESET_FILES),
-                           "label": "ATRI (三段组合)", "ref_text": PRESET_TEXT})
-        for path in sorted(REFERENCE_DIR.glob("*.wav")):
-            try:
-                with wave.open(str(path), "rb") as audio:
-                    duration = round(audio.getnframes() / audio.getframerate(), 2)
-            except (OSError, wave.Error):
+        if not VOICE_DATA_DIR.is_dir():
+            return result
+        for profile_dir in sorted(VOICE_DATA_DIR.iterdir(), key=lambda path: path.name.casefold()):
+            if profile_dir.is_symlink() or not profile_dir.is_dir():
                 continue
-            result.append({
-                "id": path.name,
-                "label": path.stem,
-                "duration_seconds": duration,
-                "ref_text": REFERENCE_TEXTS.get(path.name),
-            })
+            selected = self._selected_profile_files(profile_dir)
+            if selected:
+                duration = sum(self._wav_details(path)["duration_seconds"] for path in selected)
+                label = "ATRI" if profile_dir.name == DEFAULT_REFERENCE else profile_dir.name
+                result.append({
+                    "id": profile_dir.name,
+                    "files": [path.name for path in selected],
+                    "label": f"{label} ({len(selected)}段组合)",
+                    "duration_seconds": round(duration, 2),
+                    "ref_text": self._profile_transcript(selected),
+                })
+            for path in self._profile_wavs(profile_dir):
+                duration = self._wav_details(path)["duration_seconds"]
+                reference_id = path.relative_to(VOICE_DATA_DIR).as_posix()
+                result.append({
+                    "id": reference_id,
+                    "label": f"{profile_dir.name} · {path.stem}",
+                    "duration_seconds": duration,
+                    "ref_text": self._clip_transcript(path),
+                })
         return result
 
-    def _reference_audio(self, reference: str) -> tuple[bytes, str]:
-        if reference == DEFAULT_REFERENCE:
-            files = [REFERENCE_DIR / name for name in PRESET_FILES]
-            if not all(path.is_file() for path in files):
-                raise ValueError("ATRI reference preset is incomplete")
-            samples = array("h")
-            sample_rate = None
-            for index, path in enumerate(files):
-                with wave.open(str(path), "rb") as audio:
-                    if audio.getsampwidth() != 2 or audio.getnchannels() not in (1, 2):
-                        raise ValueError(f"Unsupported WAV format: {path.name}")
-                    if sample_rate is None:
-                        sample_rate = audio.getframerate()
-                    elif audio.getframerate() != sample_rate:
-                        raise ValueError("ATRI reference clips must have the same sample rate")
-                    clip = array("h")
-                    clip.frombytes(audio.readframes(audio.getnframes()))
-                    if audio.getnchannels() == 2:
-                        clip = array("h", ((clip[i] + clip[i + 1]) // 2 for i in range(0, len(clip), 2)))
-                    if index:
-                        samples.extend([0] * int(sample_rate * 0.12))
-                    samples.extend(clip)
-            output = io.BytesIO()
-            with wave.open(output, "wb") as audio:
-                audio.setnchannels(1)
-                audio.setsampwidth(2)
-                audio.setframerate(sample_rate)
-                audio.writeframes(samples.tobytes())
-            stamp = ":".join(str(path.stat().st_mtime_ns) for path in files)
-            return output.getvalue(), stamp
+    def _profile_directory(self, profile: str) -> Path | None:
+        if not isinstance(profile, str) or not profile or profile in {".", ".."} or "/" in profile or "\\" in profile:
+            return None
+        directory = VOICE_DATA_DIR / profile
+        if directory.is_symlink() or not directory.is_dir():
+            return None
+        try:
+            directory.resolve().relative_to(VOICE_DATA_DIR.resolve())
+        except ValueError:
+            return None
+        return directory
 
-        if not isinstance(reference, str) or Path(reference).name != reference or not reference.endswith(".wav"):
+    def _profile_wavs(self, profile_dir: Path) -> list[Path]:
+        try:
+            paths = sorted(profile_dir.iterdir(), key=lambda item: item.name.casefold())
+        except OSError:
+            return []
+        result = []
+        for path in paths:
+            if path.suffix.lower() != ".wav" or path.is_symlink() or not path.is_file():
+                continue
+            try:
+                self._wav_details(path)
+            except (OSError, wave.Error, ValueError, ZeroDivisionError):
+                continue
+            result.append(path)
+        return result
+
+    @staticmethod
+    def _wav_details(path: Path) -> dict:
+        with wave.open(str(path), "rb") as audio:
+            sample_rate = audio.getframerate()
+            if sample_rate <= 0:
+                raise ValueError("Invalid WAV sample rate")
+            return {
+                "duration_seconds": round(audio.getnframes() / sample_rate, 2),
+                "sample_rate": sample_rate,
+                "channels": audio.getnchannels(),
+                "sample_width": audio.getsampwidth(),
+                "supported": audio.getsampwidth() == 2 and audio.getnchannels() in (1, 2),
+            }
+
+    def _selected_profile_files(self, profile_dir: Path) -> list[Path]:
+        wavs = self._profile_wavs(profile_dir)
+        selection_path = profile_dir / "selection.json"
+        if selection_path.is_symlink() or not selection_path.is_file():
+            names = [name for name in PRESET_FILES if (profile_dir / name) in wavs] if profile_dir.name == DEFAULT_REFERENCE else [path.name for path in wavs]
+            return [profile_dir / name for name in names]
+        try:
+            selection = json.loads(selection_path.read_text(encoding="utf-8"))
+            names = selection.get("files") if isinstance(selection, dict) else None
+        except (OSError, json.JSONDecodeError):
+            names = None
+        if not isinstance(names, list):
+            return []
+        allowed = {path.name: path for path in wavs}
+        selected = [allowed[name] for name in names if isinstance(name, str) and name in allowed]
+        return list(dict.fromkeys(selected))
+
+    def _clip_transcript(self, path: Path) -> str | None:
+        transcript = REFERENCE_TEXTS.get(path.name) if path.parent.name == DEFAULT_REFERENCE else None
+        transcript_path = path.with_suffix(".txt")
+        if transcript_path.is_file() and not transcript_path.is_symlink():
+            try:
+                candidate = transcript_path.read_text(encoding="utf-8").strip()
+                if candidate:
+                    transcript = candidate[:1000]
+            except (OSError, UnicodeDecodeError):
+                pass
+        return transcript
+
+    def _profile_transcript(self, files: list[Path]) -> str:
+        if files and files == [REFERENCE_DIR / name for name in PRESET_FILES]:
+            return PRESET_TEXT
+        transcripts = [self._clip_transcript(path) for path in files]
+        if not transcripts or any(not text for text in transcripts):
+            return ""
+        return " ".join(transcripts)[:1000]
+
+    def voice_profiles(self) -> list[dict]:
+        profiles = []
+        if not VOICE_DATA_DIR.is_dir():
+            return profiles
+        for profile_dir in sorted(VOICE_DATA_DIR.iterdir(), key=lambda path: path.name.casefold()):
+            if profile_dir.is_symlink() or not profile_dir.is_dir():
+                continue
+            selected = {path.name for path in self._selected_profile_files(profile_dir)}
+            clips = []
+            for path in self._profile_wavs(profile_dir):
+                details = self._wav_details(path)
+                clips.append({
+                    "name": path.name,
+                    "label": path.stem,
+                    "duration_seconds": details["duration_seconds"],
+                    "supported": details["supported"],
+                    "sample_rate": details["sample_rate"],
+                    "selected": path.name in selected,
+                    "url": f"/api/tts/reference-audio?reference={quote(path.relative_to(VOICE_DATA_DIR).as_posix())}",
+                    "ref_text": self._clip_transcript(path),
+                })
+            if clips:
+                profiles.append({"id": profile_dir.name, "clips": clips})
+        return profiles
+
+    def set_voice_selection(self, profile: str, files: list[str]) -> dict:
+        profile_dir = self._profile_directory(profile)
+        if profile_dir is None:
+            raise ValueError("音色不存在")
+        if not isinstance(files, list) or not files or len(files) > VOICE_UPLOAD_MAX_FILES:
+            raise ValueError("至少选择一个参与合成的音频")
+        wavs = {path.name: path for path in self._profile_wavs(profile_dir)}
+        if any(not isinstance(name, str) or name not in wavs for name in files) or len(set(files)) != len(files):
+            raise ValueError("所选音频无效或重复")
+        selected_paths = [wavs[name] for name in files]
+        self._combine_profile_audio(selected_paths)
+        selection_path = profile_dir / "selection.json"
+        if selection_path.is_symlink():
+            raise ValueError("音色选择配置不能是符号链接")
+        temporary = profile_dir / f".selection-{os.getpid()}-{threading.get_ident()}.tmp"
+        temporary.write_text(json.dumps({"files": files}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(selection_path)
+        return next((item for item in self.voice_profiles() if item["id"] == profile), {"id": profile, "clips": []})
+
+    def _reference_path(self, reference: str) -> Path:
+        if not isinstance(reference, str) or not reference or "\\" in reference:
             raise ValueError("Invalid reference audio name")
-        path = REFERENCE_DIR / reference
-        if not path.is_file():
+        parts = Path(reference).parts
+        if len(parts) == 1:
+            parts = ("atri", parts[0])
+        if len(parts) != 2 or any(part in {"", ".", ".."} for part in parts) or Path(parts[1]).suffix.lower() != ".wav":
+            raise ValueError("Invalid reference audio name")
+        profile_dir = VOICE_DATA_DIR / parts[0]
+        path = profile_dir / parts[1]
+        try:
+            path.resolve().relative_to(VOICE_DATA_DIR.resolve())
+        except ValueError as exc:
+            raise ValueError("Invalid reference audio name") from exc
+        if profile_dir.is_symlink() or path.is_symlink() or not path.is_file():
             raise ValueError(f"Reference audio not found: {reference}")
+        return path
+
+    def reference_path(self, reference: str) -> Path:
+        return self._reference_path(reference)
+
+    def _reference_transcript(self, reference: str) -> str:
+        profile_dir = self._profile_directory(reference)
+        if profile_dir is not None:
+            return self._profile_transcript(self._selected_profile_files(profile_dir))
+        path = self._reference_path(reference)
+        return self._clip_transcript(path) or ""
+
+    def _combine_profile_audio(self, files: list[Path]) -> tuple[bytes, str]:
+        if not files:
+            raise ValueError("音色没有选中参与合成的音频")
+        samples = array("h")
+        sample_rate = None
+        stamps = []
+        for index, path in enumerate(files):
+            with wave.open(str(path), "rb") as audio:
+                if audio.getsampwidth() != 2 or audio.getnchannels() not in (1, 2):
+                    raise ValueError(f"仅支持 16-bit 单声道或双声道 WAV: {path.name}")
+                if sample_rate is None:
+                    sample_rate = audio.getframerate()
+                elif audio.getframerate() != sample_rate:
+                    raise ValueError("同一音色中参与合成的 WAV 采样率必须一致")
+                clip = array("h")
+                clip.frombytes(audio.readframes(audio.getnframes()))
+                if audio.getnchannels() == 2:
+                    clip = array("h", ((clip[i] + clip[i + 1]) // 2 for i in range(0, len(clip), 2)))
+                if index:
+                    samples.extend([0] * int(sample_rate * 0.12))
+                samples.extend(clip)
+            stamps.append(f"{path.name}:{path.stat().st_mtime_ns}")
+        output = io.BytesIO()
+        with wave.open(output, "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(sample_rate)
+            audio.writeframes(samples.tobytes())
+        selection_path = files[0].parent / "selection.json"
+        if selection_path.is_file() and not selection_path.is_symlink():
+            stamps.append(f"selection:{selection_path.stat().st_mtime_ns}")
+        return output.getvalue(), ":".join(stamps)
+
+    def _reference_audio(self, reference: str) -> tuple[bytes, str]:
+        profile_dir = self._profile_directory(reference)
+        if profile_dir is not None:
+            return self._combine_profile_audio(self._selected_profile_files(profile_dir))
+
+        path = self._reference_path(reference)
         return path.read_bytes(), str(path.stat().st_mtime_ns)
 
     def _voice_name(self, reference: str, stamp: str, ref_text: str) -> str:
         key = f"{reference}\0{stamp}\0{ref_text}".encode("utf-8")
-        return "atri-" + hashlib.sha256(key).hexdigest()[:16]
+        return "voice-" + hashlib.sha256(key).hexdigest()[:16]
 
     def _ensure_voice(self, reference: str, ref_text: str) -> str:
         audio, stamp = self._reference_audio(reference)
@@ -269,7 +435,7 @@ class QwenGGUFTTS:
         if not isinstance(text, str) or not text.strip() or len(text) > 1000:
             raise ValueError("Text must contain 1 to 1000 characters")
         if ref_text is None:
-            ref_text = ""
+            ref_text = self._reference_transcript(reference)
         if not isinstance(ref_text, str) or len(ref_text) > 1000:
             raise ValueError("Invalid reference transcript")
         if language not in {"Chinese", "Japanese", "English", "auto"}:

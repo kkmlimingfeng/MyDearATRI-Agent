@@ -69,13 +69,14 @@ class TTSAudioNode(BaseNode):
     title = "Qwen3-TTS 音频模型"
     category = "audio"
     description = "从 models/TTS 选择本地 Qwen3-TTS GGUF，将文本合成为流式语音。"
-    defaults = {"model": "qwen3-0.6b-q8", "language": "Chinese"}
+    defaults = {"model": "qwen3-0.6b-q8", "language": "Chinese", "reference": "atri"}
     preview = "接收回复文本，输出流式语音。"
     inputs = (PortDefinition("text", "text", label_zh="文本", label_en="Text"),)
     outputs = (PortDefinition("audio", "audio", label_zh="语音", label_en="Voice"),)
     config_schema = {"type": "object", "properties": {
         "model": {"type": "string", "title": "TTS 模型", "default": "qwen3-0.6b-q8"},
         "language": {"type": "string", "title": "目标语言", "enum": ["Chinese", "Japanese", "English"], "default": "Chinese"},
+        "reference": {"type": "string", "title": "参考音色", "default": "atri"},
     }}
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
@@ -103,7 +104,7 @@ class TTSAudioNode(BaseNode):
             "text": text.strip(),
             "model": model,
             "language": language,
-            "reference": "atri",
+            "reference": self.config.get("reference", "atri"),
         }})
 
 

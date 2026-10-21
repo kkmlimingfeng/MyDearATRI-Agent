@@ -14,15 +14,12 @@ const SIZE_KEY = 'atri.live2d.size.v1';
 const FLIP_KEY = 'atri.live2d.flip.v1';
 const SPEECH_BUBBLE_FLIP_KEY = 'atri.live2d.speech-bubble-flip.v1';
 const EXPRESSION_KEY = 'atri.live2d.expression.v1';
-const EXPRESSIONS = Array.from({ length: 16 }, (_, index) => ({
-  name: `expression${index + 1}`,
-  label: `表情 ${String(index + 1).padStart(2, '0')}`,
-}));
+const AVATAR_KEY = 'atri.desktop-pet.selected.v1';
+const VISIBILITY_KEY = 'atri.desktop-pet.visible.v1';
 const DEFAULT_POSITIONS = {
   chat: { x: 0.86, y: 0.68 },
   workflow: { x: 0.84, y: 0.7 },
 };
-const MODEL_URL = '/api/live2d/atri_8.model3.json';
 const MIN_SIZE = 60;
 const MAX_SIZE = 180;
 const SPEECH_BUBBLE_ANCHOR_SCALE = 0.42;
@@ -47,10 +44,21 @@ function readSpeechBubbleFlipped() {
   catch { return false; }
 }
 
-function readExpression() {
+function readSelectedAvatar() {
+  try { return localStorage.getItem(AVATAR_KEY) || 'atri'; }
+  catch { return 'atri'; }
+}
+
+function readPetVisibility() {
+  try { return localStorage.getItem(VISIBILITY_KEY) !== 'false'; }
+  catch { return true; }
+}
+
+function readExpression(avatarId, expressions) {
   try {
-    const value = localStorage.getItem(EXPRESSION_KEY) || '';
-    return EXPRESSIONS.some((expression) => expression.name === value) ? value : '';
+    const key = avatarId === 'atri' ? EXPRESSION_KEY : `${EXPRESSION_KEY}.${avatarId}`;
+    const value = localStorage.getItem(key) || '';
+    return expressions.some((expression) => expression.name === value) ? value : '';
   } catch { return ''; }
 }
 
@@ -128,7 +136,10 @@ function getSpeechBubblePlacement(avatarRect, viewportWidth, viewportHeight, rev
 
 export default function Live2DAvatar({ page }) {
   const containerRef = useRef(null);
+  const staticImageRef = useRef(null);
+  const staticBounceAnimationRef = useRef(null);
   const modelRef = useRef(null);
+  const pixiAppRef = useRef(null);
   const baseScaleRef = useRef(1);
   const basePositionYRef = useRef(0);
   const baseHeightRef = useRef(0);
@@ -140,24 +151,101 @@ export default function Live2DAvatar({ page }) {
   const settingsAnchorRef = useRef(null);
   const speechPlaybackIdRef = useRef(null);
   const [positions, setPositions] = useState(() => ({ chat: readPosition('chat'), workflow: readPosition('workflow') }));
+  const [avatars, setAvatars] = useState([]);
+  const [selectedAvatarId, setSelectedAvatarId] = useState(readSelectedAvatar);
+  const [isPetVisible, setIsPetVisible] = useState(readPetVisibility);
+  const [imageAspectRatio, setImageAspectRatio] = useState(null);
   const [size, setSize] = useState(readSize);
   const [isFlipped, setIsFlipped] = useState(readFlipped);
   const [isSpeechBubbleFlipped, setIsSpeechBubbleFlipped] = useState(readSpeechBubbleFlipped);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const [settingsMenu, setSettingsMenu] = useState(null);
-  const [selectedExpression, setSelectedExpression] = useState(readExpression);
+  const [selectedExpression, setSelectedExpression] = useState('');
   const selectedExpressionRef = useRef(selectedExpression);
   const [speakingText, setSpeakingText] = useState('');
   const [speechBubblePlacement, setSpeechBubblePlacement] = useState(null);
   const [loadError, setLoadError] = useState('');
+  const selectedAvatar = avatars.find((avatar) => avatar.id === selectedAvatarId) || avatars[0] || null;
+  const expressions = selectedAvatar?.expressions || [];
   const position = positions[page] || DEFAULT_POSITIONS.chat;
   const avatarWidth = getAvatarWidth(viewportWidth, size);
   const positionStyle = useMemo(() => ({
     left: `${position.x * 100}vw`,
     top: `${position.y * 100}vh`,
     width: `${avatarWidth}px`,
-  }), [position, avatarWidth]);
+    aspectRatio: selectedAvatar?.type === 'image' ? imageAspectRatio || 1 : '2 / 3',
+  }), [position, avatarWidth, selectedAvatar?.type, imageAspectRatio]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const applyAvatars = (available) => {
+      if (cancelled) return;
+      setAvatars(available);
+      setSelectedAvatarId((current) => {
+        const preferred = readSelectedAvatar();
+        const next = available.some((avatar) => avatar.id === current)
+          ? current
+          : available.find((avatar) => avatar.id === preferred)?.id
+            || (available.find((avatar) => avatar.id === 'atri') || available[0])?.id || '';
+        try {
+          if (next) localStorage.setItem(AVATAR_KEY, next);
+          else localStorage.removeItem(AVATAR_KEY);
+        } catch { /* Keep the selection for this page session. */ }
+        return next;
+      });
+    };
+    const loadAvatars = () => fetch('/api/avatars')
+      .then((response) => {
+        if (!response.ok) throw new Error('桌宠列表加载失败');
+        return response.json();
+      })
+      .then((payload) => applyAvatars(Array.isArray(payload.avatars) ? payload.avatars : []))
+      .catch(() => { if (!cancelled) setLoadError('桌宠列表加载失败，请确认后端服务已启动'); });
+    const onAvatarsUpdated = (event) => {
+      if (Array.isArray(event.detail)) applyAvatars(event.detail);
+      else loadAvatars();
+    };
+    const onAvatarSelected = (event) => {
+      if (typeof event.detail !== 'string') return;
+      setSelectedAvatarId(event.detail);
+      setLoadError('');
+    };
+    window.addEventListener('atri-avatars-updated', onAvatarsUpdated);
+    window.addEventListener('atri-avatar-selected', onAvatarSelected);
+    loadAvatars();
+    return () => {
+      cancelled = true;
+      window.removeEventListener('atri-avatars-updated', onAvatarsUpdated);
+      window.removeEventListener('atri-avatar-selected', onAvatarSelected);
+    };
+  }, []);
+
+  useEffect(() => {
+    const applyVisibility = (visible) => setIsPetVisible(visible);
+    const onVisibilityChanged = (event) => {
+      if (typeof event.detail === 'boolean') applyVisibility(event.detail);
+    };
+    const onStorage = (event) => {
+      if (event.key === VISIBILITY_KEY) applyVisibility(event.newValue !== 'false');
+    };
+    window.addEventListener('atri-avatar-visibility-changed', onVisibilityChanged);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('atri-avatar-visibility-changed', onVisibilityChanged);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    stopAudioElement(clickAudioRef.current);
+    clickAudioRef.current = null;
+    staticBounceAnimationRef.current?.cancel();
+    setImageAspectRatio(null);
+    const expression = readExpression(selectedAvatar?.characterId || 'atri', expressions);
+    selectedExpressionRef.current = expression;
+    setSelectedExpression(expression);
+  }, [selectedAvatar?.id]);
 
   useEffect(() => {
     let disposed = false;
@@ -165,8 +253,10 @@ export default function Live2DAvatar({ page }) {
     let loadedModel;
     let clickBlinkListener;
     const container = containerRef.current;
-    if (!container) return undefined;
+    if (!container || !selectedAvatar) return undefined;
     setLoadError('');
+    modelRef.current = null;
+    if (selectedAvatar.type === 'image') return undefined;
 
     if (!window.Live2DCubismCore) {
       setLoadError('Live2D Core 未加载，请运行 npm run download:cubism-core');
@@ -182,13 +272,14 @@ export default function Live2DAvatar({ page }) {
       backgroundAlpha: 0,
       resolution: Math.min(window.devicePixelRatio || 1, 2),
     });
+    pixiAppRef.current = app;
     const canvas = app.view;
     canvas.setAttribute('aria-hidden', 'true');
     container.appendChild(canvas);
 
     const loadModel = async () => {
       try {
-        const model = await Live2DModel.from(MODEL_URL, { autoInteract: false });
+        const model = await Live2DModel.from(selectedAvatar.assetUrl, { autoInteract: false });
         if (disposed) {
           model.destroy({ children: true });
           return;
@@ -259,13 +350,22 @@ export default function Live2DAvatar({ page }) {
         loadedModel.internalModel.off('beforeModelUpdate', clickBlinkListener);
       }
       modelRef.current = null;
+      if (pixiAppRef.current === app) pixiAppRef.current = null;
       if (canvas.parentElement === container) container.removeChild(canvas);
       app.destroy(true, { children: true });
     };
-  }, []);
+  }, [selectedAvatar?.id, selectedAvatar?.assetUrl, selectedAvatar?.type]);
+
+  useEffect(() => {
+    const ticker = pixiAppRef.current?.ticker;
+    if (!ticker) return;
+    if (isPetVisible) ticker.start();
+    else ticker.stop();
+  }, [isPetVisible, selectedAvatar?.id]);
 
   useEffect(() => () => {
     cancelAnimationFrame(bounceFrameRef.current);
+    staticBounceAnimationRef.current?.cancel();
     stopAudioElement(clickAudioRef.current);
     clickAudioRef.current = null;
   }, []);
@@ -298,7 +398,7 @@ export default function Live2DAvatar({ page }) {
     updatePlacement();
     window.addEventListener('resize', updatePlacement);
     return () => window.removeEventListener('resize', updatePlacement);
-  }, [page, position, avatarWidth, viewportWidth, viewportHeight, isFlipped, isSpeechBubbleFlipped, speakingText]);
+  }, [page, position, avatarWidth, imageAspectRatio, viewportWidth, viewportHeight, isFlipped, isSpeechBubbleFlipped, selectedAvatar?.id, speakingText]);
 
   useEffect(() => {
     const clampToViewport = () => {
@@ -316,7 +416,7 @@ export default function Live2DAvatar({ page }) {
     window.addEventListener('resize', clampToViewport);
     clampToViewport();
     return () => window.removeEventListener('resize', clampToViewport);
-  }, [page, avatarWidth]);
+  }, [page, avatarWidth, imageAspectRatio, selectedAvatar?.id]);
 
   useEffect(() => {
     setSettingsMenu(null);
@@ -371,7 +471,7 @@ export default function Live2DAvatar({ page }) {
     const next = !isFlipped;
     setIsFlipped(next);
     try { localStorage.setItem(FLIP_KEY, String(next)); } catch { /* Keep the session setting if storage is unavailable. */ }
-    bounce();
+    bounce(next);
   };
 
   const toggleSpeechBubbleFlip = () => {
@@ -384,8 +484,11 @@ export default function Live2DAvatar({ page }) {
     selectedExpressionRef.current = expressionName;
     setSelectedExpression(expressionName);
     try {
-      if (expressionName) localStorage.setItem(EXPRESSION_KEY, expressionName);
-      else localStorage.removeItem(EXPRESSION_KEY);
+      const key = selectedAvatar?.characterId === 'atri'
+        ? EXPRESSION_KEY
+        : `${EXPRESSION_KEY}.${selectedAvatar?.characterId || selectedAvatarId}`;
+      if (expressionName) localStorage.setItem(key, expressionName);
+      else localStorage.removeItem(key);
     } catch { /* Keep the selected expression for this page session. */ }
 
     const manager = modelRef.current?.internalModel.motionManager.expressionManager;
@@ -411,8 +514,23 @@ export default function Live2DAvatar({ page }) {
     openSettingsAt(event.clientX, event.clientY);
   };
 
-  const bounce = () => {
+  const bounce = (flipped = isFlipped) => {
     const model = modelRef.current;
+    if (!model && selectedAvatar?.type === 'image') {
+      const image = staticImageRef.current;
+      if (!image) return;
+      staticBounceAnimationRef.current?.cancel();
+      const flip = flipped ? 'scaleX(-1) ' : '';
+      staticBounceAnimationRef.current = image.animate([
+        { transform: `${flip}scaleY(1)`, offset: 0 },
+        { transform: `${flip}scaleX(1.06) scaleY(.83)`, offset: 0.14 },
+        { transform: `${flip}scaleX(.99) scaleY(1.06)`, offset: 0.34 },
+        { transform: `${flip}scaleX(1.025) scaleY(.95)`, offset: 0.56 },
+        { transform: `${flip}scaleX(.995) scaleY(1.02)`, offset: 0.76 },
+        { transform: `${flip}scaleY(1)`, offset: 1 },
+      ], { duration: 760, easing: 'cubic-bezier(.2,.7,.25,1)' });
+      return;
+    }
     if (!model) return;
     cancelAnimationFrame(bounceFrameRef.current);
     const start = performance.now();
@@ -434,24 +552,28 @@ export default function Live2DAvatar({ page }) {
   };
 
   const triggerInteraction = () => {
-    const blink = clickBlinkRef.current;
-    blink.remaining = Math.min(blink.remaining + 1, 12);
-    if (blink.startedAt === null) blink.startedAt = performance.now();
+    if (modelRef.current) {
+      const blink = clickBlinkRef.current;
+      blink.remaining = Math.min(blink.remaining + 1, 12);
+      if (blink.startedAt === null) blink.startedAt = performance.now();
+    }
     const previousAudio = clickAudioRef.current;
     if (previousAudio) {
       stopAudioElement(previousAudio);
     }
-    const audio = new Audio(`/api/live2d/click-audio?request=${Date.now()}`);
-    clickAudioRef.current = audio;
-    const clearAudio = () => {
-      if (clickAudioRef.current === audio) clickAudioRef.current = null;
-    };
-    audio.addEventListener('ended', clearAudio, { once: true });
-    audio.addEventListener('error', () => {
-      clearAudio();
-      stopAudioElement(audio);
-    }, { once: true });
-    playAudioElement(audio).catch(clearAudio);
+    if (selectedAvatar?.clickAudioUrl) {
+      const audio = new Audio(`${selectedAvatar.clickAudioUrl}&request=${Date.now()}`);
+      clickAudioRef.current = audio;
+      const clearAudio = () => {
+        if (clickAudioRef.current === audio) clickAudioRef.current = null;
+      };
+      audio.addEventListener('ended', clearAudio, { once: true });
+      audio.addEventListener('error', () => {
+        clearAudio();
+        stopAudioElement(audio);
+      }, { once: true });
+      playAudioElement(audio).catch(clearAudio);
+    }
     bounce();
   };
 
@@ -528,13 +650,14 @@ export default function Live2DAvatar({ page }) {
     <>
       <div
         ref={containerRef}
-        className={`live2d-avatar ${isFlipped ? 'is-flipped' : ''} ${loadError ? 'has-error' : ''}`}
+        className={`live2d-avatar ${isFlipped ? 'is-flipped' : ''} ${!isPetVisible ? 'is-hidden' : ''} ${loadError ? 'has-error' : ''}`}
         style={positionStyle}
         role="button"
-        tabIndex={0}
-        aria-label="ATRI Live2D 形象。拖动可移动，点击可互动。"
+        tabIndex={isPetVisible ? 0 : -1}
+        aria-hidden={!isPetVisible}
+        aria-label={`${selectedAvatar?.name || '桌宠'}。拖动可移动，点击可互动。`}
         aria-haspopup="dialog"
-        title="拖动移动 · 点击互动并播放语音 · 右键设置"
+        title="拖动移动 · 点击互动 · 右键设置"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -542,9 +665,21 @@ export default function Live2DAvatar({ page }) {
         onKeyDown={handleKeyDown}
         onContextMenu={handleContextMenu}
       >
+        {selectedAvatar?.type === 'image' && <img
+          ref={staticImageRef}
+          className="live2d-avatar-image"
+          src={selectedAvatar.assetUrl}
+          alt=""
+          draggable="false"
+          onLoad={(event) => {
+            const image = event.currentTarget;
+            if (image.naturalWidth && image.naturalHeight) setImageAspectRatio(image.naturalWidth / image.naturalHeight);
+          }}
+          onError={() => setLoadError('桌宠图片加载失败')}
+        />}
         {loadError && <div className="live2d-avatar-error" role="status">{loadError}</div>}
       </div>
-      {speakingText && speechBubblePlacement && <div
+      {isPetVisible && speakingText && speechBubblePlacement && <div
         className={`live2d-speaking-bubble is-${speechBubblePlacement.side}`}
         style={{ left: speechBubblePlacement.left, top: speechBubblePlacement.top, width: speechBubblePlacement.width }}
         role="status"
@@ -569,6 +704,21 @@ export default function Live2DAvatar({ page }) {
               <X size={15} aria-hidden="true" />
             </button>
           </header>
+          {avatars.length > 1 && <label className="live2d-avatar-select" htmlFor="live2d-avatar-choice">
+            <span>桌宠</span>
+            <select
+              id="live2d-avatar-choice"
+              value={selectedAvatar?.id || ''}
+              onChange={(event) => {
+                const next = event.target.value;
+                setSelectedAvatarId(next);
+                setLoadError('');
+                try { localStorage.setItem(AVATAR_KEY, next); } catch { /* Keep the selection for this page session. */ }
+              }}
+            >
+              {avatars.map((avatar) => <option key={avatar.id} value={avatar.id}>{avatar.name}</option>)}
+            </select>
+          </label>}
           <label className="live2d-size-control" htmlFor={`live2d-avatar-size-${page}`}>
             <span className="live2d-size-label">
               <span>小人大小</span>
@@ -584,7 +734,7 @@ export default function Live2DAvatar({ page }) {
               onChange={(event) => saveSize(Number(event.target.value))}
             />
           </label>
-          <section className="live2d-expression-section" aria-label="角色表情">
+          {selectedAvatar?.type === 'live2d' && expressions.length > 0 && <section className="live2d-expression-section" aria-label="角色表情">
             <div className="live2d-expression-heading"><span>表情</span><span>保持显示</span></div>
             <div className="live2d-expression-grid">
               <button
@@ -593,7 +743,7 @@ export default function Live2DAvatar({ page }) {
                 aria-pressed={selectedExpression === ''}
                 onClick={() => chooseExpression('')}
               ><RotateCcw size={13} aria-hidden="true" /><span>初始表情</span></button>
-              {EXPRESSIONS.map((expression) => <button
+              {expressions.map((expression) => <button
                 type="button"
                 key={expression.name}
                 className={`live2d-expression-button ${selectedExpression === expression.name ? 'is-active' : ''}`}
@@ -601,7 +751,7 @@ export default function Live2DAvatar({ page }) {
                 onClick={() => chooseExpression(expression.name)}
               >{expression.label}</button>)}
             </div>
-          </section>
+          </section>}
           <div className="live2d-settings-actions">
             <button
               type="button"

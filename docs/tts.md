@@ -70,19 +70,34 @@ chunk arrives.
 - `POST /api/tts/model`: JSON `{"model":"qwen3-0.6b-q8"}` or
   `{"model":"qwen3-1.7b-q4"}`. The current GPU model stops; the selected one
   loads on the next speech request. An active stream finishes before switching.
-- `GET /api/tts/references`: WAV files in `data/atri/voice/` and the `atri` preset.
+- `GET /api/tts/references`: selected voice profiles and individual WAV references in `data/voice/<profile>/`.
+- `GET /api/tts/voices`: voice profiles and their clips, selection state, and audition URLs.
+- `GET /api/tts/reference-audio?reference=<profile>/<file>.wav`: play a reference WAV.
+- `POST /api/tts/voices/selection`: save selected clip names for a profile.
+- `POST /api/tts/voices/create`: upload a `voice/` folder as a new named profile.
 - `POST /api/tts/speech`: JSON body with `text`, optional `model` (switches to it),
   `reference` (default `atri`), `ref_text`, `language` (default `Chinese`), and `response_format`
   (`pcm` or `wav`). `pcm` streams signed 16-bit little-endian, 24 kHz mono;
   `wav` returns a complete file.
 
-The `atri` preset joins `阿里嘎多.wav`, `请多指教.wav`, and `早上好.wav` with short
-silences and leaves the source WAV files untouched. By default `ref_text` is
-empty, which uses only the speaker embedding (x-vector). To use transcript
-conditioning, pass `ありがとう。よろしくお願いします。おはようございます。`
-explicitly. The single clips have matching Japanese transcripts in the code.
-Other WAV files have no known transcript.
+The `atri` preset joins `阿里嘎多.wav`, `请多指教.wav`, and `早上好.wav` from
+`data/voice/atri/` with short silences. Older workflows use this preset by default.
+Individual clips are also listed in the `参考音色` selector on the Qwen3-TTS
+workflow node. New profiles are discovered from WAV files placed one folder
+deep, for example `data/voice/my-voice/greeting.wav`. Add an adjacent
+`greeting.txt` containing the exact spoken words to enable transcript
+conditioning. Without a transcript sidecar, the reference uses the speaker
+embedding (x-vector) only. Keep samples clean, with one speaker and no music or
+long silences; a few seconds of clear speech is sufficient.
 
-The three preset WAV files are stored under `data/atri/voice/` and included in
-the GitHub source. Add extra reference clips to that directory. Qwen3-TTS GGUF
-weights are not included.
+The 音色设置 dialog uploads a folder named `voice` into a new profile under
+`data/voice/<profile>/`, lists each WAV for audition, and lets you choose which
+clips are combined for synthesis. WAV files must be 16-bit mono or stereo PCM
+with a matching sample rate. Optional UTF-8 `.txt` files must share the WAV
+basename and contain its exact transcript. Selected clip names are stored in
+`data/voice/<profile>/selection.json` as `{"files":["greeting.wav"]}`. When
+`atri/selection.json` is absent, the original three ATRI clips remain selected
+for compatibility with existing workflows.
+
+The ATRI voice package is stored under `data/voice/atri/` and included in the
+GitHub source. Qwen3-TTS GGUF weights are not included.

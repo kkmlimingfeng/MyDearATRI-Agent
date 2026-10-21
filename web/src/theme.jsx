@@ -1,5 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Palette, RotateCcw, Upload, X } from 'lucide-react';
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { AudioLines, PawPrint, Palette, RotateCcw, Upload, X } from 'lucide-react';
+
+const AvatarManagerPage = lazy(() => import('./live2d/AvatarManager'));
+const VoiceManagerPage = lazy(() => import('./live2d/VoiceManager'));
 
 export const themePresets = {
   gray: { label: '浅绿', canvas: '#e8efea', panel: '#fbfdfb', accent: '#39836a', line: '#d8e2dc' },
@@ -63,6 +66,9 @@ async function saveBackgroundToSystem(image) {
 export function ThemePicker() {
   const [theme, setTheme] = useState(readTheme);
   const [open, setOpen] = useState(false);
+  const [avatarManagerOpen, setAvatarManagerOpen] = useState(false);
+  const [voiceManagerOpen, setVoiceManagerOpen] = useState(false);
+  const closeVoiceManager = useCallback(() => setVoiceManagerOpen(false), []);
   const [uploadError, setUploadError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [storageError, setStorageError] = useState(false);
@@ -122,7 +128,11 @@ export function ThemePicker() {
   };
 
   return <div className="theme-control">
-    <button className="icon-button" title="外观主题" aria-label="外观主题" onClick={() => setOpen((value) => !value)}><Palette size={16} /></button>
+    <div className="theme-control-buttons">
+      <button className="icon-button" title="外观主题" aria-label="外观主题" onClick={() => setOpen((value) => !value)}><Palette size={16} /></button>
+      <button className="icon-button" title="桌宠设置" aria-label="桌宠设置" onClick={() => { setOpen(false); setAvatarManagerOpen(true); }}><PawPrint size={16} /></button>
+      <button className="icon-button" title="音色设置" aria-label="音色设置" onClick={() => { setOpen(false); setVoiceManagerOpen(true); }}><AudioLines size={16} /></button>
+    </div>
     {open && <section className="theme-popover" aria-label="外观主题设置">
       <header><strong>外观主题</strong><button className="icon-button" title="关闭" onClick={() => setOpen(false)}><X size={14} /></button></header>
       <div className="theme-presets">{Object.entries(themePresets).map(([id, preset]) => <button key={id} className={theme.id === id ? 'selected' : ''} onClick={() => choosePreset(id)}><span style={{ background: preset.canvas }} /><span>{preset.label}</span></button>)}</div>
@@ -146,6 +156,8 @@ export function ThemePicker() {
       {theme.image && <button className="theme-clear-image" onClick={() => setTheme((current) => ({ ...current, image: '' }))}><X size={13} />移除背景图片</button>}
       <button className="theme-reset" onClick={() => setTheme({ ...defaults, id: 'gray' })}><RotateCcw size={13} />恢复默认</button>
     </section>}
+    {avatarManagerOpen && <Suspense fallback={null}><AvatarManagerPage onClose={() => setAvatarManagerOpen(false)} /></Suspense>}
+    {voiceManagerOpen && <Suspense fallback={null}><VoiceManagerPage onClose={closeVoiceManager} /></Suspense>}
   </div>;
 }
 

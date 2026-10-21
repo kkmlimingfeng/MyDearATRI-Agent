@@ -27,7 +27,7 @@ function getVoiceRequest(workflow) {
     endpoint: '/api/tts/speech',
     model: ttsNode.data?.config?.model || 'qwen3-0.6b-q8',
     language: ttsNode.data?.config?.language || 'Chinese',
-    reference: 'atri',
+    reference: ttsNode.data?.config?.reference || 'atri',
   };
 }
 const STATIC_GREETING_MESSAGES = new Set([

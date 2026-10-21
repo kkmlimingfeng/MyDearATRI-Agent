@@ -38,6 +38,7 @@ def tts_workflow():
             {"id": "tts", "type": "audio.tts_model", "data": {"config": {
                 "model": "qwen3-0.6b-q8",
                 "language": "Chinese",
+                "reference": "new-voice/greeting.wav",
             }}},
             {"id": "output", "type": "core.chat_output", "data": {"config": {}}},
         ],
@@ -132,6 +133,7 @@ class TTSGraphTests(unittest.TestCase):
         self.assertEqual(result["voice"]["type"], "audio")
         self.assertEqual(result["voice"]["text"], "你好")
         self.assertEqual(result["voice"]["endpoint"], "/api/tts/speech")
+        self.assertEqual(result["voice"]["reference"], "new-voice/greeting.wav")
         self.assertNotIn("data_url", result["voice"])
         self.assertIsInstance(result["previews"]["tts"], str)
         self.assertNotIn("你好", result["previews"]["tts"])

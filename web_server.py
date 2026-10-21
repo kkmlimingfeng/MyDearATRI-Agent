@@ -5,14 +5,20 @@ from __future__ import annotations
 import json
 import base64
 import binascii
+import io
 import mimetypes
 import os
 import random
 import re
+import shutil
 import threading
+import tempfile
 import uuid
+import wave
+from email.parser import BytesParser
+from email.policy import default as email_policy
 from datetime import datetime
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict
@@ -43,9 +49,14 @@ ROOT = Path(__file__).resolve().parent
 WORKFLOW_DIR = ROOT / "workflows"
 USER_PROFILE_PATH = ROOT / "modules" / "prompt" / "SystemPrompt" / "USER.md"
 THEME_BACKGROUND_PATH = ROOT / "data" / "theme" / "background.webp"
-LIVE2D_ASSET_DIR = ROOT / "data" / "atri" / "live2d"
-CLICK_AUDIO_DIR = ROOT / "data" / "atri" / "voice" / "click"
+AVATAR_DATA_DIR = ROOT / "data" / "pets"
+CLICK_AUDIO_DIR = AVATAR_DATA_DIR / "atri" / "click"
 CLICK_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav", ".webm"}
+AVATAR_IMAGE_EXTENSIONS = {".jpeg", ".jpg", ".png", ".webp"}
+MAX_AVATAR_UPLOAD_BYTES = 512 * 1024 * 1024
+MAX_AVATAR_UPLOAD_FILES = 2000
+MAX_VOICE_UPLOAD_BYTES = 512 * 1024 * 1024
+MAX_VOICE_UPLOAD_FILES = 500
 PROMPT_DIR = ROOT / "modules" / "prompt" / "SystemPrompt"
 MEMORY_DIR = ROOT / "modules" / "mem"
 CREDENTIAL_PATH = ROOT / "config" / "model_credentials.json"
@@ -117,6 +128,358 @@ def _click_audio_files(directory: Path | None = None) -> list[Path]:
             continue
         files.append(path)
     return files
+
+
+def _avatar_directory(avatar_id: str, data_dir: Path | None = None) -> Path | None:
+    if not avatar_id or avatar_id in {".", ".."} or "/" in avatar_id or "\\" in avatar_id:
+        return None
+    data_root = (data_dir or AVATAR_DATA_DIR).resolve()
+    candidate = data_root / avatar_id
+    if candidate.is_symlink() or not candidate.is_dir():
+        return None
+    avatar_root = candidate.resolve()
+    try:
+        avatar_root.relative_to(data_root)
+    except ValueError:
+        return None
+    return avatar_root
+
+
+def _create_avatar(avatar_name: str, files: list[tuple[str, bytes]], data_dir: Path | None = None) -> dict[str, str]:
+    if not isinstance(avatar_name, str):
+        raise ValueError("桌宠文件夹名称无效")
+    avatar_name = avatar_name.strip()
+    if (
+        not avatar_name
+        or len(avatar_name) > 64
+        or avatar_name in {".", "..", "theme"}
+        or avatar_name[-1:] in {".", " "}
+        or any(ord(char) < 32 or char in '<>:"/\\|?*' for char in avatar_name)
+    ):
+        raise ValueError("桌宠名称需为 1-64 个字符，不能包含路径符号或 Windows 保留字符")
+    if not files or len(files) > MAX_AVATAR_UPLOAD_FILES:
+        raise ValueError(f"上传文件数量需在 1 到 {MAX_AVATAR_UPLOAD_FILES} 个之间")
+
+    normalized: list[tuple[str, bytes]] = []
+    total_bytes = 0
+    for relative_path, content in files:
+        if not isinstance(relative_path, str) or not isinstance(content, bytes):
+            raise ValueError("上传文件格式无效")
+        path = relative_path.replace("\\", "/")
+        parts = path.split("/")
+        if path.startswith("/") or any(part in {"", ".", ".."} for part in parts) or ":" in parts[0]:
+            raise ValueError("上传文件路径无效")
+        total_bytes += len(content)
+        if total_bytes > MAX_AVATAR_UPLOAD_BYTES:
+            raise ValueError("桌宠文件总大小不能超过 512 MB")
+        normalized.append(("/".join(parts), content))
+
+    is_png = (
+        len(normalized) == 1
+        and len(normalized[0][0].split("/")) == 1
+        and Path(normalized[0][0]).suffix.lower() == ".png"
+    )
+    is_live2d = all(path.startswith("live2d/") for path, _ in normalized)
+    has_model = any(
+        len(Path(path).parts) == 2 and path.lower().endswith(".model3.json")
+        for path, _ in normalized
+    )
+    if not is_png and not (is_live2d and has_model):
+        raise ValueError("请拖入一张 PNG 图片，或名为 live2d 且包含 .model3.json 的文件夹")
+
+    data_root = (data_dir or AVATAR_DATA_DIR).resolve()
+    data_root.mkdir(parents=True, exist_ok=True)
+    destination = data_root / avatar_name
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("这个桌宠文件夹名称已经存在")
+
+    with tempfile.TemporaryDirectory(prefix=".avatar-upload-", dir=data_root) as temporary_dir:
+        staged = Path(temporary_dir) / avatar_name
+        staged.mkdir()
+        for relative_path, content in normalized:
+            output = staged.joinpath(*relative_path.split("/"))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(content)
+
+        try:
+            destination.mkdir()
+        except FileExistsError as exc:
+            raise ValueError("这个桌宠文件夹名称已经存在") from exc
+        try:
+            for source in staged.iterdir():
+                target = destination / source.name
+                if source.is_dir():
+                    shutil.move(str(source), str(target))
+                else:
+                    source.replace(target)
+        except Exception:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
+    return {"id": avatar_name, "name": avatar_name}
+
+
+def _parse_avatar_upload(content_type: str, body: bytes) -> tuple[str, list[tuple[str, bytes]]]:
+    headers = (
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1")
+        + body
+    )
+    message = BytesParser(policy=email_policy).parsebytes(headers)
+    if not message.is_multipart():
+        raise ValueError("上传请求格式无效")
+
+    avatar_name = ""
+    paths: list[str] = []
+    file_parts: list[tuple[str, bytes]] = []
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        field_name = part.get_param("name", header="content-disposition")
+        filename = part.get_filename()
+        content = part.get_payload(decode=True) or b""
+        if field_name == "name" and filename is None:
+            avatar_name = content.decode("utf-8", errors="strict")
+        elif field_name == "paths" and filename is None:
+            paths.append(content.decode("utf-8", errors="strict"))
+        elif field_name == "files" and filename:
+            file_parts.append((filename, content))
+    if paths and len(paths) != len(file_parts):
+        raise ValueError("上传文件与路径数量不匹配")
+    files = [
+        (paths[index] if paths else filename, content)
+        for index, (filename, content) in enumerate(file_parts)
+    ]
+    return avatar_name, files
+
+
+def _create_voice_profile(profile_name: str, files: list[tuple[str, bytes]], data_dir: Path | None = None) -> dict[str, str]:
+    if not isinstance(profile_name, str):
+        raise ValueError("音色文件夹名称无效")
+    profile_name = profile_name.strip()
+    if (
+        not profile_name
+        or len(profile_name) > 64
+        or profile_name in {".", ".."}
+        or profile_name[-1:] in {".", " "}
+        or any(ord(char) < 32 or char in '<>:"/\\|?*' for char in profile_name)
+    ):
+        raise ValueError("音色名称需为 1-64 个字符，不能包含路径符号或 Windows 保留字符")
+    if not files or len(files) > MAX_VOICE_UPLOAD_FILES:
+        raise ValueError(f"上传文件数量需在 1 到 {MAX_VOICE_UPLOAD_FILES} 个之间")
+
+    normalized: list[tuple[str, bytes]] = []
+    total_bytes = 0
+    wav_sample_rate = None
+    for relative_path, content in files:
+        if not isinstance(relative_path, str) or not isinstance(content, bytes):
+            raise ValueError("上传文件格式无效")
+        path = relative_path.replace("\\", "/")
+        parts = path.split("/")
+        if (
+            path.startswith("/")
+            or len(parts) != 2
+            or parts[0].casefold() != "voice"
+            or any(part in {"", ".", ".."} for part in parts)
+            or ":" in parts[0]
+        ):
+            raise ValueError("请选择根目录名为 voice 且音频直接放在其中的文件夹")
+        filename = parts[1]
+        suffix = Path(filename).suffix.lower()
+        if suffix not in {".wav", ".txt"} or not filename or filename.startswith("."):
+            raise ValueError("音色文件夹只支持 WAV 音频和同名 TXT 台词")
+        total_bytes += len(content)
+        if total_bytes > MAX_VOICE_UPLOAD_BYTES:
+            raise ValueError("音色文件总大小不能超过 512 MB")
+        if any(existing.casefold() == filename.casefold() for existing, _ in normalized):
+            raise ValueError("音色文件夹中存在重复文件名")
+        if suffix == ".wav":
+            try:
+                with wave.open(io.BytesIO(content), "rb") as audio:
+                    if audio.getsampwidth() != 2 or audio.getnchannels() not in (1, 2) or audio.getframerate() <= 0:
+                        raise ValueError(f"仅支持 16-bit 单声道或双声道 WAV: {filename}")
+                    if wav_sample_rate is None:
+                        wav_sample_rate = audio.getframerate()
+                    elif audio.getframerate() != wav_sample_rate:
+                        raise ValueError("同一音色文件夹内的 WAV 采样率必须一致")
+            except (wave.Error, EOFError) as exc:
+                raise ValueError(f"无法读取 WAV 音频: {filename}") from exc
+        else:
+            if len(content) > 8192:
+                raise ValueError(f"台词文件不能超过 8 KB: {filename}")
+            try:
+                if len(content.decode("utf-8").strip()) > 1000:
+                    raise ValueError(f"台词不能超过 1000 个字符: {filename}")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"台词文件必须是 UTF-8 文本: {filename}") from exc
+        normalized.append((filename, content))
+
+    audio_names = {Path(filename).stem.casefold() for filename, _ in normalized if Path(filename).suffix.lower() == ".wav"}
+    if not audio_names:
+        raise ValueError("voice 文件夹中至少需要一个有效 WAV 音频")
+    if any(Path(filename).suffix.lower() == ".txt" and Path(filename).stem.casefold() not in audio_names for filename, _ in normalized):
+        raise ValueError("TXT 台词文件必须与 WAV 音频同名")
+
+    data_root = (data_dir or ROOT / "data" / "voice").resolve()
+    data_root.mkdir(parents=True, exist_ok=True)
+    destination = data_root / profile_name
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("这个音色文件夹名称已经存在")
+
+    with tempfile.TemporaryDirectory(prefix=".voice-upload-", dir=data_root) as temporary_dir:
+        staged = Path(temporary_dir) / profile_name
+        staged.mkdir()
+        for filename, content in normalized:
+            (staged / filename).write_bytes(content)
+        (staged / "selection.json").write_text(
+            json.dumps({"files": [filename for filename, _ in normalized if Path(filename).suffix.lower() == ".wav"]}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            destination.mkdir()
+        except FileExistsError as exc:
+            raise ValueError("这个音色文件夹名称已经存在") from exc
+        try:
+            for source in staged.iterdir():
+                source.replace(destination / source.name)
+        except Exception:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
+    return {"id": profile_name, "name": profile_name}
+
+
+def _avatar_expressions(model_config: dict, manifest: dict) -> list[dict[str, str]]:
+    file_references = model_config.get("FileReferences", {})
+    if not isinstance(file_references, dict):
+        file_references = {}
+    references = file_references.get("Expressions", [])
+    if isinstance(references, list) and references:
+        expressions = []
+        for reference in references:
+            if not isinstance(reference, dict):
+                continue
+            name = reference.get("Name")
+            if not isinstance(name, str) or not name:
+                continue
+            numbered = re.fullmatch(r"expression(\d+)", name, re.IGNORECASE)
+            label = f"表情 {int(numbered.group(1)):02d}" if numbered else name
+            expressions.append({"name": name, "label": label})
+        return expressions
+
+    configured = manifest.get("expressions", {})
+    if not isinstance(configured, dict):
+        return []
+    return [
+        {"name": name, "label": name}
+        for name, value in configured.items()
+        if isinstance(name, str) and name and isinstance(value, dict) and isinstance(value.get("file"), str)
+    ]
+
+
+def _resolve_avatar_asset(avatar_id: str, asset_name: str, data_dir: Path | None = None) -> Path | None:
+    avatar_root = _avatar_directory(avatar_id, data_dir)
+    if avatar_root is None or not asset_name or asset_name.startswith("/") or "\\" in asset_name:
+        return None
+    asset_parts = Path(asset_name).parts
+    if not asset_parts or any(part in {".", ".."} for part in asset_parts):
+        return None
+    if len(asset_parts) == 1:
+        if Path(asset_name).suffix.lower() not in AVATAR_IMAGE_EXTENSIONS:
+            return None
+        asset_base = avatar_root
+    else:
+        if asset_parts[0] != "live2d":
+            return None
+        asset_base = (avatar_root / "live2d").resolve()
+        try:
+            asset_base.relative_to(avatar_root)
+        except ValueError:
+            return None
+
+    asset_path = (avatar_root / asset_name).resolve()
+    try:
+        asset_path.relative_to(asset_base)
+    except ValueError:
+        return None
+    return asset_path if asset_path.is_file() else None
+
+
+def _avatar_catalog(data_dir: Path | None = None) -> list[dict[str, Any]]:
+    data_root = (data_dir or AVATAR_DATA_DIR).resolve()
+    if not data_root.is_dir():
+        return []
+
+    avatars = []
+    for candidate in sorted(data_root.iterdir(), key=lambda path: (path.name != "atri", path.name.casefold())):
+        if candidate.name == "theme" or candidate.is_symlink() or not candidate.is_dir():
+            continue
+        avatar_root = _avatar_directory(candidate.name, data_root)
+        if avatar_root is None:
+            continue
+
+        live2d_dir = avatar_root / "live2d"
+        live2d_manifest = {}
+        manifest_path = live2d_dir / "manifest.json"
+        try:
+            parsed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(parsed_manifest, dict):
+                live2d_manifest = parsed_manifest
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        model_candidates = sorted(live2d_dir.glob("*.model3.json")) if live2d_dir.is_dir() else []
+        manifest_model = live2d_manifest.get("url")
+        model_path = live2d_dir / manifest_model if isinstance(manifest_model, str) else None
+        if model_path is None or not model_path.is_file() or model_path.parent.resolve() != live2d_dir.resolve():
+            model_path = model_candidates[0] if model_candidates else None
+
+        display_name = live2d_manifest.get("displayName")
+        if not isinstance(display_name, str) or not display_name.strip():
+            display_name = "ATRI" if candidate.name == "atri" else candidate.name
+
+        click_dir = avatar_root / "click"
+        has_click_audio = not click_dir.is_symlink() and bool(_click_audio_files(click_dir))
+        click_audio_url = (
+            f"/api/avatar-click-audio?character={quote(candidate.name)}"
+            if has_click_audio else None
+        )
+
+        if model_path is not None:
+            try:
+                model_config = json.loads(model_path.read_text(encoding="utf-8"))
+                if not isinstance(model_config, dict):
+                    model_config = {}
+            except (OSError, json.JSONDecodeError):
+                model_config = {}
+            asset_path = model_path.relative_to(avatar_root).as_posix()
+            avatars.append({
+                "id": candidate.name,
+                "characterId": candidate.name,
+                "name": display_name,
+                "type": "live2d",
+                "assetUrl": f"/api/avatar-assets/{quote(candidate.name)}/{quote(asset_path, safe='/')}",
+                "clickAudioUrl": click_audio_url,
+                "expressions": _avatar_expressions(model_config, live2d_manifest),
+            })
+            continue
+
+        images = sorted(
+            path for path in avatar_root.iterdir()
+            if path.is_file() and not path.is_symlink() and path.suffix.lower() in AVATAR_IMAGE_EXTENSIONS
+        )
+        if not images:
+            continue
+        for image_path in images:
+            asset_path = image_path.relative_to(avatar_root).as_posix()
+            avatar_id = candidate.name if len(images) == 1 else f"{candidate.name}::{image_path.stem}"
+            avatars.append({
+                "id": avatar_id,
+                "characterId": candidate.name,
+                "name": display_name if len(images) == 1 else f"{display_name} · {image_path.stem}",
+                "type": "image",
+                "assetUrl": f"/api/avatar-assets/{quote(candidate.name)}/{quote(asset_path, safe='/')}",
+                "clickAudioUrl": click_audio_url,
+                "expressions": [],
+            })
+    return avatars
 
 
 def _save_graph_workflow(document: Any, previous_id: Any = None, create_only: bool = False) -> dict:
@@ -1391,22 +1754,24 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_live2d_asset(self, relative_path: str) -> None:
-        relative_path = unquote(relative_path)
-        if not relative_path or "\\" in relative_path:
-            self._send(404, {"error": "Live2D 资源不存在"})
+    def _send_avatar_asset(self, relative_path: str) -> None:
+        decoded_path = unquote(relative_path)
+        if not decoded_path or decoded_path.startswith("/") or "\\" in decoded_path:
+            self._send(404, {"error": "桌宠资源不存在"})
             return
-        asset_root = LIVE2D_ASSET_DIR.resolve()
-        asset_path = (asset_root / relative_path).resolve()
+        avatar_id, separator, asset_name = decoded_path.partition("/")
+        if not separator or not asset_name:
+            self._send(404, {"error": "桌宠资源不存在"})
+            return
+        asset_path = _resolve_avatar_asset(avatar_id, asset_name)
+        if asset_path is None:
+            self._send(404, {"error": "桌宠资源不存在"})
+            return
         try:
-            asset_path.relative_to(asset_root)
-        except ValueError:
-            self._send(404, {"error": "Live2D 资源不存在"})
+            body = asset_path.read_bytes()
+        except OSError:
+            self._send(404, {"error": "桌宠资源无法读取"})
             return
-        if not asset_path.is_file():
-            self._send(404, {"error": "Live2D 资源不存在"})
-            return
-        body = asset_path.read_bytes()
         content_type = mimetypes.guess_type(asset_path.name)[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -1415,8 +1780,13 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_click_audio(self) -> None:
-        audio_files = _click_audio_files()
+    def _send_live2d_asset(self, relative_path: str) -> None:
+        self._send_avatar_asset(f"atri/live2d/{relative_path}")
+
+    def _send_click_audio(self, character_id: str = "atri") -> None:
+        avatar_root = _avatar_directory(character_id)
+        click_dir = avatar_root / "click" if avatar_root else None
+        audio_files = _click_audio_files(click_dir) if click_dir and not click_dir.is_symlink() else []
         if not audio_files:
             self._send(404, {"error": "click 音频目录中没有可播放的音频文件"})
             return
@@ -1477,8 +1847,17 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed_url = urlparse(self.path)
         query = parse_qs(parsed_url.query)
+        if parsed_url.path == "/api/avatars":
+            self._send(200, {"avatars": _avatar_catalog()})
+            return
+        if parsed_url.path == "/api/avatar-click-audio":
+            self._send_click_audio(query.get("character", ["atri"])[0])
+            return
         if parsed_url.path == "/api/live2d/click-audio":
             self._send_click_audio()
+            return
+        if parsed_url.path.startswith("/api/avatar-assets/"):
+            self._send_avatar_asset(parsed_url.path.removeprefix("/api/avatar-assets/"))
             return
         if parsed_url.path.startswith("/api/live2d/"):
             self._send_live2d_asset(parsed_url.path.removeprefix("/api/live2d/"))
@@ -1491,6 +1870,23 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if parsed_url.path == "/api/tts/references":
             self._send(200, {"references": tts.references()})
+            return
+        if parsed_url.path == "/api/tts/voices":
+            self._send(200, {"profiles": tts.voice_profiles()})
+            return
+        if parsed_url.path == "/api/tts/reference-audio":
+            try:
+                audio_path = tts.reference_path(query.get("reference", [""])[0])
+                body = audio_path.read_bytes()
+            except (ValueError, OSError):
+                self._send(404, {"error": "参考音频不存在或无法读取"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
             return
         if parsed_url.path == "/api/prompts":
             self._send(200, {"files": sorted(path.name for path in PROMPT_DIR.glob("*.md"))})
@@ -1580,17 +1976,38 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/workflows/delete", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory", "/api/tts/speech", "/api/tts/model", "/api/context/compress", "/api/sandbox/settings"}:
+        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/workflows/delete", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory", "/api/tts/speech", "/api/tts/model", "/api/tts/voices/create", "/api/tts/voices/selection", "/api/context/compress", "/api/sandbox/settings", "/api/avatars/create"}:
             self._send(404, {"error": "Not found"})
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
+            if self.path == "/api/avatars/create":
+                if size <= 0 or size > MAX_AVATAR_UPLOAD_BYTES + 8 * 1024 * 1024:
+                    raise ValueError("桌宠上传请求为空或超过 512 MB")
+                avatar_name, files = _parse_avatar_upload(self.headers.get("Content-Type", ""), self.rfile.read(size))
+                created = _create_avatar(avatar_name, files)
+                avatar = next((item for item in _avatar_catalog() if item["characterId"] == created["id"]), None)
+                if avatar is None:
+                    raise ValueError("桌宠已保存，但没有找到可识别的模型或图片")
+                self._send(201, {"avatar": avatar, "avatars": _avatar_catalog()})
+                return
+            if self.path == "/api/tts/voices/create":
+                if size <= 0 or size > MAX_VOICE_UPLOAD_BYTES + 8 * 1024 * 1024:
+                    raise ValueError("音色上传请求为空或超过 512 MB")
+                profile_name, files = _parse_avatar_upload(self.headers.get("Content-Type", ""), self.rfile.read(size))
+                profile = _create_voice_profile(profile_name, files)
+                self._send(201, {"profile": profile, "profiles": tts.voice_profiles(), "references": tts.references()})
+                return
             payload = json.loads(self.rfile.read(size)) if size else {}
             if self.path == "/api/tts/speech":
                 self._send_tts(payload)
                 return
             if self.path == "/api/tts/model":
                 self._send(200, tts.select_model(payload.get("model")))
+                return
+            if self.path == "/api/tts/voices/selection":
+                profile = tts.set_voice_selection(payload.get("profile"), payload.get("files"))
+                self._send(200, {"profile": profile, "profiles": tts.voice_profiles(), "references": tts.references()})
                 return
             if self.path == "/api/preview":
                 if not isinstance(payload.get("workflow"), dict) or not isinstance(payload["workflow"].get("nodes"), list) or not isinstance(payload["workflow"].get("edges"), list):

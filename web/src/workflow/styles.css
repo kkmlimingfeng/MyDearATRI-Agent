@@ -427,6 +427,7 @@ button { color: inherit; cursor: pointer; }
 .danger-button:hover { background: #fbefed; }
 
 .theme-control { position: relative; display: inline-flex; }
+.theme-control-buttons { display: inline-flex; align-items: center; gap: 4px; }
 .theme-popover { position: absolute; z-index: 40; top: calc(100% + 8px); right: 0; width: 250px; padding: 12px; border: 1px solid #d9e1dc; border-radius: 7px; background: var(--panel); box-shadow: 0 12px 34px #1d30251f; }
 .theme-popover header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; color: #33413b; font-size: 14px; }
 .theme-popover header .icon-button { min-height: 26px; width: 26px; }

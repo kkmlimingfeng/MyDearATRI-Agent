@@ -230,7 +230,7 @@ function PaletteItem({ definition, onAdd }) {
   );
 }
 
-function Inspector({ node, edges = [], language, modelOptions = modelChoices, ttsModels = [], promptFiles = [], reasoningAvailable = false, onOpenConfig, onChange, onDelete }) {
+function Inspector({ node, edges = [], language, modelOptions = modelChoices, ttsModels = [], ttsReferences = [], promptFiles = [], reasoningAvailable = false, onOpenConfig, onChange, onDelete }) {
   if (!node) return (
     <aside className="inspector empty-inspector">
       <div className="panel-heading"><div><span className="eyebrow">属性</span><h2>节点设置</h2></div></div>
@@ -286,6 +286,11 @@ function Inspector({ node, edges = [], language, modelOptions = modelChoices, tt
               <select value={value ?? ''} onChange={(event) => setConfig(key, event.target.value)}>
                 {value && !ttsModels.some((option) => option.id === value) && <option value={value}>当前模型不可用：{value}</option>}
                 {ttsModels.map((option) => <option key={option.id} value={option.id} disabled={!option.available}>{option.label}{option.available ? '' : ' · 未就绪'}</option>)}
+              </select>
+            ) : key === 'reference' && node.data.kind === 'audio.tts_model' ? (
+              <select value={value || 'atri'} onChange={(event) => setConfig(key, event.target.value)}>
+                {value && !ttsReferences.some((option) => option.id === value) && <option value={value}>当前参考不可用：{value}</option>}
+                {ttsReferences.map((option) => <option key={option.id} value={option.id}>{option.label}{option.duration_seconds ? ` · ${option.duration_seconds}s` : ''}</option>)}
               </select>
             ) : (key === 'model' && ['llm.gguf_loader', 'llm.openai_loader', 'llm.provider'].includes(node.data.kind)) || (key === 'mmproj' && node.data.kind === 'llm.gguf_loader') ? (
               (() => {
@@ -382,6 +387,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
   const lastEventsRef = useRef([]);
   const [modelOptions, setModelOptions] = useState(modelChoices);
   const [ttsModels, setTtsModels] = useState([]);
+  const [ttsReferences, setTtsReferences] = useState([]);
   const [promptFiles, setPromptFiles] = useState([]);
   const [configKind, setConfigKind] = useState(null);
   const [configModelId, setConfigModelId] = useState('');
@@ -457,6 +463,16 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
         label: model.id === 'qwen3-0.6b-q8' ? 'Qwen3-TTS 0.6B · Q8' : model.id === 'qwen3-1.7b-q4' ? 'Qwen3-TTS 1.7B · Q4' : model.id,
       }))))
       .catch(() => setTtsModels([]));
+  }, []);
+
+  useEffect(() => {
+    const refreshReferences = () => fetch('/api/tts/references')
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('TTS 参考音色目录不可用')))
+      .then((payload) => setTtsReferences(Array.isArray(payload.references) ? payload.references : []))
+      .catch(() => setTtsReferences([]));
+    refreshReferences();
+    window.addEventListener('atri-tts-references-updated', refreshReferences);
+    return () => window.removeEventListener('atri-tts-references-updated', refreshReferences);
   }, []);
 
   useEffect(() => {
@@ -653,7 +669,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     setNotice('所有节点已按内容自适应尺寸');
     window.setTimeout(() => setNotice(''), 2400);
   }, [setNodes]);
-  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, dragHandle: '.workflow-node-header', data: { ...node.data, interfaceLanguage, reasoningAvailable: supportsReasoningForNode(node, nodes, edges, modelOptions), connectedPorts: { inputs: edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle), outputs: edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle) }, connectionState: connectionEligibility?.get(node.id) || null, modelOptions, ttsModels, promptFiles, onOpenConfig: (kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, edges, interfaceLanguage, connectionEligibility, modelOptions, ttsModels, promptFiles, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
+  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, dragHandle: '.workflow-node-header', data: { ...node.data, interfaceLanguage, reasoningAvailable: supportsReasoningForNode(node, nodes, edges, modelOptions), connectedPorts: { inputs: edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle), outputs: edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle) }, connectionState: connectionEligibility?.get(node.id) || null, modelOptions, ttsModels, ttsReferences, promptFiles, onOpenConfig: (kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, edges, interfaceLanguage, connectionEligibility, modelOptions, ttsModels, ttsReferences, promptFiles, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
   const deleteNode = (id) => {
     setNodes((current) => current.filter((node) => node.id !== id));
     setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));
@@ -1063,7 +1079,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
           <div className="canvas-status"><div className="status-left"><span className={`status-light ${issues.length ? 'warn' : 'ok'}`} />{issues.length ? `${issues.length} 项待检查` : '接口连接正常'}<span className="status-sep">|</span><span>自动布局关闭</span></div><button onClick={runValidation}><Check size={13} />验证图结构</button></div>
         </section>
 
-        <Inspector node={selectedNode} edges={edges} language={interfaceLanguage} modelOptions={modelOptions} ttsModels={ttsModels} promptFiles={promptFiles} reasoningAvailable={supportsReasoningForNode(selectedNode, nodes, edges, modelOptions)} onOpenConfig={(kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }} onChange={updateNode} onDelete={deleteNode} />
+        <Inspector node={selectedNode} edges={edges} language={interfaceLanguage} modelOptions={modelOptions} ttsModels={ttsModels} ttsReferences={ttsReferences} promptFiles={promptFiles} reasoningAvailable={supportsReasoningForNode(selectedNode, nodes, edges, modelOptions)} onOpenConfig={(kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }} onChange={updateNode} onDelete={deleteNode} />
       </main>
 
       <footer className="app-footer"><span>ATRI · LOCAL WORKSPACE</span><span className="execution-note"><span className="note-dot" />试运行调用当前 Agent · 应用后在对话页使用</span></footer>
