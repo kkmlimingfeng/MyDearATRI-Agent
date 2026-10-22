@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shlex
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -118,7 +120,10 @@ def _add_path_rule(
         os.close(path_fd)
 
 
-def _runtime_paths() -> list[Path]:
+def _runtime_paths(command: str = "") -> list[Path]:
+    path_directories = {
+        Path(part) for part in os.environ.get("PATH", "").split(os.pathsep) if part
+    }
     paths = {
         Path("/bin"), Path("/sbin"), Path("/usr/bin"), Path("/usr/sbin"),
         Path("/usr/local/bin"), Path("/usr/local/sbin"), Path("/lib"),
@@ -126,11 +131,32 @@ def _runtime_paths() -> list[Path]:
         Path("/usr/local/lib"), Path("/dev"), Path("/etc/ld.so.cache"),
         Path(sys.prefix), Path(sys.base_prefix), Path(sys.executable).resolve().parent,
     }
-    paths.update(Path(part) for part in os.environ.get("PATH", "").split(os.pathsep) if part)
+    paths.update(path_directories)
+    executable_names = {"node", "npm", "npx", "uv", "uvx"}
+    try:
+        for token in shlex.split(command):
+            if token.startswith("-") or token in {"&&", "||", ";", "|"}:
+                continue
+            if "/" not in token and "\\" not in token:
+                executable_names.add(token)
+            elif Path(token).is_file():
+                paths.add(Path(token).resolve().parent)
+    except ValueError:
+        pass
+    for name in executable_names:
+        executable = shutil.which(name)
+        if not executable:
+            continue
+        try:
+            target = Path(executable).resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if target.is_file():
+            paths.add(target.parent)
     return sorted(paths, key=lambda path: str(path))
 
 
-def apply_filesystem_policy(settings: dict[str, Any]) -> None:
+def apply_filesystem_policy(settings: dict[str, Any], command: str = "") -> None:
     """Restrict the current process and children to the selected filesystem policy."""
     abi = landlock_abi()
     if abi < 3:
@@ -152,7 +178,7 @@ def apply_filesystem_policy(settings: dict[str, Any]) -> None:
         _add_path_rule(libc, ruleset_fd, settings["workspace"], workspace_access, required=True)
 
         runtime_access = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
-        for path in _runtime_paths():
+        for path in _runtime_paths(command):
             _add_path_rule(libc, ruleset_fd, path, runtime_access)
 
         if libc.prctl(38, 1, 0, 0, 0) < 0:

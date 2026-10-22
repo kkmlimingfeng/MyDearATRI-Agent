@@ -44,6 +44,16 @@ from modules.sandbox_config import (
     sandbox_runtime_info,
     save_sandbox_settings,
 )
+from modules.mcp.configuration import (
+    CONFIG_PATH as MCP_CONFIG_PATH,
+    load_servers as load_mcp_servers,
+    merge_imported_servers,
+    public_server_list,
+    remove_server as remove_mcp_server,
+    save_servers as save_mcp_servers,
+    update_server as update_mcp_server,
+)
+from modules.skills.skill_installer import install_skill_archive
 from modules.tts.qwen_gguf import TTSRuntimeError, tts
 
 
@@ -664,6 +674,72 @@ def _capability_catalog(kind: str) -> dict:
     return {"items": items, "text": text}
 
 
+def _refresh_runtime_skills() -> None:
+    with _runtime_manager.lock:
+        agent = _runtime_manager.state.agent
+        module = agent.get_module("skills") if agent is not None else None
+        if module is not None:
+            module.register_skills_from_directory(str(ROOT / "modules" / "skills"))
+            module._load_enabled_config()
+
+
+def _refresh_runtime_mcp() -> list[dict]:
+    with _runtime_manager.lock:
+        agent = _runtime_manager.state.agent
+        module = agent.get_module("mcp") if agent is not None else None
+        if module is not None and agent._enabled.get("mcp", False):
+            return module.reload()
+    return public_server_list(load_mcp_servers(MCP_CONFIG_PATH))
+
+
+def _mcp_catalog() -> dict:
+    servers = load_mcp_servers(MCP_CONFIG_PATH)
+    with _runtime_manager.lock:
+        agent = _runtime_manager.state.agent
+        module = agent.get_module("mcp") if agent is not None else None
+        if module is not None:
+            statuses = module.server_status()
+            by_id = {item["id"]: item for item in statuses}
+            return {"servers": public_server_list(servers, by_id), "config_path": str(MCP_CONFIG_PATH)}
+    return {"servers": public_server_list(servers), "config_path": str(MCP_CONFIG_PATH)}
+
+
+def _handle_mcp_configuration(payload: dict) -> dict:
+    action = payload.get("action")
+    if action == "import":
+        content = payload.get("content")
+        merged = merge_imported_servers(content, MCP_CONFIG_PATH)
+        imported_count = len(merged)
+    elif action == "save":
+        name = payload.get("name")
+        config = payload.get("server")
+        if not isinstance(config, dict):
+            raise ValueError("MCP 服务配置必须是对象")
+        update_mcp_server(name, config, MCP_CONFIG_PATH)
+        imported_count = 1
+    elif action == "toggle":
+        name = payload.get("name")
+        enabled = payload.get("enabled")
+        if not isinstance(name, str) or not isinstance(enabled, bool):
+            raise ValueError("MCP 服务开关参数无效")
+        servers = load_mcp_servers(MCP_CONFIG_PATH)
+        if name not in servers:
+            raise ValueError(f"MCP 服务不存在: {name}")
+        servers[name]["enabled"] = enabled
+        save_mcp_servers(servers, MCP_CONFIG_PATH)
+        imported_count = 1
+    elif action == "delete":
+        remove_mcp_server(payload.get("name"), MCP_CONFIG_PATH)
+        imported_count = 0
+    else:
+        raise ValueError("未知的 MCP 配置操作")
+    return {"updated": imported_count, **_mcp_catalog_after_refresh()}
+
+
+def _mcp_catalog_after_refresh() -> dict:
+    return {"servers": _refresh_runtime_mcp(), "config_path": str(MCP_CONFIG_PATH)}
+
+
 def _set_capability_items(kind: str, updates: Any) -> dict:
     if not isinstance(updates, dict) or not updates or any(not isinstance(v, bool) for v in updates.values()):
         raise ValueError("请提供要修改的开关")
@@ -713,8 +789,10 @@ def _graph_previews(graph: dict, user_input: str = "") -> dict:
             value = (MEMORY_DIR / "memory.md").read_text(encoding="utf-8") if (MEMORY_DIR / "memory.md").is_file() else ""
         elif kind in {"skills.provider", "tools.provider"}:
             value = _capability_catalog(kind.split(".")[0])["text"]
+        elif kind == "mcp.provider":
+            value = "\n".join(item["name"] for item in _mcp_catalog()["servers"])
         elif kind == "context.merge":
-            parts = [resolve(incoming[(node_id, port)]) for port in ("tools", "skills", "memory", "tool_results", "context_a", "context_b") if (node_id, port) in incoming]
+            parts = [resolve(incoming[(node_id, port)]) for port in ("tools", "skills", "mcp", "memory", "tool_results", "context_a", "context_b") if (node_id, port) in incoming]
             value = "\n\n".join(filter(None, parts))
         else:
             value = ""
@@ -723,7 +801,7 @@ def _graph_previews(graph: dict, user_input: str = "") -> dict:
         return value
 
     for node in graph["nodes"]:
-        if node["type"] in {"prompt.markdown_file", "prompt.text", "prompt.join", "core.chat_input", "memory.provider", "skills.provider", "tools.provider", "context.merge"}:
+        if node["type"] in {"prompt.markdown_file", "prompt.text", "prompt.join", "core.chat_input", "memory.provider", "skills.provider", "tools.provider", "mcp.provider", "context.merge"}:
             resolve(node["id"])
     for edge in graph["edges"]:
         if edge.get("targetHandle") in {"prompt", "context", "message"}:
@@ -918,6 +996,7 @@ def _graph_bindings(graph: dict) -> tuple[dict, dict]:
         # provider is reachable from the runtime node in the graph.
         "tools_id": None,
         "skills_id": None,
+        "mcp_id": None,
         "memory_id": None,
         "reviewer_id": "reviewer",
     }
@@ -945,7 +1024,7 @@ def _graph_bindings(graph: dict) -> tuple[dict, dict]:
             return
         seen.add(source["id"])
         capability = source["type"].split(".", 1)[0]
-        if capability in {"memory", "skills", "tools"}:
+        if capability in {"memory", "skills", "tools", "mcp"}:
             register_provider(capability, source)
         for upstream in incoming.get(source["id"], []):
             if (upstream.get("data") or {}).get("feedback"):
@@ -967,6 +1046,7 @@ def _graph_bindings(graph: dict) -> tuple[dict, dict]:
                 provider_handle = {
                     "tools": "tools", "tool_executor": "tools",
                     "skills": "skills", "skill_executor": "skills",
+                    "mcp": "mcp",
                 }.get(edge.get("targetHandle"))
                 if provider_handle:
                     register_provider(provider_handle, node_map[edge["source"]])
@@ -1054,7 +1134,7 @@ def _make_agent(graph: dict):
     overrides = {}
     referenced_ids = {
         bindings[key]
-        for key in ("prompt_id", "llm_id", "memory_id", "skills_id", "tools_id")
+        for key in ("prompt_id", "llm_id", "memory_id", "skills_id", "tools_id", "mcp_id")
         if key in bindings
     }
     for item in specs:
@@ -1069,7 +1149,9 @@ def _make_agent(graph: dict):
     # initialization until the first model request in the workflow.
     agent.start(defer_module_ids={bindings["llm_id"]})
     agent.display_mode = "normal"
-    agent.tool_approval_callback = lambda call, metadata: False
+    agent.tool_approval_callback = lambda call, metadata: (
+        call.name == "exec_sandbox_cmd" and metadata.get("risk") == "execute"
+    )
     return agent, bindings
 
 
@@ -1910,6 +1992,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             except (ValueError, OSError) as exc:
                 self._send(400, {"error": str(exc)})
             return
+        if parsed_url.path == "/api/mcp":
+            try:
+                self._send(200, _mcp_catalog())
+            except (ValueError, OSError) as exc:
+                self._send(400, {"error": str(exc)})
+            return
         if parsed_url.path == "/api/sandbox/settings":
             try:
                 self._send(200, {"settings": load_sandbox_settings(), "runtime": sandbox_runtime_info()})
@@ -1983,7 +2071,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/workflows/delete", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory", "/api/memory/conversations", "/api/tts/speech", "/api/tts/model", "/api/tts/voices/create", "/api/tts/voices/selection", "/api/context/compress", "/api/sandbox/settings", "/api/avatars/create"}:
+        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/workflows/delete", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/skills/import", "/api/tools", "/api/mcp", "/api/memory", "/api/memory/conversations", "/api/tts/speech", "/api/tts/model", "/api/tts/voices/create", "/api/tts/voices/selection", "/api/context/compress", "/api/sandbox/settings", "/api/avatars/create"}:
             self._send(404, {"error": "Not found"})
             return
         try:
@@ -2000,6 +2088,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                 if avatar is None:
                     raise ValueError("桌宠已保存，但没有找到可识别的模型或图片")
                 self._send(201, {"avatar": avatar, "avatars": _avatar_catalog()})
+                return
+            if self.path == "/api/skills/import":
+                from modules.skills.skill_installer import MAX_ARCHIVE_BYTES
+                if size <= 0 or size > MAX_ARCHIVE_BYTES:
+                    raise ValueError("技能 ZIP 为空或超过 16 MB")
+                installed = install_skill_archive(self.rfile.read(size), ROOT / "modules" / "skills")
+                _refresh_runtime_skills()
+                self._send(201, {"installed": installed, **_capability_catalog("skills")})
+                return
+            if self.path == "/api/mcp":
+                payload = json.loads(self.rfile.read(size)) if size else {}
+                self._send(200, _handle_mcp_configuration(payload))
                 return
             if self.path == "/api/tts/voices/create":
                 if size <= 0 or size > MAX_VOICE_UPLOAD_BYTES + 8 * 1024 * 1024:

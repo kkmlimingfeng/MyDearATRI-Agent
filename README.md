@@ -22,6 +22,7 @@
 - 在工作流页面编辑、保存和同时打开多个 JSON 工作流；同一时间只运行其中一个。
 - 支持 OpenAI 兼容 API 模型，以及通过 `llama-cpp-python` 加载本地 GGUF 模型。
 - 提示词、记忆、技能、工具和模型按模块组织，可通过配置更换实现。
+- 支持导入标准 Agent Skills ZIP，以及 Claude JSON / Codex TOML 格式的 MCP 服务配置。
 - 可从扩展目录发现新节点；界面支持主题配色和自定义背景。
 - 试运行时显示实际执行的节点、输出预览与完成耗时；循环节点可以多次执行同一个模型节点。
 - 工作流画布支持双击添加节点、调整节点尺寸、切换连线样式，以及按内容自适应节点大小。
@@ -43,6 +44,12 @@ cd ..
 ```
 
 在国内安装 Python 依赖时，可以给 `pip install` 加上 `-i https://pypi.tuna.tsinghua.edu.cn/simple`。
+
+本地 stdio MCP 服务和 `exec_sandbox_cmd` 使用项目代码沙箱。在 Linux/WSL 中安装 Firejail，并在工具配置页检查 Landlock 支持：
+
+```bash
+sudo apt install firejail -y
+```
 
 `requirements.txt` 包含 `llama-cpp-python`。如需 GPU 加速，请先根据系统、Python 版本和 CUDA 环境安装匹配的预编译 wheel，再安装其余依赖。可参考 [llama-cpp-python CUDA 构建发布页](https://github.com/JamePeng/llama-cpp-python/releases)。CPU 或 API 模型不需要 CUDA 构建。
 
@@ -123,7 +130,17 @@ python myagent.py --select-model --mode transparent
 
 在画布空白处双击可搜索并添加节点。编辑后点击顶部的“保存”将 JSON 写入 `workflows/`；“试运行”用于检查数据在节点间的传递，确认后可点击“启动”让对话页使用当前工作流。节点的输出预览和透明模式的执行轨迹可帮助查看每一步的结果。
 
-新增 Python 节点的接口与示例见 [节点扩展说明](agent/nodes/extensions/README.md)，运行时、模块和工具调用的设计见 [架构说明](docs/architecture.md)。节点返回的输出端口决定数据走向；分支可以只输出一侧，带反馈标记的连线会在下一轮送回数据。当前能力分发支持工具调用和读取技能详情；MCP 需要接入相应的扩展能力节点。
+新增 Python 节点的接口与示例见 [节点扩展说明](agent/nodes/extensions/README.md)，运行时、模块和工具调用的设计见 [架构说明](docs/architecture.md)。节点返回的输出端口决定数据走向；分支可以只输出一侧，带反馈标记的连线会在下一轮送回数据。
+
+### Skills 与 MCP
+
+在工作流的“技能目录”节点中打开详细配置，可以导入包含 `SKILL.md` 的 ZIP 包。技能安装到 `modules/skills/<技能名>/`，包内 `references/` 等文本资源可由模型按需读取。导入器会拒绝路径穿越、符号链接和超限压缩包。
+
+在“MCP 服务”节点的详细配置中，可粘贴或选择 Claude `mcpServers` JSON、Codex `mcp_servers` TOML，也可手动添加本地 stdio 或远程 Streamable HTTP 服务。默认工作流已接入 MCP 节点；添加或修改服务后会重载 MCP 进程。stdio 命令按工具页配置的沙箱工作空间和权限启动，npm、uv、pip 缓存默认写入工作空间；MCP 配置保存在被 Git 忽略的 `config/mcp_servers.json`，环境变量和请求头密钥不会通过管理 API 返回。
+
+安装第三方能力时，将 Skill 包原样放入 `modules/skills/<技能名>/`；项目会保留 Skill 的 `allowed-tools` 声明，并兼容标准 `Bash(command)` 调用，将命令映射到 `exec_sandbox_cmd`，继续遵守项目沙箱权限和工具确认。CLI 依赖使用固定版本安装到工作空间缓存，例如 npm 包可运行 `npm install --global --prefix .cache/tools <包>@<版本>`；沙箱会把 `.cache/tools/bin` 加入 PATH。npm、uv、pip 缓存放在工作空间的 `.cache/`，不会加入 Git。Skill 是模型使用工具的说明，不会自行创建可调用工具。真正实现 MCP 协议的服务，则通过“MCP 服务”节点导入配置并启用，stdio 进程遵守项目沙箱权限。
+
+浏览器操作示例：项目安装了 [bb-browser](https://github.com/epiral/bb-browser) 仓库中的 Skill 原文件，其 `Bash(bb-browser:*)` 调用由项目兼容层转入沙箱。CLI 固定安装 `bb-browser@0.14.2`，安装位置为工作空间 `.cache/tools/`，沙箱 PATH 会自动包含其命令目录。该版本提供 CLI，不含 MCP server；仓库 Skill 中的 `--mcp` 示例已过期，因此当前按 CLI Skill 使用。首次实际操作需要可用的 Chrome/CDP 浏览器连接；项目不会自动启动浏览器。
 
 ## 素材来源
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import modules.sandbox_landlock as sandbox_landlock
 import modules.sandbox_config as sandbox_config
 import modules.tools.system_tools.exec_sandbox_cmd as sandbox_tool
 
@@ -98,6 +99,22 @@ class SandboxConfigTests(unittest.TestCase):
                 result = sandbox_config.browse_sandbox_directories(str(external))
             self.assertEqual(result["path"], str(external))
             self.assertEqual([item["name"] for item in result["directories"]], ["child"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Landlock runtime paths require Linux")
+    def test_runtime_paths_include_symlink_targets_from_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            linked_bin = root / "linked-bin"
+            actual_bin = root / "node-runtime" / "bin"
+            linked_bin.mkdir()
+            actual_bin.mkdir(parents=True)
+            target = actual_bin / "node"
+            target.write_text("runtime", encoding="utf-8")
+            target.chmod(0o755)
+            (linked_bin / "node").symlink_to(target)
+
+            with patch.dict(os.environ, {"PATH": str(linked_bin)}):
+                self.assertIn(actual_bin, sandbox_landlock._runtime_paths("node --version"))
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "WSL drive paths are Linux-only")
     def test_windows_drive_paths_map_to_wsl_mounts(self):

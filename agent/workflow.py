@@ -52,7 +52,7 @@ def load_workflow(path: str) -> Workflow:
     if not isinstance(bindings, dict):
         raise WorkflowConfigError("工作流必须声明 bindings 对象")
     allowed_bindings = {
-        "prompt_name", "prompt_id", "llm_id", "tools_id", "skills_id",
+        "prompt_name", "prompt_id", "llm_id", "tools_id", "skills_id", "mcp_id",
         "memory_id", "reviewer_id",
     }
     unknown = set(bindings) - allowed_bindings

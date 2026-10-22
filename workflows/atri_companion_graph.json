@@ -115,6 +115,22 @@
       "type": "tools.provider"
     },
     {
+      "id": "mcp",
+      "position": {
+        "x": 220.82167288369703,
+        "y": 1262.9238846887054
+      },
+      "data": {
+        "label": "MCP 服务",
+        "category": "tools",
+        "module_id": "mcp",
+        "implementation": "modules.mcp.server_manager.MCPServerModule",
+        "config": {},
+        "sizeMode": "auto"
+      },
+      "type": "mcp.provider"
+    },
+    {
       "id": "context",
       "position": {
         "x": 490.47967938481565,
@@ -434,6 +450,15 @@
       }
     },
     {
+      "id": "e_mcp_context",
+      "source": "mcp",
+      "target": "context",
+      "sourceHandle": "mcp",
+      "targetHandle": "mcp",
+      "style": { "stroke": "#6b90ce", "strokeWidth": 2 },
+      "markerEnd": { "type": "arrowclosed", "color": "#6b90ce", "width": 15, "height": 15 }
+    },
+    {
       "id": "e_usage_chat",
       "source": "capability_usage",
       "target": "llm_chat",
@@ -570,6 +595,15 @@
       }
     },
     {
+      "id": "e_mcp_dispatch",
+      "source": "mcp",
+      "target": "tool_dispatch",
+      "sourceHandle": "mcp",
+      "targetHandle": "mcp",
+      "style": { "stroke": "#6b90ce", "strokeWidth": 2 },
+      "markerEnd": { "type": "arrowclosed", "color": "#6b90ce", "width": 15, "height": 15 }
+    },
+    {
       "id": "e_tool_results_loop",
       "source": "tool_dispatch",
       "target": "react_loop",
@@ -676,6 +710,15 @@
         "width": 15,
         "height": 15
       }
+    },
+    {
+      "id": "e_mcp_usage",
+      "source": "mcp",
+      "target": "capability_usage",
+      "sourceHandle": "schemas",
+      "targetHandle": "schemas_c",
+      "style": { "stroke": "#c5a244", "strokeWidth": 2 },
+      "markerEnd": { "type": "arrowclosed", "color": "#c5a244", "width": 15, "height": 15 }
     },
     {
       "id": "e_user_prompt_join",

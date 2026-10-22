@@ -40,6 +40,14 @@
       ]
     },
     {
+      "id": "mcp",
+      "class": "modules.mcp.server_manager.MCPServerModule",
+      "enabled": false,
+      "kwargs": {
+        "config_path": {"$path": "config/mcp_servers.json"}
+      }
+    },
+    {
       "id": "memory",
       "class": "modules.mem.memory_module.MemoryModule"
     },

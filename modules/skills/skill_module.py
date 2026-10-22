@@ -17,6 +17,7 @@ class SkillModule(BaseSkill):
             - 'format_skill_overview': 返回启用的技能目录简介（用于系统提示词）
             - 'format_skill_descriptions': 返回格式化的完整技能说明
             - 'get_skill_detail': 返回指定技能的完整 SKILL.md 内容
+            - 'get_skill_resource': 读取指定技能目录中的 UTF-8 参考文件
             - 'list_skills': 列出所有技能及其启用状态
             - 'set_skill_enabled': 设置指定技能的启用状态
         """
@@ -32,6 +33,8 @@ class SkillModule(BaseSkill):
             self._handle_format_descriptions(message)
         elif action == 'get_skill_detail':
             self._handle_get_detail(message)
+        elif action == 'get_skill_resource':
+            self._handle_get_resource(message)
         elif action == 'list_skills':
             self._handle_list_skills(message)
         elif action == 'set_skill_enabled':
@@ -74,6 +77,22 @@ class SkillModule(BaseSkill):
             payload = {'error': f'技能 {skill_name} 已被禁用'}
         else:
             payload = {'detail': self.get_skill_detail(skill_name)}
+        self.send(
+            target=message.source,
+            payload=payload,
+            msg_type=MessageType.RESPONSE,
+            correlation_id=message.correlation_id
+        )
+
+    def _handle_get_resource(self, message: Message) -> None:
+        skill_name = message.payload.get('skill_name', '')
+        try:
+            if not self.is_skill_enabled(skill_name):
+                raise ValueError(f"技能 {skill_name} 已被禁用")
+            content = self.get_skill_resource(skill_name, message.payload.get('path', ''))
+            payload = {'content': content}
+        except (OSError, ValueError) as exc:
+            payload = {'error': str(exc)}
         self.send(
             target=message.source,
             payload=payload,

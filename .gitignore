@@ -24,6 +24,7 @@ config/sandbox.json*
 config/skills.json
 config/tools.json
 config/model_credentials.json
+config/mcp_servers.json
 config/api_models.json
 data/theme/
 data/memory/
@@ -32,3 +33,6 @@ data/memory/
 web/node_modules/
 web/dist/
 web/public/vendor/live2dcubismcore.min.js
+
+# Sandboxed package-manager caches
+.cache/

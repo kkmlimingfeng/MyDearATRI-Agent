@@ -22,7 +22,7 @@ def main() -> int:
         from modules.sandbox_landlock import apply_filesystem_policy
 
         if settings.get("permission") in {"custom", "workspace"}:
-            apply_filesystem_policy(settings)
+            apply_filesystem_policy(settings, command=command)
         os.execvpe("bash", ["bash", "-c", command], os.environ.copy())
     except Exception as exc:
         print(f"沙箱文件权限未能生效，命令已拒绝执行：{exc}", file=sys.stderr)

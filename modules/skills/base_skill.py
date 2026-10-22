@@ -13,6 +13,8 @@ description: "推荐旅游地点，用于查询天气和景点"
 """
 import os
 import json
+import re
+from pathlib import Path, PurePosixPath
 from abc import abstractmethod
 from typing import Dict, List, Any, Optional
 from modules.base import BaseModule
@@ -24,7 +26,7 @@ def _parse_frontmatter(content: str) -> tuple:
     解析 SKILL.md 顶部的 YAML-like frontmatter。
 
     返回 (frontmatter_dict, body)，如果没有 frontmatter 则返回 ({}, content)。
-    仅支持简单的 key: value 格式，嵌套结构会被跳过。
+    支持常用 key/value 和 YAML 块文本字段；嵌套结构会被跳过。
     """
     if not content.strip().startswith('---'):
         return {}, content
@@ -37,15 +39,27 @@ def _parse_frontmatter(content: str) -> tuple:
     body = parts[2].strip()
     data: Dict[str, str] = {}
 
-    for line in frontmatter_text.splitlines():
+    lines = frontmatter_text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
         stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
+        match = re.match(r"^([A-Za-z0-9_-]+):(?:[ \t]*(.*))?$", line)
+        index += 1
+        if not stripped or stripped.startswith('#') or not match:
             continue
-        if ':' in stripped and not stripped.startswith('-'):
-            key, value = stripped.split(':', 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            data[key] = value
+        key, value = match.group(1), (match.group(2) or "").strip()
+        if value in {"|", "|-", "|+", ">", ">-", ">+"}:
+            block = []
+            while index < len(lines):
+                candidate = lines[index]
+                if candidate.strip() and not candidate[:1].isspace():
+                    break
+                block.append(candidate.strip())
+                index += 1
+            data[key] = " ".join(part for part in block if part).strip() if value.startswith(">") else "\n".join(block).strip()
+            continue
+        data[key] = value.strip('"').strip("'")
 
     return data, body
 
@@ -62,7 +76,7 @@ class BaseSkill(BaseModule):
         # 每个技能的启用状态，默认全部启用
         self._enabled_skills: Dict[str, bool] = {}
 
-    def register_skill(self, folder_name: str, content: str) -> None:
+    def register_skill(self, folder_name: str, content: str, root: str = "") -> None:
         """
         注册一个技能。
 
@@ -74,6 +88,7 @@ class BaseSkill(BaseModule):
             "frontmatter": frontmatter,
             "body": body,
             "full_content": content,
+            "root": root,
         }
         # 新注册的技能默认启用
         if folder_name not in self._enabled_skills:
@@ -89,6 +104,27 @@ class BaseSkill(BaseModule):
         if skill is None:
             return ""
         return skill.get("full_content", "")
+
+    def get_skill_resource(self, name: str, relative_path: str) -> str:
+        """Read a bounded UTF-8 resource from an installed skill directory."""
+        skill = self._skills.get(name)
+        if skill is None or not skill.get("root"):
+            raise ValueError("技能资源不存在")
+        if not isinstance(relative_path, str) or not relative_path.strip() or len(relative_path) > 512:
+            raise ValueError("技能资源路径无效")
+        relative = PurePosixPath(relative_path.replace("\\", "/"))
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            raise ValueError("技能资源路径无效")
+        root = Path(skill["root"]).resolve(strict=True)
+        target = root.joinpath(*relative.parts).resolve(strict=True)
+        if not target.is_file() or root not in target.parents:
+            raise ValueError("技能资源不存在")
+        if target.stat().st_size > 200_000:
+            raise ValueError("单个技能资源最多读取 200 KB")
+        try:
+            return target.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("技能资源不是 UTF-8 文本") from exc
 
     def is_skill_enabled(self, name: str) -> bool:
         """查询指定技能是否启用，未配置则默认启用"""
@@ -167,7 +203,7 @@ class BaseSkill(BaseModule):
                 continue
 
             with open(skill_md, 'r', encoding='utf-8') as f:
-                self.register_skill(item, f.read())
+                self.register_skill(item, f.read(), skill_path)
 
     def _get_skill_name(self, folder_name: str) -> str:
         """获取技能的显示名称，优先使用 frontmatter 中的 name"""

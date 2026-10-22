@@ -275,6 +275,31 @@ button { color: inherit; cursor: pointer; }
 .capability-list strong { font-size: 13px; }
 .capability-list p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
 .capability-list input { width: 18px; height: 18px; flex: none; }
+.skill-import-row, .mcp-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.skill-import-row { padding: 0 20px 12px; color: var(--muted); font-size: 11px; }
+.skill-import-row label, .mcp-actions label { position: relative; }
+.mcp-settings { display: grid; min-height: 0; gap: 12px; overflow: auto; padding: 0 20px 18px; }
+.mcp-import, .mcp-add-form, .mcp-server-list article { display: grid; gap: 9px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.mcp-import > div:first-child, .mcp-add-form > strong { display: grid; gap: 4px; color: var(--text); font-size: 13px; }
+.mcp-import small, .mcp-actions > span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.mcp-import textarea, .mcp-add-form textarea { width: 100%; min-height: 94px; resize: vertical; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); padding: 9px; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.mcp-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.mcp-add-form label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.mcp-add-form input, .mcp-add-form select { width: 100%; min-width: 0; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--text); padding: 8px; font-size: 12px; }
+.mcp-actions { justify-content: flex-end; }
+.mcp-actions > span { margin-right: auto; }
+.mcp-server-list { display: grid; gap: 8px; }
+.mcp-server-heading, .mcp-server-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mcp-server-heading > div { min-width: 0; display: grid; gap: 4px; }
+.mcp-server-heading strong { color: var(--text); font-size: 13px; }
+.mcp-server-heading small { overflow-wrap: anywhere; color: var(--muted); font-size: 11px; }
+.mcp-status { flex: none; color: var(--muted); font-size: 11px; }
+.mcp-status-ready { color: var(--success, #4c9c78); }
+.mcp-status-error, .mcp-server-error { color: var(--danger, #bd5a57); }
+.mcp-server-error, .mcp-empty { margin: 0; font-size: 11px; overflow-wrap: anywhere; }
+.mcp-server-actions label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.mcp-server-actions input { width: 16px; height: 16px; }
+.mcp-empty { padding: 10px 2px; color: var(--muted); }
 .sandbox-settings { display: grid; gap: 10px; margin: 0 20px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 .sandbox-settings-heading, .sandbox-settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .sandbox-settings-heading > div { min-width: 0; display: grid; gap: 3px; }
@@ -359,7 +384,7 @@ button { color: inherit; cursor: pointer; }
 .trace-step-toggle strong { flex: 1; font-weight: 600; }
 .trace-step-toggle small { color: var(--muted); font-size: 11px; }
 .trace-step pre { max-height: 240px; overflow: auto; margin: 0 0 8px 28px; padding: 8px; background: var(--surface-muted); color: var(--text); border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 var(--mono); }
-@media (max-width: 640px) { .memory-layout { grid-template-columns: 110px 1fr; } .capability-toolbar { flex-wrap: wrap; } .capability-toolbar label { flex-basis: 100%; } .sandbox-permission-options { grid-template-columns: 1fr; } .sandbox-settings-actions { align-items: flex-end; } .api-model-layout { grid-template-columns: minmax(105px, 28%) minmax(0, 1fr); } .api-model-layout form { padding: 12px; } }
+@media (max-width: 640px) { .memory-layout { grid-template-columns: 110px 1fr; } .capability-toolbar { flex-wrap: wrap; } .capability-toolbar label { flex-basis: 100%; } .sandbox-permission-options { grid-template-columns: 1fr; } .sandbox-settings-actions { align-items: flex-end; } .mcp-form-grid { grid-template-columns: 1fr; } .mcp-server-heading { align-items: flex-start; flex-direction: column; gap: 6px; } .skill-import-row { align-items: flex-start; flex-direction: column; } .api-model-layout { grid-template-columns: minmax(105px, 28%) minmax(0, 1fr); } .api-model-layout form { padding: 12px; } }
 .workflow-node-footer { height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 9px; border-top: 1px solid #edf0ee; color: #839189; font: 9px var(--mono); }
 .connected-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--node-color); }
 .node-number { position: absolute; top: -7px; right: -7px; width: 16px; height: 16px; display: grid; place-items: center; border: 2px solid #f2f5f3; border-radius: 50%; background: #83968b; color: white; font: 6px var(--mono); }

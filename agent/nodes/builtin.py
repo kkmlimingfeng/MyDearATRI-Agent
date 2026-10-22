@@ -213,8 +213,38 @@ class SkillsProviderNode(ModuleProviderNode):
             "name": f"skill__{item['folder_name']}",
             "description": f"读取技能 {item['name']} 的完整说明。{item.get('description', '')}",
             "parameters": {"type": "object", "properties": {}},
-        }} for item in catalog.payload.get("descriptions", []) if re.fullmatch(r"[A-Za-z0-9_]+", item.get("folder_name", ""))]
+        }} for item in catalog.payload.get("descriptions", []) if re.fullmatch(r"[A-Za-z0-9_-]+", item.get("folder_name", ""))]
+        schemas.append({"type": "function", "function": {
+            "name": "skill__read_resource",
+            "description": "读取技能包内 SKILL.md 引用的文本资源，例如 references/ 下的说明。",
+            "parameters": {"type": "object", "properties": {
+                "skill_name": {"type": "string", "description": "技能名称"},
+                "path": {"type": "string", "description": "相对于技能目录的文件路径"},
+            }, "required": ["skill_name", "path"]},
+        }})
         return NodeResult(outputs={"skills": {"module_id": module_id, "text": reply.payload.get("text", ""), "schemas": schemas}, "schemas": schemas, "executor": {"module_id": module_id}})
+
+
+class MCPProviderNode(ModuleProviderNode):
+    node_type = "mcp.provider"
+    title = "MCP 服务"
+    category = "tools"
+    module_kind = "mcp"
+    module_id = "mcp"
+    defaults = {}
+    preview = "提供已启用 MCP 服务的工具定义和调用执行器。"
+    output_name = "mcp"
+    outputs = (
+        PortDefinition("mcp", "mcp"),
+        PortDefinition("schemas", "tool_schemas", required=False),
+    )
+
+    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
+        agent = context.services["agent"]
+        module_id = context.services.get("node_module_id") or self.module_id
+        reply = agent.bus.request(source="agent", target=module_id, payload={"action": "get_capabilities"})
+        bundle = reply.payload.get("capabilities", {})
+        return NodeResult(outputs={"mcp": bundle, "schemas": bundle.get("schemas", [])})
 
 
 class ToolsProviderNode(ModuleProviderNode):
@@ -511,8 +541,17 @@ class ToolDispatchNode(BaseNode):
                 skills_id = skills_ref.get("module_id") if isinstance(skills_ref, dict) else context.services.get("skills_id")
                 if not skills_id or self.node_type == "capability.dispatch" and not skills_ref:
                     raise RuntimeError("技能调用需要在工作流中连接技能目录")
-                reply = agent.bus.request(source="agent", target=skills_id, payload={"action": "get_skill_detail", "skill_name": name})
-                result = {"call_id": call.call_id, "name": call.name, "status": "error" if "error" in reply.payload else "success", "output": reply.payload.get("detail"), "error": reply.payload.get("error")}
+                if name == "read_resource":
+                    reply = agent.bus.request(source="agent", target=skills_id, payload={
+                        "action": "get_skill_resource",
+                        "skill_name": call.arguments.get("skill_name", ""),
+                        "path": call.arguments.get("path", ""),
+                    })
+                    output = reply.payload.get("content")
+                else:
+                    reply = agent.bus.request(source="agent", target=skills_id, payload={"action": "get_skill_detail", "skill_name": name})
+                    output = reply.payload.get("detail")
+                result = {"call_id": call.call_id, "name": call.name, "status": "error" if "error" in reply.payload else "success", "output": output, "error": reply.payload.get("error")}
                 results.append(result)
                 context.emit("tool_completed", context.node_id, {**result, "kind": "skill", "target": name})
             elif separator and namespace != "tool":
@@ -689,6 +728,7 @@ node_registry.register_many((
     PromptJoinNode,
     MemoryProviderNode,
     SkillsProviderNode,
+    MCPProviderNode,
     ToolsProviderNode,
     SchemaMergeNode,
     ContextMergeNode,
