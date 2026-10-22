@@ -73,7 +73,7 @@ function toDocument(workflow, nodes, edges) {
     name: workflow.name,
     description: workflow.description ?? '',
     nodes: nodes.map(({ type, width, height, measured, selected, dragging, resizing, dragHandle, ...node }) => {
-      const { kind, connectionState, connectedPorts, executionStatus, executionDurationMs, interfaceLanguage, onDataChange, onPreviewToggle, onContentSize, onResizeStart, onResizeEnd, onOpenConfig, onSaveCredential, credentialConfigured, modelOptions, promptFiles, outputPreview, previewUsage, ...data } = node.data;
+      const { kind, connectionState, connectedPorts, executionStatus, executionDurationMs, interfaceLanguage, onDataChange, onPreviewToggle, onContentSize, onResizeStart, onResizeEnd, onOpenConfig, onToggleSkip, skipExecutionBlocked, onSaveCredential, credentialConfigured, modelOptions, promptFiles, outputPreview, previewUsage, ...data } = node.data;
       const { api_key, ...config } = data.config || {};
       return { ...node, ...(data.sizeMode === 'manual' ? { width, height } : {}), type: kind, data: { ...data, config } };
     }),
@@ -139,8 +139,8 @@ function supportsReasoningForNode(node, nodes, edges, modelOptions) {
 
 function validateGraph(nodes, edges, modelOptions = [], language = 'zh', ttsModels = []) {
   const issues = [];
-  const incoming = new Set(edges.map((edge) => `${edge.target}:${edge.targetHandle}`));
   const nodeMap = Object.fromEntries(nodes.map((node) => [node.id, node]));
+  const incoming = new Set(edges.filter((edge) => !nodeMap[edge.source]?.data?.skip_execution).map((edge) => `${edge.target}:${edge.targetHandle}`));
   for (const edge of edges) {
     const source = nodeMap[edge.source];
     const target = nodeMap[edge.target];
@@ -153,6 +153,12 @@ function validateGraph(nodes, edges, modelOptions = [], language = 'zh', ttsMode
     const definition = nodeCatalog.find((item) => item.type === node.data.kind);
     if (!definition) {
       issues.push(`${node.data.label}: 未知节点类型 ${node.data.kind}`);
+      continue;
+    }
+    if (node.data.skip_execution) {
+      if (['core.chat_input', 'core.chat_output', 'llm.chat'].includes(node.data.kind)) {
+        issues.push(`${node.data.label || definition.label}: 对话主流程节点不能跳过`);
+      }
       continue;
     }
     if (node.data.kind === 'retrieval.vector_store') issues.push(`${node.data.label}: 当前试运行器尚不支持此节点`);
@@ -178,19 +184,20 @@ function validateGraph(nodes, edges, modelOptions = [], language = 'zh', ttsMode
       }
     }
   }
-  if (!nodes.some((node) => node.data.kind === 'llm.chat') && !nodes.some((node) => node.data.kind === 'audio.tts_model') && !isDirectChatGraph(nodes, edges)) issues.push('无模型工作流需要将对话输入直接连接到回复输出');
-  if (!nodes.some((node) => node.data.kind === 'core.chat_input')) issues.push('工作流需要一个对话输入节点');
-  if (!nodes.some((node) => node.data.kind === 'core.chat_output')) issues.push('工作流需要一个回复输出节点');
+  const activeNodes = nodes.filter((node) => !node.data.skip_execution);
+  if (!activeNodes.some((node) => node.data.kind === 'llm.chat') && !activeNodes.some((node) => node.data.kind === 'audio.tts_model') && !isDirectChatGraph(nodes, edges)) issues.push('无模型工作流需要将对话输入直接连接到回复输出');
+  if (!activeNodes.some((node) => node.data.kind === 'core.chat_input')) issues.push('工作流需要一个对话输入节点');
+  if (!activeNodes.some((node) => node.data.kind === 'core.chat_output')) issues.push('工作流需要一个回复输出节点');
   return issues;
 }
 
 function applyExecutionEvents(current, events) {
   const latest = new Map();
   for (const event of events) {
-    if (!['node_started', 'node_completed', 'node_failed'].includes(event.event_type) || !event.node_id) continue;
+    if (!['node_started', 'node_completed', 'node_failed', 'node_skipped'].includes(event.event_type) || !event.node_id) continue;
     const duration = event.data?.duration_ms;
     latest.set(event.node_id, {
-      executionStatus: event.event_type === 'node_started' ? 'running' : event.event_type === 'node_failed' ? 'failed' : 'complete',
+      executionStatus: event.event_type === 'node_started' ? 'running' : event.event_type === 'node_failed' ? 'failed' : event.event_type === 'node_skipped' ? 'skipped' : 'complete',
       ...(event.event_type === 'node_completed' && Number.isFinite(duration) ? { executionDurationMs: duration } : {}),
     });
   }
@@ -198,9 +205,12 @@ function applyExecutionEvents(current, events) {
 }
 
 function isDirectChatGraph(nodes, edges) {
-  if (nodes.length !== 2 || edges.length !== 1) return false;
-  const byId = Object.fromEntries(nodes.map((node) => [node.id, node.data.kind]));
-  const edge = edges[0];
+  const activeNodes = nodes.filter((node) => !node.data.skip_execution);
+  const activeIds = new Set(activeNodes.map((node) => node.id));
+  const activeEdges = edges.filter((edge) => activeIds.has(edge.source) && activeIds.has(edge.target));
+  if (activeNodes.length !== 2 || activeEdges.length !== 1) return false;
+  const byId = Object.fromEntries(activeNodes.map((node) => [node.id, node.data.kind]));
+  const edge = activeEdges[0];
   return new Set(Object.values(byId)).size === 2
     && byId[edge.source] === 'core.chat_input'
     && byId[edge.target] === 'core.chat_output'
@@ -506,6 +516,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
 
   const selectedNode = nodes.find((node) => node.id === selectedId) ?? null;
   const selectedEdge = edges.find((edge) => edge.selected) ?? null;
+  const skipToggleBlockedByRuntime = running || agentRunning || agentModelLoaded || agentStarting || agentStopping;
   const connectionEligibility = useMemo(() => {
     if (!connectionHint) return null;
     const origin = nodes.find((node) => node.id === connectionHint.nodeId);
@@ -627,6 +638,15 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     const nextData = { ...node.data, ...data };
     return { ...node, data: nextData };
   })), [setNodes]);
+  const toggleNodeSkip = useCallback((nodeId) => {
+    const node = nodes.find((item) => item.id === nodeId);
+    if (!node || skipToggleBlockedByRuntime || ['core.chat_input', 'core.chat_output', 'llm.chat'].includes(node.data.kind)) return;
+    updateNode(nodeId, {
+      skip_execution: !node.data.skip_execution,
+      executionStatus: undefined,
+      executionDurationMs: undefined,
+    });
+  }, [nodes, skipToggleBlockedByRuntime, updateNode]);
   const syncNodeHeight = useCallback((id, measuredHeight) => {
     setNodes((current) => {
       const target = current.find((node) => node.id === id);
@@ -669,7 +689,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
     setNotice('所有节点已按内容自适应尺寸');
     window.setTimeout(() => setNotice(''), 2400);
   }, [setNodes]);
-  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, dragHandle: '.workflow-node-header', data: { ...node.data, interfaceLanguage, reasoningAvailable: supportsReasoningForNode(node, nodes, edges, modelOptions), connectedPorts: { inputs: edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle), outputs: edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle) }, connectionState: connectionEligibility?.get(node.id) || null, modelOptions, ttsModels, ttsReferences, promptFiles, onOpenConfig: (kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }, onDataChange: updateNode, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, edges, interfaceLanguage, connectionEligibility, modelOptions, ttsModels, ttsReferences, promptFiles, updateNode, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
+  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, dragHandle: '.workflow-node-header', data: { ...node.data, interfaceLanguage, reasoningAvailable: supportsReasoningForNode(node, nodes, edges, modelOptions), connectedPorts: { inputs: edges.filter((edge) => edge.target === node.id).map((edge) => edge.targetHandle), outputs: edges.filter((edge) => edge.source === node.id).map((edge) => edge.sourceHandle) }, connectionState: connectionEligibility?.get(node.id) || null, modelOptions, ttsModels, ttsReferences, promptFiles, onOpenConfig: (kind, modelId) => { setConfigModelId(modelId || ''); setConfigKind(kind); }, onDataChange: updateNode, onToggleSkip: toggleNodeSkip, skipExecutionBlocked: skipToggleBlockedByRuntime, onPreviewToggle: togglePreview, onContentSize: syncNodeHeight, onResizeStart: markNodeManuallySized, onResizeEnd: finishNodeResize } })), [nodes, edges, interfaceLanguage, connectionEligibility, modelOptions, ttsModels, ttsReferences, promptFiles, updateNode, toggleNodeSkip, skipToggleBlockedByRuntime, togglePreview, syncNodeHeight, markNodeManuallySized, finishNodeResize]);
   const deleteNode = (id) => {
     setNodes((current) => current.filter((node) => node.id !== id));
     setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));

@@ -16,7 +16,11 @@ from modules.sandbox_landlock import landlock_abi
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SANDBOX_CONFIG_PATH = PROJECT_ROOT / "config" / "sandbox.json"
-DEFAULT_SETTINGS = {"workspace": str(PROJECT_ROOT), "permission": "workspace"}
+DEFAULT_SETTINGS = {
+    "workspace": str(PROJECT_ROOT),
+    "permission": "workspace",
+    "allow_command_execution": False,
+}
 SANDBOX_ACTIONS = ("read", "write", "edit", "delete")
 WORKSPACE_PERMISSIONS = {
     "workspace": {"read": True, "write": True, "edit": True, "delete": True},
@@ -72,10 +76,13 @@ def _validate_settings(settings: Any) -> dict[str, Any]:
         raise ValueError("沙箱设置格式无效")
     workspace = settings.get("workspace", DEFAULT_SETTINGS["workspace"])
     permission = settings.get("permission", DEFAULT_SETTINGS["permission"])
+    allow_command_execution = settings.get("allow_command_execution", False)
     if not isinstance(workspace, str) or not workspace.strip() or len(workspace) > 4096:
         raise ValueError("请选择有效的工作空间路径")
     if not isinstance(permission, str) or permission not in {"workspace", "full", "custom"}:
         raise ValueError("沙箱权限模式无效")
+    if not isinstance(allow_command_execution, bool):
+        raise ValueError("命令和 MCP 工具执行开关必须是布尔值")
 
     try:
         path = _resolve_user_path(workspace)
@@ -94,7 +101,12 @@ def _validate_settings(settings: Any) -> dict[str, Any]:
         for action in SANDBOX_ACTIONS:
             if permissions["outside"][action] and not permissions["workspace"][action]:
                 raise ValueError("工作空间外的权限不能高于工作空间内")
-    return {"workspace": str(path), "permission": permission, "permissions": permissions}
+    return {
+        "workspace": str(path),
+        "permission": permission,
+        "permissions": permissions,
+        "allow_command_execution": allow_command_execution,
+    }
 
 
 def load_sandbox_settings() -> dict[str, Any]:

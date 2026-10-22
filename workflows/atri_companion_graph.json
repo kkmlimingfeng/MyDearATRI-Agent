@@ -80,8 +80,8 @@
     {
       "id": "skills",
       "position": {
-        "x": 224.74196765879105,
-        "y": 715.1799750265462
+        "x": 201.6505791330411,
+        "y": 814.1430687083317
       },
       "data": {
         "label": "技能目录",
@@ -99,8 +99,8 @@
     {
       "id": "tools",
       "position": {
-        "x": 220.82167288369703,
-        "y": 988.9238846887054
+        "x": 225.7698275677863,
+        "y": 1143.9660647901692
       },
       "data": {
         "label": "工具箱",
@@ -117,8 +117,8 @@
     {
       "id": "mcp",
       "position": {
-        "x": 220.82167288369703,
-        "y": 1262.9238846887054
+        "x": -443.8804396789625,
+        "y": 583.377308073778
       },
       "data": {
         "label": "MCP 服务",
@@ -147,8 +147,8 @@
     {
       "id": "capability_usage",
       "position": {
-        "x": 554,
-        "y": 1035
+        "x": 530.90861147425,
+        "y": 1038.298769789393
       },
       "data": {
         "label": "能力使用方式",
@@ -315,15 +315,15 @@
     {
       "id": "openai_loader_72238",
       "position": {
-        "x": -117.95466358043595,
-        "y": 740.2672598986451
+        "x": -137.74728231679305,
+        "y": 796.3463463183235
       },
       "data": {
         "label": "API 模型加载",
         "category": "model",
         "module_id": "llm",
         "config": {
-          "model": "qwen3.5-27b"
+          "model": "qwen3.5-122b"
         }
       },
       "type": "llm.openai_loader"
@@ -340,7 +340,8 @@
         "module_id": "",
         "config": {
           "model": "qwen3-0.6b-q8",
-          "language": "Chinese"
+          "language": "Chinese",
+          "reference": "atri"
         }
       },
       "type": "audio.tts_model"
@@ -455,8 +456,16 @@
       "target": "context",
       "sourceHandle": "mcp",
       "targetHandle": "mcp",
-      "style": { "stroke": "#6b90ce", "strokeWidth": 2 },
-      "markerEnd": { "type": "arrowclosed", "color": "#6b90ce", "width": 15, "height": 15 }
+      "style": {
+        "stroke": "#6b90ce",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#6b90ce",
+        "width": 15,
+        "height": 15
+      }
     },
     {
       "id": "e_usage_chat",
@@ -600,8 +609,16 @@
       "target": "tool_dispatch",
       "sourceHandle": "mcp",
       "targetHandle": "mcp",
-      "style": { "stroke": "#6b90ce", "strokeWidth": 2 },
-      "markerEnd": { "type": "arrowclosed", "color": "#6b90ce", "width": 15, "height": 15 }
+      "style": {
+        "stroke": "#6b90ce",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#6b90ce",
+        "width": 15,
+        "height": 15
+      }
     },
     {
       "id": "e_tool_results_loop",
@@ -717,8 +734,16 @@
       "target": "capability_usage",
       "sourceHandle": "schemas",
       "targetHandle": "schemas_c",
-      "style": { "stroke": "#c5a244", "strokeWidth": 2 },
-      "markerEnd": { "type": "arrowclosed", "color": "#c5a244", "width": 15, "height": 15 }
+      "style": {
+        "stroke": "#c5a244",
+        "strokeWidth": 2
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#c5a244",
+        "width": 15,
+        "height": 15
+      }
     },
     {
       "id": "e_user_prompt_join",
@@ -794,26 +819,6 @@
     {
       "style": {
         "strokeWidth": 2,
-        "stroke": "#5a9fd2"
-      },
-      "markerEnd": {
-        "type": "arrowclosed",
-        "color": "#5a9fd2",
-        "width": 15,
-        "height": 15
-      },
-      "source": "llm_qwen",
-      "sourceHandle": "llm",
-      "target": "llm_chat",
-      "targetHandle": "llm",
-      "id": "e_483473aa",
-      "data": {
-        "feedback": false
-      }
-    },
-    {
-      "style": {
-        "strokeWidth": 2,
         "stroke": "#be374e"
       },
       "markerEnd": {
@@ -850,12 +855,32 @@
       "data": {
         "feedback": false
       }
+    },
+    {
+      "style": {
+        "strokeWidth": 2,
+        "stroke": "#5a9fd2"
+      },
+      "markerEnd": {
+        "type": "arrowclosed",
+        "color": "#5a9fd2",
+        "width": 15,
+        "height": 15
+      },
+      "source": "openai_loader_72238",
+      "sourceHandle": "llm",
+      "target": "llm_chat",
+      "targetHandle": "llm",
+      "id": "e_beec6dcc",
+      "data": {
+        "feedback": false
+      }
     }
   ],
   "viewport": {
-    "x": 9.737016914309152,
-    "y": -266.9467802794501,
-    "zoom": 0.7999999887366224
+    "x": 501.94710112671964,
+    "y": -172.31297115834548,
+    "zoom": 0.696440444418879
   },
   "metadata": {
     "status": "active",

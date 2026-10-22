@@ -7,7 +7,7 @@ const labels = {
   model_loaded: ['加载模型', 'Model loaded'], message_context_ready: ['联结对话上下文', 'Conversation context assembled'],
   context_merged: ['联结上下文', 'Context merged'], prompt_joined: ['联结提示词', 'Prompt joined'], tools_injected: ['注入工具', 'Tools injected'],
   skills_injected: ['注入技能', 'Skills injected'], context_ready: ['上下文就绪（含记忆）', 'Context ready (with memory)'],
-  node_started: ['节点开始', 'Node started'], node_completed: ['节点完成', 'Node completed'], node_failed: ['节点失败', 'Node failed'], model_request: ['模型输入', 'Model input'], model_response: ['模型响应', 'Model response'], model_thinking: ['模型推理中', 'Model reasoning'],
+  node_started: ['节点开始', 'Node started'], node_completed: ['节点完成', 'Node completed'], node_failed: ['节点失败', 'Node failed'], node_skipped: ['节点已跳过', 'Node skipped'], model_request: ['模型输入', 'Model input'], model_response: ['模型响应', 'Model response'], model_thinking: ['模型推理中', 'Model reasoning'],
   llm_completed: ['模型输出', 'Model output'], loop_decision: ['循环决策', 'Loop decision'],
   tool_call_requested: ['调用工具', 'Tool called'], tool_completed: ['工具结果', 'Tool result'],
   tool_call_denied: ['工具调用未获批准', 'Tool call denied'],

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Handle, NodeResizer, Position, useUpdateNodeInternals } from '@xyflow/react';
-import { Braces, GripVertical, Settings2 } from 'lucide-react';
+import { Handle, NodeResizer, NodeToolbar, Position, useUpdateNodeInternals } from '@xyflow/react';
+import { Braces, GripVertical, Play, Settings2, SkipForward } from 'lucide-react';
 import { categoryMeta, getNodeDefinition } from './catalog';
 import { getPortTypeColor } from './portTypes';
 import { portLabel } from './interfaceLanguage';
@@ -74,12 +74,37 @@ export default function WorkflowNode({ id, data, selected }) {
   const connectionClass = !connectionState ? '' : connectionState.origin || connectionState.eligibleInputs.length || connectionState.eligibleOutputs.length ? 'connection-compatible' : 'connection-incompatible';
   const ttsModels = data.ttsModels ?? [];
   const selectedTtsModel = data.config?.model ?? '';
+  const cannotSkip = ['core.chat_input', 'core.chat_output', 'llm.chat'].includes(data.kind);
+  const skipTitle = cannotSkip
+    ? '对话输入、模型对话和回复输出属于主流程节点，不能跳过'
+    : data.skipExecutionBlocked
+      ? '请先停止工作流，再切换节点执行状态'
+      : data.skip_execution ? '恢复此节点的执行' : '跳过此节点';
 
   return (
     <article
-      className={`workflow-node ${meta.color} ${isManual ? 'manual-size' : 'auto-size'} ${selected ? 'selected' : ''} ${data.executionStatus || ''} ${connectionClass}`}
+      className={`workflow-node ${meta.color} ${isManual ? 'manual-size' : 'auto-size'} ${selected ? 'selected' : ''} ${data.skip_execution ? 'skipped-node' : ''} ${data.executionStatus || ''} ${connectionClass}`}
       style={{ '--node-color': data.color || meta.hex, '--connection-color': getPortTypeColor(connectionState?.type) }}
     >
+      <NodeToolbar position={Position.Top} offset={10} className="workflow-node-toolbar">
+        <div className="workflow-node-actions">
+          <button
+            type="button"
+            className={`node-action-button ${data.skip_execution ? 'is-skipped' : ''}`}
+            disabled={cannotSkip || data.skipExecutionBlocked}
+            title={skipTitle}
+            aria-label={data.skip_execution ? '恢复节点执行' : '跳过节点执行'}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              data.onToggleSkip?.(id);
+            }}
+          >
+            {data.skip_execution ? <Play size={14} /> : <SkipForward size={14} />}
+            <span>{data.skip_execution ? '恢复' : '跳过'}</span>
+          </button>
+        </div>
+      </NodeToolbar>
       <div className="workflow-node-content" ref={contentRef}>
       <NodeResizer
         isVisible={selected}
@@ -96,6 +121,7 @@ export default function WorkflowNode({ id, data, selected }) {
           <strong>{data.label || definition.label}</strong>
           <span>{definition.type}</span>
         </div>
+        {data.skip_execution && <span className="node-skip-status">已跳过</span>}
         {data.executionStatus === 'complete' && Number.isFinite(data.executionDurationMs) && <span className="node-duration">{data.executionDurationMs < 1000 ? `${data.executionDurationMs} ms` : `${(data.executionDurationMs / 1000).toFixed(2)} s`}</span>}
         <GripVertical className="drag-grip" size={16} />
       </header>

@@ -39,6 +39,12 @@ def exec_sandbox_cmd(cmd: str, timeout: int = 30) -> str:
     cmd_lower = cmd.lower()
     for word in ban_list:
         if word in cmd_lower:
+            if word in {"curl", "wget"}:
+                return (
+                    f"[沙盒拦截] 禁止指令：{word}。访问网页请使用已安装的 bb-browser 技能，"
+                    "例如 `bb-browser site weibo/hot`；微博脚本直连可能返回 HTTP 432，"
+                    "可尝试通过已登录的浏览器会话读取。"
+                )
             return f"[沙盒拦截] 禁止指令：{word}"
 
     try:

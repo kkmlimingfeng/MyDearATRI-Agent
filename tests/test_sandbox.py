@@ -27,8 +27,25 @@ class SandboxConfigTests(unittest.TestCase):
                         "workspace": str(root),
                         "permission": "workspace",
                         "permissions": sandbox_config.WORKSPACE_PERMISSIONS,
+                        "allow_command_execution": False,
                     },
                 )
+
+    def test_command_execution_is_opt_in_and_validated(self):
+        default = sandbox_config._validate_settings({"workspace": ".", "permission": "workspace"})
+        self.assertFalse(default["allow_command_execution"])
+        enabled = sandbox_config._validate_settings({
+            "workspace": ".",
+            "permission": "workspace",
+            "allow_command_execution": True,
+        })
+        self.assertTrue(enabled["allow_command_execution"])
+        with self.assertRaisesRegex(ValueError, "布尔值"):
+            sandbox_config._validate_settings({
+                "workspace": ".",
+                "permission": "workspace",
+                "allow_command_execution": "yes",
+            })
 
     def test_settings_save_and_load_a_selected_workspace(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -125,6 +142,12 @@ class SandboxConfigTests(unittest.TestCase):
 
 
 class SandboxExecutionTests(unittest.TestCase):
+    def test_blocked_http_clients_point_to_browser_skill(self):
+        result = sandbox_tool.exec_sandbox_cmd("curl https://s.weibo.com/top/summary?cate=homepage")
+
+        self.assertIn("禁止指令：curl", result)
+        self.assertIn("bb-browser site weibo/hot", result)
+
     def _run_with_permission(self, permission):
         workspace = Path("/tmp/atri-sandbox-workspace")
         process = SimpleNamespace(stdout="sandbox output", stderr="")

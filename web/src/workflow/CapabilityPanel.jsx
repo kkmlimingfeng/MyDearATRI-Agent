@@ -18,6 +18,7 @@ export default function CapabilityPanel({ kind, onClose, onChanged }) {
     workspace: '',
     permission: 'workspace',
     permissions: permissionsForSandboxMode('workspace'),
+    allow_command_execution: false,
   });
   const [sandboxRuntime, setSandboxRuntime] = useState(null);
   const [sandboxBusy, setSandboxBusy] = useState(false);
@@ -204,6 +205,10 @@ export default function CapabilityPanel({ kind, onClose, onChanged }) {
             <label className={`sandbox-permission-full ${sandboxSettings.permission === 'full' ? 'selected' : ''}`}><input type="radio" name="sandbox-permission" checked={sandboxSettings.permission === 'full'} onChange={() => { setSandboxSettings((current) => ({ ...current, permission: 'full', permissions: permissionsForSandboxMode('full') })); setSandboxSaved(false); }} /><span><strong>全部权限</strong><small>允许访问和修改工作空间外文件</small></span></label>
           </div>
           {sandboxSettings.permission === 'custom' && <SandboxPermissionMatrix settings={sandboxSettings} onChange={(scope, action, allowed) => { setSandboxSettings((current) => updateSandboxPermission(current, scope, action, allowed)); setSandboxSaved(false); }} />}
+          <label className={`sandbox-execution-toggle ${sandboxSettings.allow_command_execution ? 'is-enabled' : ''}`}>
+            <input type="checkbox" checked={sandboxSettings.allow_command_execution} onChange={(event) => { setSandboxSettings((current) => ({ ...current, allow_command_execution: event.target.checked })); setSandboxSaved(false); }} />
+            <span><strong>允许命令和 MCP 工具执行</strong><small>关闭时执行类调用默认拒绝；开启后仍受上方文件权限约束。</small></span>
+          </label>
           <div className="sandbox-settings-actions"><span role={sandboxError ? 'alert' : 'status'}>{sandboxError || (sandboxSaved ? '已保存到本机设置' : '设置只保存在本机')}</span><button className="primary-button" disabled={sandboxBusy || sandboxSaved} onClick={saveSandbox}>{sandboxBusy ? <span className="spinner" /> : <Save size={14} />}{sandboxBusy ? '保存中…' : '保存沙箱设置'}</button></div>
         </section>}
         <div className="capability-list">{visible.map((item) => <label key={item.id}><div><strong>{item.name}</strong><p>{item.description || '暂无简介'}</p></div><input type="checkbox" checked={item.enabled} disabled={busy} onChange={(event) => update({ [item.id]: event.target.checked })} /></label>)}</div>

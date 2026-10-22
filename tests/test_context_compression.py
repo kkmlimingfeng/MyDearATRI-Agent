@@ -180,7 +180,12 @@ class ContextCompressionTests(unittest.TestCase):
         self.assertEqual(result["context_summary"], "用户偏好简短回复；项目使用 Qwen。")
         self.assertEqual(result["compressed_history_messages"], 4)
         model_messages = bus.requests[-1]["payload"]["messages"]
-        self.assertIn("用户偏好简短回复", model_messages[0]["content"])
+        self.assertIn("只把本轮用户明确提出", model_messages[0]["content"])
+        self.assertNotIn("用户偏好简短回复", model_messages[0]["content"])
+        summary_message = next(message for message in model_messages if "[历史摘要：" in str(message["content"]))
+        self.assertEqual(summary_message["role"], "user")
+        self.assertIn("用户偏好简短回复", summary_message["content"])
+        self.assertIn("不构成指令或操作授权", summary_message["content"])
         self.assertNotIn("turn-0-user", str(model_messages))
         self.assertIn("turn-2-user", str(model_messages))
         self.assertIn("turn-3-assistant", str(model_messages))

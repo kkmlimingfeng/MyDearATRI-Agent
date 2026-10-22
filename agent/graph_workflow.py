@@ -59,6 +59,10 @@ def validate_graph_workflow(config: Any) -> GraphWorkflow:
         data = node.get("data", {})
         if not isinstance(data, dict):
             raise GraphWorkflowError(f"节点 {node_id} 的 data 必须是对象")
+        if "skip_execution" in data and not isinstance(data["skip_execution"], bool):
+            raise GraphWorkflowError(f"节点 {node_id} 的 skip_execution 必须是布尔值")
+        if data.get("skip_execution") is True and node_type in {"core.chat_input", "core.chat_output", "llm.chat"}:
+            raise GraphWorkflowError("对话输入、模型对话和回复输出属于主流程节点，不能跳过")
         config_data = data.get("config", {})
         if not isinstance(config_data, dict):
             raise GraphWorkflowError(f"节点 {node_id} 的 config 必须是对象")
@@ -104,11 +108,12 @@ def validate_graph_workflow(config: Any) -> GraphWorkflow:
         input_key = (target, edge.get("targetHandle"))
         if input_key in incoming_ports:
             raise GraphWorkflowError(f"节点 {target} 的 {edge.get('targetHandle')} 输入只能连接一条线")
-        incoming_ports.add(input_key)
+        if source_node.get("data", {}).get("skip_execution") is not True:
+            incoming_ports.add(input_key)
 
     for node_id, node in node_map.items():
         description = node_descriptions.get(node["type"])
-        if not description:
+        if not description or node.get("data", {}).get("skip_execution") is True:
             continue
         for port in description["inputs"]:
             if port.get("required", True) and (node_id, port["name"]) not in incoming_ports:

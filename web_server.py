@@ -592,7 +592,12 @@ def _load_models() -> dict:
         raise ModuleConfigError(f"加载模型配置失败: {exc}") from exc
     if not isinstance(payload, dict):
         raise ModuleConfigError("config/models.json 必须是对象")
-    payload.update(_read_json_map(API_MODELS_PATH))
+    for model_id, override in _read_json_map(API_MODELS_PATH).items():
+        default = payload.get(model_id)
+        if isinstance(default, dict) and "base_url" in default and isinstance(override, dict):
+            payload[model_id] = {**default, **override}
+        else:
+            payload[model_id] = override
     # Only LLM weights belong in the chat model catalog; TTS keeps its own
     # GGUF files under models/TTS.
     models_dir = ROOT / "models" / "LLM"
@@ -927,7 +932,7 @@ def _save_api_model(payload: dict) -> dict:
         if max_output_tokens not in (None, ""):
             overrides[model_id]["max_tokens"] = max_output_tokens
         if input_token_limit in (None, ""):
-            overrides[model_id].pop("input_token_limit", None)
+            overrides[model_id]["input_token_limit"] = None
         _write_json_map(API_MODELS_PATH, overrides)
         if api_key:
             credentials = _read_json_map(CREDENTIAL_PATH)
@@ -981,9 +986,13 @@ def _load_env_file() -> None:
             os.environ[key] = value
 
 
+def _node_skipped(node: dict) -> bool:
+    return (node.get("data") or {}).get("skip_execution") is True
+
+
 def _graph_bindings(graph: dict) -> tuple[dict, dict]:
     node_map = {node["id"]: node for node in graph["nodes"]}
-    runtime_nodes = [node for node in graph["nodes"] if node["type"] == "llm.chat"]
+    runtime_nodes = [node for node in graph["nodes"] if node["type"] == "llm.chat" and not _node_skipped(node)]
     if not runtime_nodes:
         raise GraphWorkflowError("工作流缺少模型对话节点")
     runtime_node = runtime_nodes[0]
@@ -1004,6 +1013,8 @@ def _graph_bindings(graph: dict) -> tuple[dict, dict]:
 
     incoming = {}
     for edge in graph["edges"]:
+        if _node_skipped(node_map[edge["source"]]) or _node_skipped(node_map[edge["target"]]):
+            continue
         incoming.setdefault(edge.get("target"), []).append(edge)
 
     def register_provider(handle: str, source: dict) -> None:
@@ -1020,7 +1031,7 @@ def _graph_bindings(graph: dict) -> tuple[dict, dict]:
         providers[handle] = source
 
     def resolve_capabilities(source: dict, seen: set[str]) -> None:
-        if source["id"] in seen:
+        if _node_skipped(source) or source["id"] in seen:
             return
         seen.add(source["id"])
         capability = source["type"].split(".", 1)[0]
@@ -1035,13 +1046,15 @@ def _graph_bindings(graph: dict) -> tuple[dict, dict]:
         if edge.get("target") != runtime_node["id"]:
             continue
         source = node_map[edge["source"]]
+        if _node_skipped(source):
+            continue
         handle = edge.get("targetHandle")
         if handle == "context":
             resolve_capabilities(source, set())
         elif handle in {"llm", "prompt", "memory", "skills", "tools"}:
             register_provider(handle, source)
     for node in graph["nodes"]:
-        if node["type"] in {"capability.dispatch", "tools.dispatch"}:
+        if not _node_skipped(node) and node["type"] in {"capability.dispatch", "tools.dispatch"}:
             for edge in incoming.get(node["id"], []):
                 provider_handle = {
                     "tools": "tools", "tool_executor": "tools",
@@ -1149,10 +1162,19 @@ def _make_agent(graph: dict):
     # initialization until the first model request in the workflow.
     agent.start(defer_module_ids={bindings["llm_id"]})
     agent.display_mode = "normal"
-    agent.tool_approval_callback = lambda call, metadata: (
-        call.name == "exec_sandbox_cmd" and metadata.get("risk") == "execute"
-    )
+    agent.tool_approval_callback = _approve_workflow_tool
     return agent, bindings
+
+
+def _approve_workflow_tool(call: Any, metadata: dict) -> bool:
+    if metadata.get("risk") != "execute":
+        return False
+    if call.name not in {"exec_sandbox_cmd", "Bash", "bb_browser"} and not call.name.startswith("mcp__"):
+        return False
+    try:
+        return load_sandbox_settings().get("allow_command_execution", False)
+    except (OSError, ValueError):
+        return False
 
 
 def _validate_runtime_graph(graph_data: Any):
@@ -1165,9 +1187,9 @@ def _validate_runtime_graph(graph_data: Any):
         raise GraphWorkflowError(
             "当前运行器暂不支持这些节点: " + ", ".join(unsupported)
         )
-    has_model_runtime = any(node["type"] == "llm.chat" for node in graph.nodes)
+    has_model_runtime = any(node["type"] == "llm.chat" and not _node_skipped(node) for node in graph.nodes)
     if not has_model_runtime:
-        if any(node["type"] == "audio.tts_model" for node in graph.nodes):
+        if any(node["type"] == "audio.tts_model" and not _node_skipped(node) for node in graph.nodes):
             return graph, {}
         raise GraphWorkflowError("无模型工作流目前支持：对话输入直接回复，或连接音频模型输出语音")
     bindings, _ = _graph_bindings(graph_data)
@@ -1190,27 +1212,30 @@ def _validate_runtime_graph(graph_data: Any):
 
 
 def _is_direct_chat_graph(graph) -> bool:
-    if len(graph.nodes) != 2 or len(graph.edges) != 1:
+    nodes = [node for node in graph.nodes if not _node_skipped(node)]
+    node_ids = {node["id"] for node in nodes}
+    edges = [edge for edge in graph.edges if edge["source"] in node_ids and edge["target"] in node_ids]
+    if len(nodes) != 2 or len(edges) != 1:
         return False
-    nodes = {node["id"]: node["type"] for node in graph.nodes}
-    edge = graph.edges[0]
+    node_types = {node["id"]: node["type"] for node in nodes}
+    edge = edges[0]
     return (
-        set(nodes.values()) == {"core.chat_input", "core.chat_output"}
-        and nodes.get(edge["source"]) == "core.chat_input"
-        and nodes.get(edge["target"]) == "core.chat_output"
+        set(node_types.values()) == {"core.chat_input", "core.chat_output"}
+        and node_types.get(edge["source"]) == "core.chat_input"
+        and node_types.get(edge["target"]) == "core.chat_output"
         and edge.get("sourceHandle") == "message"
         and edge.get("targetHandle") == "answer"
     )
 
 
 def _is_tts_graph(graph) -> bool:
-    node_types = {node["type"] for node in graph.nodes}
+    node_types = {node["type"] for node in graph.nodes if not _node_skipped(node)}
     return "audio.tts_model" in node_types and "llm.chat" not in node_types
 
 
 def _voice_tts_model(graph) -> str | None:
-    nodes = {node["id"]: node for node in graph.nodes}
-    output = next((node for node in graph.nodes if node["type"] == "core.chat_output"), None)
+    nodes = {node["id"]: node for node in graph.nodes if not _node_skipped(node)}
+    output = next((node for node in nodes.values() if node["type"] == "core.chat_output"), None)
     if output is not None:
         for edge in graph.edges:
             if edge.get("target") == output["id"] and edge.get("targetHandle") == "voice":
@@ -1218,10 +1243,6 @@ def _voice_tts_model(graph) -> str | None:
                 if source and source.get("type") == "audio.tts_model":
                     config = (source.get("data") or {}).get("config") or {}
                     return config.get("model", "qwen3-0.6b-q8")
-    tts_node = next((node for node in graph.nodes if node["type"] == "audio.tts_model"), None)
-    if tts_node:
-        config = (tts_node.get("data") or {}).get("config") or {}
-        return config.get("model", "qwen3-0.6b-q8")
     return None
 
 
@@ -1621,6 +1642,8 @@ def run_graph(
         if voice_tts_model:
             tts.select_model(voice_tts_model)
             tts.ensure_started()
+        else:
+            tts.close()
         if _is_direct_chat_graph(graph):
             _validate_visual_attachments(None, user_content_parts)
             if _runtime_manager.state.execution_key != execution_key:
@@ -1730,12 +1753,7 @@ def run_graph(
                 normalized_history = normalized_history[boundary:]
         if history is not None:
             _runtime_manager.state.agent._history = normalized_history[-effective_keep_turns * 2:]
-        summary_context = (
-            "以下是较早对话的压缩摘要，用于保持对话连续性；如与最近的原文对话冲突，以较新的信息为准：\n"
-            + current_summary
-            if current_summary
-            else ""
-        )
+        summary_context = current_summary
         agent = _runtime_manager.state.agent
         agent.display_mode = mode
         agent.trace_sink.clear()
@@ -1820,9 +1838,10 @@ def _run_job_status(job_id: str) -> dict:
         return snapshot
     if not snapshot["trace_ready"]:
         return {"done": False, "events": [], "draft": snapshot["draft"]}
-    with _runtime_manager.lock:
-        agent = _runtime_manager.state.agent
-        events = [event.as_dict() for event in agent.get_trace_events()] if agent is not None else []
+    # run_graph holds the runtime lock while executing. Trace snapshots use their
+    # own lock so polling can keep returning node progress during that execution.
+    agent = _runtime_manager.state.agent
+    events = [event.as_dict() for event in agent.get_trace_events()] if agent is not None else []
     return {"done": False, "events": events, "draft": snapshot["draft"]}
 
 

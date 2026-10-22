@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Protocol, TextIO
 
@@ -45,12 +46,19 @@ class MemoryTraceSink:
 
     def __init__(self) -> None:
         self.events: List[TraceEvent] = []
+        self._lock = threading.Lock()
 
     def emit(self, event: TraceEvent) -> None:
-        self.events.append(event)
+        with self._lock:
+            self.events.append(event)
 
     def clear(self) -> None:
-        self.events.clear()
+        with self._lock:
+            self.events.clear()
+
+    def snapshot(self) -> List[TraceEvent]:
+        with self._lock:
+            return list(self.events)
 
 
 class JsonlTraceSink:

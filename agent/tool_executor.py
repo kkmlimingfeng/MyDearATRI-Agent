@@ -96,11 +96,16 @@ class ToolExecutor:
         if risk in {"write", "execute"} and not (
             self.approve and self.approve(call, metadata)
         ):
+            error = (
+                "命令执行未启用；请在沙箱设置中明确开启命令和 MCP 工具执行。"
+                if risk == "execute"
+                else f"工具调用未获批准 (risk={risk})"
+            )
             result = ToolResult(
                 call_id=call.call_id,
                 name=call.name,
                 status="denied",
-                error=f"工具调用未获批准 (risk={risk})",
+                error=error,
             )
             self.trace("tool_call_denied", result.as_dict(), "tools")
             return result

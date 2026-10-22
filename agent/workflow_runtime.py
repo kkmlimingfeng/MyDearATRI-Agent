@@ -37,7 +37,7 @@ class WorkflowRuntime(BaseAgent):
         ))
 
     def get_trace_events(self) -> list[TraceEvent]:
-        return list(self.trace_sink.events)
+        return self.trace_sink.snapshot()
 
     def _get_tool_executor(self) -> ToolExecutor:
         if self.tool_executor is None:

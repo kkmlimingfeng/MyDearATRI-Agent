@@ -449,6 +449,7 @@ export default function ChatHome({ onNavigate, active = true }) {
     workspace: '',
     permission: 'workspace',
     permissions: permissionsForSandboxMode('workspace'),
+    allow_command_execution: false,
   });
   const [sandboxRuntime, setSandboxRuntime] = useState(null);
   const [sandboxPermissionBusy, setSandboxPermissionBusy] = useState(false);
@@ -1558,6 +1559,10 @@ export default function ChatHome({ onNavigate, active = true }) {
           {sandboxSettings.permission === 'workspace' && <p>工作空间内可读写；工作空间外只读。</p>}
           {sandboxSettings.permission === 'full' && <p className="sandbox-full-warning"><AlertTriangle size={13} aria-hidden="true" />工具可以修改工作空间外的文件。</p>}
           {sandboxSettings.permission === 'custom' && <SandboxPermissionMatrix settings={sandboxSettings} onChange={updateSandboxAction} />}
+          <label className={`sandbox-execution-toggle ${sandboxSettings.allow_command_execution ? 'is-enabled' : ''}`}>
+            <input type="checkbox" checked={sandboxSettings.allow_command_execution} onChange={(event) => { setSandboxSettings((current) => ({ ...current, allow_command_execution: event.target.checked })); setSandboxPermissionError(''); setSandboxPermissionSaved(false); }} />
+            <span><strong>允许命令和 MCP 工具执行</strong><small>开启后，模型可以自动调用；命令仍受上方文件权限约束。</small></span>
+          </label>
           <div className="sandbox-workspace-control">
             <div><span>工作空间</span><small title={sandboxSettings.workspace}>{sandboxSettings.workspace || '读取中…'}</small></div>
             <button type="button" className="secondary-button" onClick={openSandboxDirectoryBrowser}><Folder size={13} />更改工作空间</button>

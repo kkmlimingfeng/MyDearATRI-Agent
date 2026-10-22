@@ -1,14 +1,17 @@
-import unittest
+import json
 import os
 import tempfile
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.graph_executor import GraphExecutor
+from agent.graph_workflow import GraphWorkflowError, validate_graph_workflow
+from agent.protocol import TraceEvent
 from agent.runtime_manager import RuntimeState
 import web_server
-from web_server import ROOT, _is_tts_graph, _load_models, _model_kind, _validate_runtime_graph, _voice_tts_model, run_graph
+from web_server import ROOT, _is_tts_graph, _load_models, _model_catalog, _model_kind, _validate_runtime_graph, _voice_tts_model, run_graph
 from modules.module_loader import resolve_config_value
 
 
@@ -16,6 +19,7 @@ class FakeTTS:
     def __init__(self):
         self.selected = None
         self.started = False
+        self.closed = False
 
     def models(self):
         return {"models": [
@@ -28,6 +32,9 @@ class FakeTTS:
 
     def ensure_started(self):
         self.started = True
+
+    def close(self):
+        self.closed = True
 
 
 def tts_workflow():
@@ -100,10 +107,11 @@ class FakeAgent:
         self._history = []
         self.max_history_turns = 10
         self.trace_sink = FakeTraceSink()
+        self.trace_events = []
         self.bus = FakeBus()
 
-    def _trace(self, *_args):
-        pass
+    def _trace(self, event_type, data, node_id=None):
+        self.trace_events.append(TraceEvent(event_type, "test-run", node_id, data))
 
     def _parse_embedded_tool_calls(self, _content):
         return []
@@ -112,7 +120,7 @@ class FakeAgent:
         pass
 
     def get_trace_events(self):
-        return []
+        return self.trace_events
 
 
 class TTSGraphTests(unittest.TestCase):
@@ -126,6 +134,43 @@ class TTSGraphTests(unittest.TestCase):
         graph, _ = _validate_runtime_graph(tts_workflow())
 
         self.assertEqual(_voice_tts_model(graph), "qwen3-0.6b-q8")
+
+    def test_unconnected_tts_node_does_not_preload_a_model(self):
+        workflow = tts_workflow()
+        workflow["edges"] = [edge for edge in workflow["edges"] if edge["id"] != "tts-to-voice"]
+        graph, _ = _validate_runtime_graph(workflow)
+
+        self.assertIsNone(_voice_tts_model(graph))
+
+    def test_skipped_tts_node_is_not_preloaded_or_executed(self):
+        workflow = llm_tts_workflow()
+        next(node for node in workflow["nodes"] if node["id"] == "tts")["data"]["skip_execution"] = True
+        fake_tts = FakeTTS()
+        fake_agent = FakeAgent()
+        with patch.object(web_server._runtime_manager, "state", RuntimeState()), \
+                patch("web_server._make_agent", return_value=(fake_agent, {"llm_id": "llm", "tools_id": None})), \
+                patch("web_server.tts", fake_tts):
+            result = run_graph(workflow, "你好")
+
+        self.assertEqual(result["answer"], "早上好。")
+        self.assertNotIn("voice", result)
+        self.assertFalse(fake_tts.started)
+        self.assertTrue(fake_tts.closed)
+        self.assertTrue(any(event["event_type"] == "node_skipped" and event["node_id"] == "tts" for event in result["events"]))
+
+    def test_main_chat_nodes_cannot_be_skipped(self):
+        workflow = llm_tts_workflow()
+        next(node for node in workflow["nodes"] if node["id"] == "llm-chat")["data"]["skip_execution"] = True
+
+        with self.assertRaisesRegex(ValueError, "主流程节点，不能跳过"):
+            _validate_runtime_graph(workflow)
+
+    def test_skipped_node_cannot_supply_required_downstream_input(self):
+        workflow = llm_tts_workflow()
+        next(node for node in workflow["nodes"] if node["id"] == "router")["data"]["skip_execution"] = True
+
+        with self.assertRaisesRegex(GraphWorkflowError, "缺少必需输入"):
+            validate_graph_workflow(workflow)
 
     def test_audio_request_reaches_reply_output_without_buffering_wav(self):
         graph, _ = _validate_runtime_graph(tts_workflow())
@@ -168,6 +213,38 @@ class TTSGraphTests(unittest.TestCase):
 
         self.assertIn("chat-q4km", models)
         self.assertFalse(any("qwen-talker" in model_id for model_id in models))
+
+    def test_api_model_catalog_inherits_default_context_limit_unless_cleared(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_dir = root / "config"
+            config_dir.mkdir()
+            (config_dir / "models.json").write_text(json.dumps({
+                "provider-default": {
+                    "base_url": "https://api.example.com/v1",
+                    "model_name": "provider-default",
+                    "input_token_limit": 262144,
+                },
+                "provider-cleared": {
+                    "base_url": "https://api.example.com/v1",
+                    "model_name": "provider-cleared",
+                    "input_token_limit": 128000,
+                },
+            }), encoding="utf-8")
+            (config_dir / "api_models.json").write_text(json.dumps({
+                "provider-default": {"model_name": "provider-default-deployment"},
+                "provider-cleared": {"input_token_limit": None},
+            }), encoding="utf-8")
+            (config_dir / "model_credentials.json").write_text("{}", encoding="utf-8")
+
+            with patch.object(web_server, "ROOT", root), \
+                    patch.object(web_server, "API_MODELS_PATH", config_dir / "api_models.json"), \
+                    patch.object(web_server, "CREDENTIAL_PATH", config_dir / "model_credentials.json"):
+                catalog = {item["id"]: item for item in _model_catalog()}
+
+        self.assertEqual(catalog["provider-default"]["model_name"], "provider-default-deployment")
+        self.assertEqual(catalog["provider-default"]["input_token_limit"], 262144)
+        self.assertIsNone(catalog["provider-cleared"]["input_token_limit"])
 
     def test_existing_local_gguf_paths_resolve_from_llm_folder(self):
         models = _load_models()

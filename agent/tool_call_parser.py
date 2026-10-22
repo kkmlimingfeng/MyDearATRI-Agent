@@ -31,8 +31,19 @@ def _parameters(text: str) -> dict[str, Any] | None:
 
 
 def parse_embedded_tool_calls(content: str, run_id: str) -> list[dict[str, Any]]:
+    matches = list(_TOOL_CALL.finditer(content))
+    if not matches:
+        return []
+    cursor = 0
+    for match in matches:
+        if content[cursor:match.start()].strip():
+            return []
+        cursor = match.end()
+    if content[cursor:].strip():
+        return []
+
     calls = []
-    for index, match in enumerate(_TOOL_CALL.finditer(content)):
+    for index, match in enumerate(matches):
         body = match.group(1).strip()
         function = _FUNCTION.fullmatch(body)
         try:

@@ -5,10 +5,54 @@ from unittest.mock import patch
 import web_server
 from agent.runtime_manager import RuntimeManager
 from agent.graph_workflow import GraphWorkflowError
+from agent.protocol import TraceEvent
+from agent.workflow_runtime import WorkflowRuntime
 from myagent import _apply_model_override
 
 
 class RuntimeJobTests(unittest.TestCase):
+    def test_run_status_reads_trace_without_waiting_for_runtime_lock(self):
+        manager = RuntimeManager()
+        agent = WorkflowRuntime()
+        agent.trace_sink.emit(TraceEvent("node_started", "active-run", "llm"))
+        manager.state.agent = agent
+        job_id = "active-job"
+        manager.create_run_job(job_id)
+        manager.mark_run_trace_ready(job_id)
+        lock_held = threading.Event()
+        release_lock = threading.Event()
+        status_read = threading.Event()
+        result = {}
+
+        def hold_runtime_lock():
+            with manager.lock:
+                lock_held.set()
+                release_lock.wait(2)
+
+        def read_status():
+            result.update(web_server._run_job_status(job_id))
+            status_read.set()
+
+        with patch.object(web_server, "_runtime_manager", manager):
+            lock_thread = threading.Thread(target=hold_runtime_lock)
+            lock_thread.start()
+            self.assertTrue(lock_held.wait(2), "runtime lock was not acquired")
+            status_thread = threading.Thread(target=read_status)
+            status_thread.start()
+            completed_during_run = status_read.wait(0.5)
+            release_lock.set()
+            status_thread.join(2)
+            lock_thread.join(2)
+
+        self.assertTrue(completed_during_run, "trace polling waited for workflow execution to finish")
+        self.assertEqual(result["events"], [{
+            "event_type": "node_started",
+            "run_id": "active-run",
+            "node_id": "llm",
+            "data": {},
+            "timestamp": None,
+        }])
+
     def test_background_job_passes_run_options_by_name(self):
         manager = RuntimeManager()
         completed = threading.Event()

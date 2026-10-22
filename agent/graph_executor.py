@@ -95,6 +95,10 @@ class GraphExecutor:
 
     def _execute(self, node_id: str, iteration: int = 1) -> dict:
         node = self.nodes[node_id]
+        if (node.get("data") or {}).get("skip_execution") is True:
+            self.previews[node_id] = "节点已跳过"
+            self._event("node_skipped", node_id, {"iteration": iteration})
+            return {}
         node_type = node["type"]
         config = node.get("data", {}).get("config", {})
         inputs = self._ready_inputs(node_id)

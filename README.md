@@ -19,6 +19,10 @@
 - 普通模式显示回答，透明模式展示可观察的执行步骤、模型交互和工具结果。
 - 对话输入区显示最近一次模型请求的输入 token 用量和上下文上限；支持的模型可切换思考档位，不支持时会明确显示。
 - 工作流接入 Qwen3-TTS 后可随回复流式播放语音；新语音开始时会打断正在播放的音频，回复下方的喇叭按钮可重新播放。
+- 对话支持图片、视频抽帧和常见文档附件；图片与视频理解需要工作流连接支持视觉输入的模型。
+- 普通对话自动保存为逐条记录，默认每 8 轮更新一次会话摘要；间隔可在记忆设置中调整，也可手动更新。试运行内容不保存。
+- 工作流节点可单独切换跳过状态；跳过的节点不会执行，主流程的输入、模型对话和回复节点不能跳过。
+- 沙箱支持选择工作空间、预设或自定义文件权限，并可单独控制是否允许命令及 MCP 工具执行。
 - 在工作流页面编辑、保存和同时打开多个 JSON 工作流；同一时间只运行其中一个。
 - 支持 OpenAI 兼容 API 模型，以及通过 `llama-cpp-python` 加载本地 GGUF 模型。
 - 提示词、记忆、技能、工具和模型按模块组织，可通过配置更换实现。
@@ -45,7 +49,7 @@ cd ..
 
 在国内安装 Python 依赖时，可以给 `pip install` 加上 `-i https://pypi.tuna.tsinghua.edu.cn/simple`。
 
-本地 stdio MCP 服务和 `exec_sandbox_cmd` 使用项目代码沙箱。在 Linux/WSL 中安装 Firejail，并在工具配置页检查 Landlock 支持：
+本地 stdio MCP 服务和 `exec_sandbox_cmd` 使用项目代码沙箱。模型调用命令或 MCP 工具默认关闭；需要时在输入框的沙箱设置或工具配置页显式开启。开启后仍受选定的文件权限限制。在 Linux/WSL 中安装 Firejail，并在工具配置页检查 Landlock 支持：
 
 ```bash
 sudo apt install firejail -y
@@ -138,9 +142,28 @@ python myagent.py --select-model --mode transparent
 
 在“MCP 服务”节点的详细配置中，可粘贴或选择 Claude `mcpServers` JSON、Codex `mcp_servers` TOML，也可手动添加本地 stdio 或远程 Streamable HTTP 服务。默认工作流已接入 MCP 节点；添加或修改服务后会重载 MCP 进程。stdio 命令按工具页配置的沙箱工作空间和权限启动，npm、uv、pip 缓存默认写入工作空间；MCP 配置保存在被 Git 忽略的 `config/mcp_servers.json`，环境变量和请求头密钥不会通过管理 API 返回。
 
-安装第三方能力时，将 Skill 包原样放入 `modules/skills/<技能名>/`；项目会保留 Skill 的 `allowed-tools` 声明，并兼容标准 `Bash(command)` 调用，将命令映射到 `exec_sandbox_cmd`，继续遵守项目沙箱权限和工具确认。CLI 依赖使用固定版本安装到工作空间缓存，例如 npm 包可运行 `npm install --global --prefix .cache/tools <包>@<版本>`；沙箱会把 `.cache/tools/bin` 加入 PATH。npm、uv、pip 缓存放在工作空间的 `.cache/`，不会加入 Git。Skill 是模型使用工具的说明，不会自行创建可调用工具。真正实现 MCP 协议的服务，则通过“MCP 服务”节点导入配置并启用，stdio 进程遵守项目沙箱权限。
+安装第三方能力时，将 Skill 包原样放入 `modules/skills/<技能名>/`；项目会保留 Skill 的 `allowed-tools` 声明，并兼容标准 `Bash(command)` 调用，将一般命令映射到 `exec_sandbox_cmd`，`bb-browser` 命令则转发到专用的 `bb_browser` 工具。命令和 MCP 调用默认拒绝，显式开启后由工作空间及文件权限约束。CLI 依赖使用固定版本安装到工作空间缓存，例如 npm 包可运行 `npm install --global --prefix .cache/tools <包>@<版本>`；沙箱会把 `.cache/tools/bin` 加入 PATH。npm、uv、pip 缓存放在工作空间的 `.cache/`，不会加入 Git。Skill 是模型使用工具的说明，不会自行创建可调用工具。真正实现 MCP 协议的服务，则通过“MCP 服务”节点导入配置并启用，stdio 进程遵守项目沙箱权限。
 
-浏览器操作示例：项目安装了 [bb-browser](https://github.com/epiral/bb-browser) 仓库中的 Skill 原文件，其 `Bash(bb-browser:*)` 调用由项目兼容层转入沙箱。CLI 固定安装 `bb-browser@0.14.2`，安装位置为工作空间 `.cache/tools/`，沙箱 PATH 会自动包含其命令目录。该版本提供 CLI，不含 MCP server；仓库 Skill 中的 `--mcp` 示例已过期，因此当前按 CLI Skill 使用。首次实际操作需要可用的 Chrome/CDP 浏览器连接；项目不会自动启动浏览器。
+#### 网页联网与浏览器操作（bb-browser）
+
+项目保留 [bb-browser](https://github.com/epiral/bb-browser) 的 Skill 说明，并实现了项目内的 `bb_browser(command, timeout)` 工具适配层。它在沙箱中调用固定版本的 CLI，支持 `site`、`fetch`、标签页、页面交互、网络调试和 trace 等命令；命令以参数数组执行，不经过 shell。`Bash(bb-browser:*)` 会自动路由到该工具。
+
+首次使用时，在项目根目录安装 CLI：
+
+```bash
+node --version  # 需要 Node.js 18 或更高版本
+npm install --global --prefix .cache/tools bb-browser@0.14.2
+```
+
+Linux/WSL 中还需要按上文安装 Firejail。浏览器工具不会安装或启动 Chrome；需要先启动一个从项目运行环境可访问、启用了远程调试的 Chrome/Chromium 浏览器。默认连接 `http://127.0.0.1:9222`；使用其他地址时，可在环境变量或被 Git 忽略的 `config/.env` 中设置 `BB_BROWSER_CDP_URL`。工具会复用健康的 bb-browser daemon，否则在沙箱内启动 daemon 并连接该 CDP 地址。
+
+`site <名称>` 依赖站点适配器。运行 `bb-browser site list` 查看已安装项，运行 `bb-browser site search <关键词>` 搜索适配器；缺少适配器时可运行 `bb-browser site update` 更新社区适配器，或使用 `bb-browser open <网址>` 和 `snap` 直接浏览网页。工具调用还需要在输入框的沙箱设置中开启“允许命令和 MCP 工具执行”，文件操作仍受工作空间权限约束。
+
+项目没有额外安装 BeautifulSoup 等 HTML 解析依赖。`requests` 和 `tavily-python` 已列在 `requirements.txt`；旧的 `get_attraction` 工具使用 Tavily 搜索景点，需在 `config/.env` 设置 `TAVILY_API_KEY` 才能调用。Tavily 是可选 API 能力，与 `bb-browser` 的安装及浏览器连接相互独立。
+
+#### 会话记忆存储
+
+普通对话原文和会话摘要保存在被 Git 忽略的 `data/memory/`：原文按 JSONL 逐条写入 `conversations/`，摘要和文件路径记录在 `index.json`。默认每 8 个已完成轮次生成或更新摘要；新建对话时也会整理待更新的旧会话。该摘要存储目前独立于长期记忆文件 `modules/mem/memory.md`，不会自动写入该文件；工作流的长期记忆节点读取的是 `memory.md`。
 
 ## 素材来源
 

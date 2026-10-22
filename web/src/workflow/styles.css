@@ -139,6 +139,12 @@ button { color: inherit; cursor: pointer; }
 .canvas-area { grid-column: 2; display: flex; min-width: 0; min-height: 0; flex-direction: column; background: var(--canvas); }
 .canvas-toolbar { height: 48px; flex: 0 0 48px; display: flex; align-items: center; gap: 10px; padding: 7px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .canvas-toolbar > .icon-button { width: 32px; height: 32px; min-height: 32px; flex: none; }
+.workflow-node-toolbar { pointer-events: all; }
+.workflow-node-actions { display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); box-shadow: 0 3px 12px #23392d18; }
+.node-action-button { height: 30px; min-height: 30px; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-muted); color: var(--ink); cursor: pointer; font-size: 11px; white-space: nowrap; }
+.node-action-button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--theme-accent), white 62%); background: var(--accent-soft); color: var(--theme-accent); }
+.node-action-button.is-skipped { border-color: color-mix(in srgb, var(--theme-accent), white 62%); background: var(--accent-soft); color: var(--theme-accent); }
+.node-action-button:disabled { cursor: not-allowed; opacity: .5; }
 .canvas-tab { display: flex; align-items: center; gap: 6px; color: #929d97; font-size: 10px; }
 .canvas-tab.active { color: #347b64; font-weight: 600; }
 .tab-indicator { width: 6px; height: 6px; border-radius: 2px; background: #9bb3a7; }
@@ -197,6 +203,8 @@ button { color: inherit; cursor: pointer; }
 .react-flow__controls-button { width: 26px !important; height: 26px !important; border-bottom: 1px solid #edf0ee !important; background: #fbfcfb !important; fill: #65736c !important; }
 .react-flow__minimap { overflow: hidden; border: 1px solid #dfe6e2 !important; border-radius: 6px; background: #fbfcfb !important; }
 .workflow-node { position: relative; box-sizing: border-box; min-width: 216px; min-height: 72px; overflow: visible; border: 1px solid #dce5e0; border-left: 3px solid var(--node-color); border-radius: 7px; background: var(--panel); box-shadow: 0 4px 14px #23392d0b; transition: box-shadow .15s, border-color .15s, opacity .15s, filter .15s; }
+.workflow-node.skipped-node { opacity: .48; filter: grayscale(1); }
+.node-skip-status { flex: none; padding: 3px 5px; border-radius: 3px; background: #edf0ee; color: #727d77; font-size: 9px; }
 .workflow-node.auto-size { width: max-content; max-width: 680px; height: auto; }
 .workflow-node.manual-size { width: 100%; height: 100%; }
 .workflow-node-content { display: flex; flex-direction: column; min-width: 0; }
@@ -725,6 +733,13 @@ button { color: inherit; cursor: pointer; }
 .sandbox-permission-popover > p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .sandbox-permission-popover > .sandbox-full-warning { display: flex; align-items: flex-start; gap: 5px; color: var(--danger, #b4473f); }
 .sandbox-full-warning svg { flex: none; margin-top: 1px; }
+.sandbox-execution-toggle { min-width: 0; display: flex; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); cursor: pointer; }
+.sandbox-execution-toggle input { width: 15px; height: 15px; flex: none; margin: 1px 0 0; accent-color: var(--theme-accent); }
+.sandbox-execution-toggle > span { min-width: 0; display: grid; gap: 3px; }
+.sandbox-execution-toggle strong { color: var(--text); font-size: 10px; font-weight: 600; }
+.sandbox-execution-toggle small { color: var(--muted); font-size: 9px; line-height: 1.4; }
+.sandbox-execution-toggle.is-enabled { border-color: color-mix(in srgb, var(--danger, #b4473f) 45%, var(--line)); }
+.sandbox-execution-toggle.is-enabled strong, .sandbox-execution-toggle.is-enabled small { color: var(--danger, #b4473f); }
 .sandbox-workspace-control { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 7px; border-top: 1px solid var(--line); }
 .sandbox-workspace-control > div { min-width: 0; display: grid; gap: 3px; }
 .sandbox-workspace-control > div > span { color: var(--text); font-size: 10px; font-weight: 600; }
