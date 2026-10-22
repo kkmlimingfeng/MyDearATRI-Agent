@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from agent.tool_executor import ToolExecutor
 from agent.tool_discovery import GET_TOOL_USAGE, LIST_TOOLS, TOOL_DISCOVERY_TEXT, discovery_schemas, merge_schemas
+from agent.trace import trace_safe_messages
 
 from .base import BaseNode, NodeContext, NodeResult, PortDefinition
 from .registry import node_registry
@@ -311,57 +312,7 @@ class ContextMergeNode(BaseNode):
         return NodeResult(outputs=outputs)
 
 
-class ReactRuntimeNode(BaseNode):
-    node_type = "agent.react_runtime"
-    title = "ReAct Runtime"
-    category = "runtime"
-    description = "调用配置好的 Agent runtime 并返回答案和可观测轨迹。"
-    defaults = {"max_iterations": 5, "display_mode": "normal", "prompt_name": "default"}
-    preview = "仅用于兼容旧版工作流。"
-    inputs = (
-        PortDefinition("message", "text"),
-        PortDefinition("llm", "llm"),
-        PortDefinition("prompt", "prompt"),
-        PortDefinition("memory", "memory", required=False),
-        PortDefinition("skills", "skills", required=False),
-        PortDefinition("tools", "tools", required=False),
-    )
-    outputs = (
-        PortDefinition("answer", "text"),
-        PortDefinition("trace", "trace", required=False),
-    )
-    config_schema = {
-        "type": "object",
-        "properties": {
-            "max_iterations": {"type": "integer", "minimum": 1},
-            "display_mode": {"type": "string", "enum": ["normal", "transparent"]},
-            "prompt_name": {"type": "string"},
-            "reasoning_effort": {"type": "string", "title": "默认思考强度（API）", "enum": ["auto", "minimal", "low", "medium", "high", "xhigh"], "default": "auto"},
-        },
-    }
-
-    def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
-        agent = context.services.get("agent")
-        if agent is None:
-            raise RuntimeError("NodeContext.services 中没有 Agent runtime")
-        module_ids = {
-            name: getattr(module, "module_id", None)
-            for name, module in inputs.items()
-            if name in {"llm", "prompt", "memory", "skills", "tools"} and module is not None
-        }
-        bindings = {f"{name}_id": module_id for name, module_id in module_ids.items() if module_id}
-        answer = agent.run(
-            user_input=str(inputs.get("message", "")),
-            prompt_name=self.config.get("prompt_name", "default"),
-            mode=self.config.get("display_mode", "normal"),
-            reasoning_effort=context.services.get("reasoning_effort") or self.config.get("reasoning_effort", "auto"),
-            **bindings,
-        )
-        events = agent.get_trace_events() if hasattr(agent, "get_trace_events") else []
-        return NodeResult(outputs={"answer": answer, "trace": events})
-
-
-class LLMChatNode(ReactRuntimeNode):
+class LLMChatNode(BaseNode):
     node_type = "llm.chat"
     title = "模型对话"
     category = "model"
@@ -414,7 +365,10 @@ class LLMChatNode(ReactRuntimeNode):
             prompt = prompt.replace("{{SKILLS}}", "" if skills_text and skills_text in extra else skills_text)
             system = "\n\n".join(part for part in (prompt, extra) if part)
             history = agent._history[-agent.max_history_turns * 2:]
-            messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": str(inputs["message"])}]
+            user_text = str(inputs["message"])
+            user_content_parts = context.services.get("user_content_parts") or []
+            user_content = [{"type": "text", "text": user_text}, *user_content_parts] if user_content_parts else user_text
+            messages = [{"role": "system", "content": system}, *history, {"role": "user", "content": user_content}]
         tool_schemas = inputs.get("tool_schemas", context.services.get("tool_schemas", []))
         if feedback:
             prior = feedback.get("response", {}).get("tool_schemas") or []
@@ -423,7 +377,7 @@ class LLMChatNode(ReactRuntimeNode):
         stream_update = context.services.get("stream_update")
         if callable(stream_update):
             stream_update("")
-        context.emit("model_request", context.node_id, {"messages": messages, "tool_schemas": tool_schemas})
+        context.emit("model_request", context.node_id, {"messages": trace_safe_messages(messages), "tool_schemas": tool_schemas})
         request = {"action": "generate", "messages": messages, "tools": tool_schemas}
         request["reasoning_effort"] = context.services.get("reasoning_effort") or self.config.get("reasoning_effort", "auto")
         if callable(stream_update):
@@ -718,7 +672,6 @@ node_registry.register_many((
     ChatInputNode,
     ReactLoopNode,
     LegacyReactLoopNode,
-    ReactRuntimeNode,
     LLMChatNode,
     ResponseRouterNode,
     LegacyResponseRouterNode,

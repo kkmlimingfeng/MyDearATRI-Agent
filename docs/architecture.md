@@ -23,8 +23,8 @@ Workflow JSON -> GraphExecutor -> workflow nodes -> WorkflowRuntime -> EventBus
 The runtime accepts provider-neutral `LLMResponse` values. Tool calls use
 `ToolCall`; execution results use `ToolResult`; observable events use
 `TraceEvent`. OpenAI-compatible and llama.cpp backends translate provider
-responses into this protocol. The legacy text ReAct parser remains available
-for models that do not return native tool calls.
+responses into this protocol. A text adapter handles models that embed tool
+calls in their response; dispatch and iteration remain explicit workflow nodes.
 
 ## Modules and workflow nodes
 
@@ -42,13 +42,13 @@ implementation. Initial port contracts live in `agent/nodes/`.
 
 The workflow editor is separate from everyday chat. Applying a workflow selects
 it as the active Agent configuration for the chat page. The workbench can also
-run the graph and inspect its trace. Graph documents use `workflow_version: 2`;
-the existing CLI continues to use v1. The web runner schedules registered node
-implementations by their connected inputs. An inactive branch omits its output
-port, so downstream nodes on that branch do not run. A connection marked
+run the graph and inspect its trace. All runnable documents use
+`workflow_version: 2`, including the CLI. The graph runner schedules registered
+node implementations by their connected inputs. An inactive branch omits its
+output port, so downstream nodes on that branch do not run. A connection marked
 `data.feedback: true` is delivered on the next iteration. The loop node
-enforces the iteration limit. The legacy `agent.react_runtime` still uses
-`ReactAgent.run()` for old documents.
+enforces the iteration limit. There is no separate ReAct execution path; tool
+use and iteration are ordinary connected workflow nodes.
 
 The web editor reads graph documents from `workflows/*.json` through the local
 API whenever the page loads, and its save action writes back to that directory.

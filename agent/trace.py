@@ -4,9 +4,33 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Protocol, TextIO
+from typing import Any, Callable, Iterable, List, Optional, Protocol, TextIO
 
 from .protocol import TraceEvent
+
+
+def trace_safe_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Omit encoded image payloads from trace events sent to the browser."""
+    result = []
+    for message in messages:
+        item = {key: value for key, value in message.items() if key != "content"}
+        content = message.get("content")
+        if isinstance(content, list):
+            safe_content = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    safe_content.append({"type": "text", "text": str(part.get("text", ""))})
+                elif part.get("type") == "image_url":
+                    safe_content.append({"type": "image_url", "image_url": "[图片数据已省略]"})
+                else:
+                    safe_content.append({"type": part.get("type", "unknown")})
+            item["content"] = safe_content
+        else:
+            item["content"] = content
+        result.append(item)
+    return result
 
 
 class TraceSink(Protocol):

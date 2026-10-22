@@ -178,7 +178,7 @@ function validateGraph(nodes, edges, modelOptions = [], language = 'zh', ttsMode
       }
     }
   }
-  if (!nodes.some((node) => ['agent.react_runtime', 'llm.chat'].includes(node.data.kind)) && !nodes.some((node) => node.data.kind === 'audio.tts_model') && !isDirectChatGraph(nodes, edges)) issues.push('无模型工作流需要将对话输入直接连接到回复输出');
+  if (!nodes.some((node) => node.data.kind === 'llm.chat') && !nodes.some((node) => node.data.kind === 'audio.tts_model') && !isDirectChatGraph(nodes, edges)) issues.push('无模型工作流需要将对话输入直接连接到回复输出');
   if (!nodes.some((node) => node.data.kind === 'core.chat_input')) issues.push('工作流需要一个对话输入节点');
   if (!nodes.some((node) => node.data.kind === 'core.chat_output')) issues.push('工作流需要一个回复输出节点');
   return issues;
@@ -904,7 +904,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
       });
       setRunResult(payload);
       lastEventsRef.current = payload.events || [];
-      setAgentModelLoaded(nodes.some((node) => ['llm.chat', 'agent.react_runtime'].includes(node.data.kind)));
+      setAgentModelLoaded(nodes.some((node) => node.data.kind === 'llm.chat'));
       setNodes((current) => current.map((node) => {
         let data = node.data;
         if (Object.hasOwn(payload.previews || {}, node.id)) data = { ...node.data, outputPreview: payload.previews[node.id] };
@@ -917,7 +917,7 @@ function WorkflowEditor({ initialDocument, savedDocument, persisted, openTabs, a
       }));
       setNodes((current) => applyExecutionEvents(current, payload.events || []));
       const failed = payload.events.some((event) => event.event_type === 'workflow_failed');
-      if (failed) setNodes((current) => current.map((node) => ['agent.react_runtime', 'llm.chat'].includes(node.data.kind) ? { ...node, data: { ...node.data, executionStatus: 'failed' } } : node));
+      if (failed) setNodes((current) => current.map((node) => node.data.kind === 'llm.chat' ? { ...node, data: { ...node.data, executionStatus: 'failed' } } : node));
     } catch (error) {
       setRunResult({ error: error.message, events: lastEventsRef.current });
       setNodes((current) => current.map((node) => {

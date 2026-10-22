@@ -42,8 +42,6 @@ export const nodeCatalog = [
   { type: 'control.branch', label: '条件分支', category: 'control', inputs: [{ id: 'value', label: '条件值', type: 'any' }], outputs: [{ id: 'true', label: '满足', type: 'any', optional: true }, { id: 'false', label: '不满足', type: 'any', optional: true }], defaults: { condition: 'truthy', compare_to: '' }, moduleId: '', preview: '把数据按条件送到不同出口，可用于规划和反思流程。' },
   { type: 'state.accumulator', label: '状态累积', category: 'context', inputs: [{ id: 'state', label: '已有状态', type: 'context', optional: true }, { id: 'item', label: '新结果', type: 'any', optional: true }], outputs: [{ id: 'state', label: '新状态', type: 'context' }], defaults: {}, moduleId: '', preview: '把计划、观察、工具结果或反思记录追加到状态。' },
   { type: 'core.chat_output', label: '回复输出', category: 'io', inputs: [{ id: 'answer', label: 'answer', type: 'text' }, { id: 'voice', label: '语音输出', labelZh: '语音输出', labelEn: 'Voice output', type: 'audio', optional: true }, { id: 'animation', label: '动画输出', labelZh: '动画输出', labelEn: 'Animation output', type: 'animation', optional: true }], outputs: [{ id: 'answer', label: 'answer', type: 'text', hidden: true }, { id: 'voice', label: 'voice', type: 'audio', optional: true, hidden: true }, { id: 'animation', label: 'animation', type: 'animation', optional: true, hidden: true }], defaults: { show_trace: false }, moduleId: '', preview: '工作流最终输出。' },
-  // 保留旧版 JSON 的兼容节点，新工作流使用 llm.chat。
-  { type: 'agent.react_runtime', label: '兼容 ReAct 运行时', category: 'runtime', inputs: [{ id: 'message', label: 'message', type: 'text' }, { id: 'llm', label: 'llm', type: 'llm' }, { id: 'prompt', label: 'prompt', type: 'prompt' }, { id: 'memory', label: 'memory', type: 'memory', optional: true }, { id: 'skills', label: 'skills', type: 'skills', optional: true }, { id: 'tools', label: 'tools', type: 'tools', optional: true }], outputs: [{ id: 'answer', label: 'answer', type: 'text' }, { id: 'trace', label: 'trace', type: 'trace' }], defaults: { max_iterations: 5, display_mode: 'normal', prompt_name: 'default' }, moduleId: '', preview: '仅用于兼容旧版工作流。' },
   { type: 'react.response_router', label: '兼容：响应解析与分流', category: 'runtime', inputs: [{ id: 'response', label: '结构化响应', type: 'model_response' }], outputs: [{ id: 'tool_calls', label: '工具 / 技能调用', type: 'tool_calls', optional: true }, { id: 'answer', label: '最终回答', type: 'text', optional: true }], defaults: {}, moduleId: '', preview: '旧版工作流兼容节点。', hideOutputPreview: true, legacy: true },
   { type: 'tools.dispatch', label: '兼容：工具 / 技能执行', category: 'runtime', inputs: [{ id: 'tool_calls', label: '工具 / 技能调用', type: 'tool_calls' }], outputs: [{ id: 'tool_results', label: '执行结果', type: 'tool_results' }], defaults: {}, moduleId: '', preview: '旧版工作流兼容节点。', legacy: true },
   { type: 'react.loop', label: '兼容：ReAct 循环', category: 'runtime', inputs: [{ id: 'response', label: '模型响应', type: 'model_response', optional: true }, { id: 'tool_results', label: '工具结果', type: 'tool_results', optional: true }], outputs: [{ id: 'loop', label: '继续 / 结束', type: 'loop' }], defaults: { max_iterations: 5 }, moduleId: '', preview: '旧版工作流兼容节点。', legacy: true },
@@ -103,5 +101,14 @@ export const modelChoices = [
 ];
 
 export function getNodeDefinition(type) {
-  return nodeCatalog.find((item) => item.type === type) ?? nodeCatalog.find((item) => item.type === 'agent.react_runtime');
+  return nodeCatalog.find((item) => item.type === type) ?? {
+    type,
+    label: `未注册节点 (${type})`,
+    category: 'control',
+    inputs: [],
+    outputs: [],
+    defaults: {},
+    moduleId: '',
+    preview: '后端没有注册此节点类型。',
+  };
 }

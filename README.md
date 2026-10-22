@@ -115,7 +115,7 @@ python myagent.py --list-models
 python myagent.py --select-model --mode transparent
 ```
 
-不指定工作流时，CLI 使用 `workflows/default_react.json`。通过 `--workflow PATH`、`--model KEY` 和 `--modules-config PATH` 可更换工作流、模型与模块配置。完整参数见 `python myagent.py --help`。
+不指定工作流时，CLI 使用 `workflows/atri_companion_graph.json`。通过 `--workflow PATH`、`--model KEY` 可更换工作流和模型。CLI 与网页共用 workflow v2 图执行器。完整参数见 `python myagent.py --help`。
 
 ## 工作流与扩展
 

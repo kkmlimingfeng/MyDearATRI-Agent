@@ -25,17 +25,19 @@ from typing import Any, Dict
 
 from agent.graph_workflow import GraphWorkflowError, validate_graph_workflow
 from agent.graph_executor import GraphExecutor
+from agent.runtime_manager import RuntimeManager
 from agent.workflow_runtime import WorkflowRuntime
 from agent.nodes import node_registry
 from agent.protocol import TraceEvent
 from agent.tool_discovery import TOOL_DISCOVERY_TEXT, discovery_schemas
-from agent.workflow import load_workflow
 from modules.module_loader import (
     ModuleConfigError,
     build_modules,
     load_module_specs,
     resolve_config_value,
 )
+from modules.mem.conversation_store import conversation_store
+from modules.attachments import MAX_ATTACHMENT_COUNT, prepare_chat_attachments
 from modules.sandbox_config import (
     browse_sandbox_directories,
     load_sandbox_settings,
@@ -61,24 +63,13 @@ PROMPT_DIR = ROOT / "modules" / "prompt" / "SystemPrompt"
 MEMORY_DIR = ROOT / "modules" / "mem"
 CREDENTIAL_PATH = ROOT / "config" / "model_credentials.json"
 API_MODELS_PATH = ROOT / "config" / "api_models.json"
-_runtime_lock = threading.RLock()
-_runtime_agent = None
-_runtime_graph_key = None
-_runtime_execution_key = None
-_runtime_bindings: Dict[str, str] = {}
-_runtime_started = False
-_runtime_workflow_id = None
-_run_jobs: dict[str, dict] = {}
-_jobs_lock = threading.Lock()
+_runtime_manager = RuntimeManager()
 _workflow_file_lock = threading.Lock()
 _model_config_lock = threading.Lock()
 
 
 def _update_run_draft(job_id: str, content: str) -> None:
-    with _jobs_lock:
-        job = _run_jobs.get(job_id)
-        if job is not None:
-            job["draft"] = content
+    _runtime_manager.update_run_job(job_id, draft=content)
 
 
 def _graph_workflow_documents() -> list[dict]:
@@ -496,7 +487,7 @@ def _save_graph_workflow(document: Any, previous_id: Any = None, create_only: bo
             raise GraphWorkflowError(f"原工作流文件不存在: {source.name}")
         if (source or create_only) and destination.exists():
             raise GraphWorkflowError(f"工作流文件已存在: {destination.name}")
-        if source and _runtime_started and _runtime_workflow_id == previous_id:
+        if source and _runtime_manager.state.started and _runtime_manager.state.workflow_id == previous_id:
             raise GraphWorkflowError("请先停止运行中的工作流，再重命名文件")
         temporary = WORKFLOW_DIR / f".{graph.workflow_id}.{uuid.uuid4().hex}.tmp"
         try:
@@ -517,8 +508,8 @@ def _delete_graph_workflow(workflow_id: Any) -> dict:
     if not isinstance(workflow_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", workflow_id):
         raise GraphWorkflowError("工作流 ID 无效")
     destination = WORKFLOW_DIR / f"{workflow_id}.json"
-    with _runtime_lock:
-        if _runtime_started and _runtime_workflow_id == workflow_id:
+    with _runtime_manager.lock:
+        if _runtime_manager.state.started and _runtime_manager.state.workflow_id == workflow_id:
             raise GraphWorkflowError("请先停止运行中的工作流，再删除文件")
         with _workflow_file_lock:
             if destination.is_symlink():
@@ -683,9 +674,9 @@ def _set_capability_items(kind: str, updates: Any) -> dict:
     current = module._enabled_skills if kind == "skills" else module._enabled_tools
     current.update(updates)
     _write_json_map(ROOT / "config" / f"{kind}.json", current)
-    with _runtime_lock:
-        if _runtime_agent is not None:
-            active = _runtime_agent.get_module(kind)
+    with _runtime_manager.lock:
+        if _runtime_manager.state.agent is not None:
+            active = _runtime_manager.state.agent.get_module(kind)
             if active is not None:
                 for name, enabled in updates.items():
                     (active.set_skill_enabled if kind == "skills" else active.set_tool_enabled)(name, enabled)
@@ -739,24 +730,12 @@ def _graph_previews(graph: dict, user_input: str = "") -> dict:
             source_id = edge["source"]
             if source_id in nodes:
                 resolve(source_id)
-    runtime_node = next((node for node in graph["nodes"] if node["type"] in {"llm.chat", "agent.react_runtime"}), None)
+    runtime_node = next((node for node in graph["nodes"] if node["type"] == "llm.chat"), None)
     if runtime_node:
         message_edge = next((edge for edge in graph["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "message"), None)
         if message_edge:
             previews[message_edge["source"]] = user_input or str(nodes[message_edge["source"]].get("data", {}).get("config", {}).get("debug_input", ""))
     return previews
-
-
-def _runtime_context_preview(graph: dict, previews: dict) -> str:
-    runtime_node = next(node for node in graph["nodes"] if node["type"] in {"llm.chat", "agent.react_runtime"})
-    edge = next((edge for edge in graph["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "context"), None)
-    return previews.get(edge["source"], "") if edge else ""
-
-
-def _runtime_prompt_preview(graph: dict, previews: dict) -> str:
-    runtime_node = next(node for node in graph["nodes"] if node["type"] in {"llm.chat", "agent.react_runtime"})
-    edge = next((edge for edge in graph["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "prompt"), None)
-    return previews.get(edge["source"], "") if edge else ""
 
 
 def _model_kind(config: dict) -> str:
@@ -814,10 +793,10 @@ def _api_model_catalog() -> list[dict]:
 
 
 def _invalidate_active_model(model_id: str) -> None:
-    with _runtime_lock:
-        if not _runtime_graph_key:
+    with _runtime_manager.lock:
+        if not _runtime_manager.state.graph_key:
             return
-        graph = json.loads(_runtime_graph_key)
+        graph = json.loads(_runtime_manager.state.graph_key)
         if any(node.get("type") in {"llm.openai_loader", "llm.provider"}
                and node.get("data", {}).get("config", {}).get("model") == model_id
                for node in graph.get("nodes", [])):
@@ -926,7 +905,7 @@ def _load_env_file() -> None:
 
 def _graph_bindings(graph: dict) -> tuple[dict, dict]:
     node_map = {node["id"]: node for node in graph["nodes"]}
-    runtime_nodes = [node for node in graph["nodes"] if node["type"] in {"agent.react_runtime", "llm.chat"}]
+    runtime_nodes = [node for node in graph["nodes"] if node["type"] == "llm.chat"]
     if not runtime_nodes:
         raise GraphWorkflowError("工作流缺少模型对话节点")
     runtime_node = runtime_nodes[0]
@@ -998,27 +977,8 @@ def _graph_bindings(graph: dict) -> tuple[dict, dict]:
 
 
 def _make_agent(graph: dict):
-    workflow_file = ROOT / "workflows" / "default_react.json"
-    base_workflow = load_workflow(str(workflow_file))
     bindings, providers = _graph_bindings(graph)
-    runtime_node = next(node for node in graph["nodes"] if node["type"] in {"agent.react_runtime", "llm.chat"})
-    runtime_config = runtime_node.get("data", {}).get("config", {})
-    runtime_kwargs = dict(base_workflow.runtime_kwargs)
-    for key in ("max_iterations", "max_history_turns"):
-        if key in runtime_config:
-            runtime_kwargs[key] = runtime_config[key]
-    loop_edge = next((edge for edge in graph["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "loop"), None)
-    if loop_edge:
-        loop_node = next(node for node in graph["nodes"] if node["id"] == loop_edge["source"])
-        if loop_node["type"] == "context.merge":
-            loop_edge = next((edge for edge in graph["edges"] if edge["target"] == loop_node["id"] and edge.get("targetHandle") == "loop"), None)
-            if loop_edge:
-                loop_node = next(node for node in graph["nodes"] if node["id"] == loop_edge["source"])
-        if loop_node["type"] not in {"control.loop", "react.loop"}:
-            raise GraphWorkflowError("循环输入必须连接循环控制节点或上下文联结节点")
-        runtime_kwargs["max_iterations"] = max(1, min(500, int(loop_node.get("data", {}).get("config", {}).get("max_iterations", 5))))
-    runtime_class = base_workflow.runtime_class if any(node["type"] == "agent.react_runtime" for node in graph["nodes"]) else WorkflowRuntime
-    agent = runtime_class(**runtime_kwargs)
+    agent = WorkflowRuntime()
 
     specs = load_module_specs(str(ROOT / "config" / "modules.json"))
     models = _load_models()
@@ -1101,12 +1061,14 @@ def _make_agent(graph: dict):
         if item.get("id") in referenced_ids:
             overrides[item["id"]] = True
     modules, enabled = build_modules(specs, agent.bus, str(ROOT), overrides)
+    if actual_kind == "api":
+        agent._api_model_supports_images = selected_model.get("supports_images") is True
     for module_id, module in modules.items():
         agent.register_module(module, enabled=enabled.get(module_id, True))
     # Register the selected model now, but defer heavyweight GGUF/API
     # initialization until the first model request in the workflow.
     agent.start(defer_module_ids={bindings["llm_id"]})
-    agent.display_mode = runtime_config.get("display_mode", "normal")
+    agent.display_mode = "normal"
     agent.tool_approval_callback = lambda call, metadata: False
     return agent, bindings
 
@@ -1121,7 +1083,7 @@ def _validate_runtime_graph(graph_data: Any):
         raise GraphWorkflowError(
             "当前运行器暂不支持这些节点: " + ", ".join(unsupported)
         )
-    has_model_runtime = any(node["type"] in {"agent.react_runtime", "llm.chat"} for node in graph.nodes)
+    has_model_runtime = any(node["type"] == "llm.chat" for node in graph.nodes)
     if not has_model_runtime:
         if any(node["type"] == "audio.tts_model" for node in graph.nodes):
             return graph, {}
@@ -1130,7 +1092,7 @@ def _validate_runtime_graph(graph_data: Any):
     node_map = {node["id"]: node for node in graph.nodes}
     for edge in graph.edges:
         if edge.get("target") != next(
-            node["id"] for node in graph.nodes if node["type"] in {"agent.react_runtime", "llm.chat"}
+            node["id"] for node in graph.nodes if node["type"] == "llm.chat"
         ):
             continue
         provider = node_map[edge["source"]]
@@ -1161,7 +1123,7 @@ def _is_direct_chat_graph(graph) -> bool:
 
 def _is_tts_graph(graph) -> bool:
     node_types = {node["type"] for node in graph.nodes}
-    return "audio.tts_model" in node_types and not node_types.intersection({"llm.chat", "agent.react_runtime"})
+    return "audio.tts_model" in node_types and "llm.chat" not in node_types
 
 
 def _voice_tts_model(graph) -> str | None:
@@ -1240,6 +1202,85 @@ def _summarize_history(agent, llm_id: str | None, previous_summary: str, message
     return summary[:12000]
 
 
+def update_conversation_summaries(payload: Any) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("摘要更新请求格式无效")
+    snapshots = payload.get("conversations", [])
+    if not isinstance(snapshots, list) or len(snapshots) > 1000:
+        raise ValueError("会话列表格式无效")
+    saved = 0
+    for snapshot in snapshots:
+        result = conversation_store.save(snapshot)
+        saved += int(bool(result.get("saved")))
+
+    conversation_ids = payload.get("conversation_ids")
+    if conversation_ids is None:
+        conversation_ids = [entry["id"] for entry in conversation_store.list()]
+    if not isinstance(conversation_ids, list) or len(conversation_ids) > 1000:
+        raise ValueError("摘要会话 ID 列表格式无效")
+    force = payload.get("force", False)
+    if not isinstance(force, bool):
+        raise ValueError("强制更新摘要开关无效")
+    if any(not isinstance(conversation_id, str) for conversation_id in conversation_ids):
+        raise ValueError("摘要会话 ID 格式无效")
+
+    work = []
+    for conversation_id in dict.fromkeys(conversation_ids):
+        archive = conversation_store.get(conversation_id)
+        if archive is None:
+            continue
+        messages = archive["messages"]
+        complete_count = max(
+            (index + 1 for index, item in enumerate(messages) if item["role"] == "assistant"),
+            default=0,
+        )
+        entry = archive["conversation"]
+        summary_count = int(entry.get("summary_message_count", 0) or 0)
+        if complete_count == 0 or (not force and complete_count <= summary_count):
+            continue
+        work.append((conversation_id, archive, complete_count))
+
+    if not work:
+        return {"saved": saved, "updated": 0, "results": []}
+
+    results = []
+    with _runtime_manager.lock:
+        if not _runtime_manager.state.started or _runtime_manager.state.agent is None:
+            raise GraphWorkflowError("请先启动当前工作流，再更新会话摘要")
+        llm_id = _runtime_manager.state.bindings.get("llm_id")
+        for conversation_id, archive, complete_count in work:
+            entry = archive["conversation"]
+            messages = archive["messages"][:complete_count]
+            if force:
+                previous_summary = ""
+                messages_to_summarize = messages
+            else:
+                previous_summary = str(entry.get("summary", ""))
+                messages_to_summarize = messages[int(entry.get("summary_message_count", 0) or 0):]
+            try:
+                summary = _summarize_history(
+                    _runtime_manager.state.agent,
+                    llm_id,
+                    previous_summary,
+                    messages_to_summarize,
+                )
+                turn_count = sum(item["role"] == "assistant" for item in messages)
+                updated = conversation_store.update_summary(
+                    conversation_id,
+                    summary,
+                    complete_count,
+                    turn_count,
+                )
+                results.append({"id": conversation_id, "updated": True, "conversation": updated})
+            except Exception as exc:
+                results.append({"id": conversation_id, "updated": False, "error": str(exc)})
+    return {
+        "saved": saved,
+        "updated": sum(bool(result.get("updated")) for result in results),
+        "results": results,
+    }
+
+
 def _validate_context_compression(options: Any) -> dict:
     if options is None:
         options = {}
@@ -1304,12 +1345,12 @@ def compress_context_now(
         raise ValueError("上下文摘要必须是文本")
 
     execution_key = _execution_graph_key(graph_data)
-    with _runtime_lock:
+    with _runtime_manager.lock:
         if (
-            not _runtime_started
-            or _runtime_agent is None
-            or _runtime_execution_key != execution_key
-            or _runtime_bindings.get("llm_id") != bindings.get("llm_id")
+            not _runtime_manager.state.started
+            or _runtime_manager.state.agent is None
+            or _runtime_manager.state.execution_key != execution_key
+            or _runtime_manager.state.bindings.get("llm_id") != bindings.get("llm_id")
         ):
             raise GraphWorkflowError("请先启动当前工作流，再手动压缩上下文")
         normalized_history = [
@@ -1328,8 +1369,8 @@ def compress_context_now(
                 "nothing_to_compress": True,
             }
         summary = _summarize_history(
-            _runtime_agent,
-            _runtime_bindings.get("llm_id"),
+            _runtime_manager.state.agent,
+            _runtime_manager.state.bindings.get("llm_id"),
             current_summary,
             normalized_history[:boundary],
         )
@@ -1341,9 +1382,9 @@ def compress_context_now(
 
 
 def _runtime_model_loaded() -> bool:
-    if _runtime_agent is None:
+    if _runtime_manager.state.agent is None:
         return False
-    llm = _runtime_agent.get_module(_runtime_bindings.get("llm_id", "llm"))
+    llm = _runtime_manager.state.agent.get_module(_runtime_manager.state.bindings.get("llm_id", "llm"))
     return bool(getattr(llm, "_initialized", False))
 
 
@@ -1393,61 +1434,40 @@ def _execution_graph_key(graph_data: dict) -> str:
 
 def start_graph(graph_data: Any) -> dict:
     """Activate a workflow and initialize its selected model without a prompt."""
-    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started, _runtime_workflow_id
     graph, bindings = _validate_runtime_graph(graph_data)
     serialized_graph = json.dumps(graph_data, ensure_ascii=False, sort_keys=True)
     execution_key = _execution_graph_key(graph_data)
-    with _runtime_lock:
+    with _runtime_manager.lock:
         voice_tts_model = _voice_tts_model(graph)
         if voice_tts_model:
             tts.select_model(voice_tts_model)
             tts.ensure_started()
         else:
             tts.close()
-        if _is_direct_chat_graph(graph):
-            if _runtime_agent is not None:
-                _runtime_agent.stop()
-            _runtime_agent = None
-            _runtime_bindings = {}
-            _runtime_graph_key = serialized_graph
-            _runtime_execution_key = execution_key
-            _runtime_started = True
-            _runtime_workflow_id = graph.workflow_id
+        if _is_direct_chat_graph(graph) or _is_tts_graph(graph):
+            _runtime_manager.clear_runtime()
+            _runtime_manager.state.agent = WorkflowRuntime()
+            _runtime_manager.state.bindings = {}
+            _runtime_manager.state.graph_key = serialized_graph
+            _runtime_manager.state.execution_key = execution_key
+            _runtime_manager.state.started = True
+            _runtime_manager.state.workflow_id = graph.workflow_id
             return {"running": True, "model_loaded": False, "workflow_id": graph.workflow_id}
-        if _is_tts_graph(graph):
-            if _runtime_agent is not None:
-                _runtime_agent.stop()
-            _runtime_agent = WorkflowRuntime()
-            _runtime_bindings = {}
-            _runtime_graph_key = serialized_graph
-            _runtime_execution_key = execution_key
-            _runtime_started = True
-            _runtime_workflow_id = graph.workflow_id
-            return {"running": True, "model_loaded": False, "workflow_id": graph.workflow_id}
-        if _runtime_agent is None or _runtime_execution_key != execution_key:
-            if _runtime_agent is not None:
-                _runtime_agent.stop()
-            _runtime_started = False
-            _runtime_workflow_id = None
-            _runtime_agent, _runtime_bindings = _make_agent(graph_data)
-        _runtime_graph_key = serialized_graph
-        _runtime_execution_key = execution_key
+        if _runtime_manager.state.agent is None or _runtime_manager.state.execution_key != execution_key:
+            _runtime_manager.clear_runtime()
+            _runtime_manager.state.agent, _runtime_manager.state.bindings = _make_agent(graph_data)
+        _runtime_manager.state.graph_key = serialized_graph
+        _runtime_manager.state.execution_key = execution_key
         try:
-            llm = _runtime_agent.get_module(bindings["llm_id"])
+            llm = _runtime_manager.state.agent.get_module(bindings["llm_id"])
             if hasattr(llm, "ensure_initialized"):
                 llm.ensure_initialized()
             elif not getattr(llm, "_initialized", False):
                 llm.initialize()
-            _runtime_started = True
-            _runtime_workflow_id = graph.workflow_id
+            _runtime_manager.state.started = True
+            _runtime_manager.state.workflow_id = graph.workflow_id
         except Exception:
-            _runtime_agent.stop()
-            _runtime_agent = None
-            _runtime_graph_key = None
-            _runtime_execution_key = None
-            _runtime_bindings = {}
-            _runtime_started = False
-            _runtime_workflow_id = None
+            _runtime_manager.clear_runtime()
             tts.close()
             raise
         return {
@@ -1459,21 +1479,28 @@ def start_graph(graph_data: Any) -> dict:
 
 def stop_runtime() -> dict:
     """Stop the active Agent and release model resources."""
-    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started, _runtime_workflow_id
-    with _runtime_lock:
-        agent = _runtime_agent
-        try:
-            if agent is not None:
-                agent.stop()
-        finally:
-            tts.close()
-            _runtime_agent = None
-            _runtime_graph_key = None
-            _runtime_execution_key = None
-            _runtime_bindings = {}
-            _runtime_started = False
-            _runtime_workflow_id = None
+    _runtime_manager.clear_runtime()
+    tts.close()
     return {"running": False, "model_loaded": False}
+
+
+def _validate_visual_attachments(agent: Any, content_parts: list[dict]) -> None:
+    if not any(part.get("type") == "image_url" for part in content_parts):
+        return
+    if agent is not None and getattr(agent, "_api_model_supports_images", None) is False:
+        raise GraphWorkflowError(
+            "当前 API 模型配置未启用图片输入，无法识别图片或视频；"
+            "请在 API 模型配置中勾选“支持图片输入”"
+        )
+    llm_id = _runtime_manager.state.bindings.get("llm_id")
+    llm = getattr(agent, "_modules", {}).get(llm_id) if agent is not None and llm_id else None
+    if llm is None:
+        raise GraphWorkflowError("当前工作流没有可处理图片或视频的语言模型节点")
+    if hasattr(llm, "mmproj_path") and not getattr(llm, "mmproj_path", ""):
+        raise GraphWorkflowError(
+            "当前 GGUF 模型未配置视觉投影文件 mmproj，无法识别图片或视频；"
+            "请改用支持视觉的 API 模型，或为 GGUF 配置匹配的 mmproj 文件"
+        )
 
 
 def run_graph(
@@ -1486,9 +1513,12 @@ def run_graph(
     reasoning_effort: Any = None,
     history_summary: Any = None,
     context_compression: Any = None,
+    attachments: Any = None,
 ) -> dict:
-    global _runtime_agent, _runtime_graph_key, _runtime_execution_key, _runtime_bindings, _runtime_started, _runtime_workflow_id
     graph, bindings = _validate_runtime_graph(graph_data)
+    prepared_input = prepare_chat_attachments(user_input, attachments)
+    user_input = prepared_input["text"]
+    user_content_parts = prepared_input["image_parts"]
     if reasoning_effort is not None and (not isinstance(reasoning_effort, str) or reasoning_effort not in {"auto", "minimal", "low", "medium", "high", "xhigh"}):
         raise ValueError("思考强度无效")
     compression = _validate_context_compression(context_compression)
@@ -1498,9 +1528,9 @@ def run_graph(
     stream_update = (lambda content: _update_run_draft(job_id, content)) if job_id else None
     serialized_graph = json.dumps(graph_data, ensure_ascii=False, sort_keys=True)
     execution_key = _execution_graph_key(graph_data)
-    with _runtime_lock:
+    with _runtime_manager.lock:
         if require_started and (
-            not _runtime_started or _runtime_execution_key != execution_key
+            not _runtime_manager.state.started or _runtime_manager.state.execution_key != execution_key
         ):
             raise GraphWorkflowError(
                 "Agent 尚未启动，或当前工作流与运行中的配置不同；请先在工作流页启动"
@@ -1510,17 +1540,18 @@ def run_graph(
             tts.select_model(voice_tts_model)
             tts.ensure_started()
         if _is_direct_chat_graph(graph):
-            if _runtime_execution_key != execution_key:
-                _runtime_started = False
-                _runtime_workflow_id = None
-            if _runtime_agent is not None:
-                _runtime_agent.stop()
-                _runtime_agent = None
-                _runtime_bindings = {}
-                _runtime_started = False
-                _runtime_workflow_id = None
-            _runtime_graph_key = serialized_graph
-            _runtime_execution_key = execution_key
+            _validate_visual_attachments(None, user_content_parts)
+            if _runtime_manager.state.execution_key != execution_key:
+                _runtime_manager.state.started = False
+                _runtime_manager.state.workflow_id = None
+            if _runtime_manager.state.agent is not None:
+                _runtime_manager.state.agent.stop()
+                _runtime_manager.state.agent = None
+                _runtime_manager.state.bindings = {}
+                _runtime_manager.state.started = False
+                _runtime_manager.state.workflow_id = None
+            _runtime_manager.state.graph_key = serialized_graph
+            _runtime_manager.state.execution_key = execution_key
             input_id = next(node["id"] for node in graph.nodes if node["type"] == "core.chat_input")
             output_id = next(node["id"] for node in graph.nodes if node["type"] == "core.chat_output")
             run_id = uuid.uuid4().hex
@@ -1536,207 +1567,180 @@ def run_graph(
                 TraceEvent("workflow_completed", run_id, output_id, {"answer": user_input}, timestamp),
             ]
             return {"answer": user_input, "run_id": run_id, "events": [event.as_dict() for event in events],
-                    "previews": {input_id: user_input, output_id: user_input}, "workflow_id": graph.workflow_id}
+                    "previews": {input_id: user_input, output_id: user_input}, "workflow_id": graph.workflow_id,
+                    "input_context": user_input}
         if _is_tts_graph(graph):
-            if _runtime_agent is None or _runtime_execution_key != execution_key:
-                if _runtime_agent is not None:
-                    _runtime_agent.stop()
-                _runtime_agent = WorkflowRuntime()
-                _runtime_bindings = {}
-                _runtime_execution_key = execution_key
-                _runtime_started = False
-                _runtime_workflow_id = None
-            _runtime_graph_key = serialized_graph
-            agent = _runtime_agent
+            _validate_visual_attachments(None, user_content_parts)
+            if _runtime_manager.state.agent is None or _runtime_manager.state.execution_key != execution_key:
+                if _runtime_manager.state.agent is not None:
+                    _runtime_manager.state.agent.stop()
+                _runtime_manager.state.agent = WorkflowRuntime()
+                _runtime_manager.state.bindings = {}
+                _runtime_manager.state.execution_key = execution_key
+                _runtime_manager.state.started = False
+                _runtime_manager.state.workflow_id = None
+            _runtime_manager.state.graph_key = serialized_graph
+            agent = _runtime_manager.state.agent
             agent.trace_sink.clear()
             run_id = uuid.uuid4().hex
             agent._active_run_id = run_id
-            executor = GraphExecutor(graph, {}, {"tts": tts, "stream_update": stream_update}, agent._trace)
+            executor = GraphExecutor(graph, {}, {"tts": tts, "stream_update": stream_update, "user_content_parts": user_content_parts}, agent._trace)
             executor.run_id = run_id
             if job_id:
-                with _jobs_lock:
-                    _run_jobs[job_id]["trace_ready"] = True
+                _runtime_manager.mark_run_trace_ready(job_id)
             try:
                 result = executor.run(user_input)
             except Exception as exc:
                 agent._trace("workflow_failed", {"error": str(exc)})
                 raise
             result["events"] = [event.as_dict() for event in agent.get_trace_events()]
+            result["input_context"] = user_input
             return result
-        if _runtime_agent is None or _runtime_execution_key != execution_key:
-            if _runtime_agent is not None:
-                _runtime_agent.stop()
-            _runtime_started = False
-            _runtime_workflow_id = None
-            _runtime_agent, _runtime_bindings = _make_agent(graph_data)
-            _runtime_execution_key = execution_key
-        _runtime_graph_key = serialized_graph
+        if _runtime_manager.state.agent is None or _runtime_manager.state.execution_key != execution_key:
+            if _runtime_manager.state.agent is not None:
+                _runtime_manager.state.agent.stop()
+            _runtime_manager.state.started = False
+            _runtime_manager.state.workflow_id = None
+            _runtime_manager.state.agent, _runtime_manager.state.bindings = _make_agent(graph_data)
+            _runtime_manager.state.execution_key = execution_key
+        _validate_visual_attachments(_runtime_manager.state.agent, user_content_parts)
+        _runtime_manager.state.graph_key = serialized_graph
         if history is not None and not isinstance(history, list):
             raise GraphWorkflowError("对话历史必须是数组")
-        normalized_history = [
-            {"role": item["role"], "content": item["content"]}
-            for item in (history or [])
-            if isinstance(item, dict)
-            and item.get("role") in {"user", "assistant"}
-            and isinstance(item.get("content"), str)
-        ]
-        if not hasattr(_runtime_agent, "_configured_max_history_turns"):
-            _runtime_agent._configured_max_history_turns = _runtime_agent.max_history_turns
+        normalized_history = []
+        history_attachment_count = 0
+        for item in history or []:
+            if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"} or not isinstance(item.get("content"), str):
+                continue
+            content = item["content"]
+            history_attachments = item.get("attachments", [])
+            if item["role"] == "user" and history_attachments:
+                if not isinstance(history_attachments, list) or any(
+                    not isinstance(attachment, dict) or attachment.get("kind") not in {"image", "video"}
+                    for attachment in history_attachments
+                ):
+                    raise GraphWorkflowError("历史消息附件格式无效")
+                history_attachment_count += len(history_attachments)
+                if history_attachment_count > 3:
+                    raise GraphWorkflowError("历史上下文最多附带最近 3 个图片或视频")
+                prepared_history = prepare_chat_attachments("", history_attachments)
+                content = [{"type": "text", "text": content}, *prepared_history["image_parts"]]
+            normalized_history.append({"role": item["role"], "content": content})
+        if not hasattr(_runtime_manager.state.agent, "_configured_max_history_turns"):
+            _runtime_manager.state.agent._configured_max_history_turns = _runtime_manager.state.agent.max_history_turns
         effective_keep_turns = (
             compression["keep_recent_turns"]
             if compression["enabled"]
-            else _runtime_agent._configured_max_history_turns
+            else _runtime_manager.state.agent._configured_max_history_turns
         )
-        _runtime_agent.max_history_turns = effective_keep_turns
+        _runtime_manager.state.agent.max_history_turns = effective_keep_turns
         compressed_history_messages = 0
         if compression["enabled"]:
             boundary = _history_summary_boundary(normalized_history, effective_keep_turns)
             if _context_threshold_reached(compression) and boundary > 0:
                 current_summary = _summarize_history(
-                    _runtime_agent,
-                    _runtime_bindings.get("llm_id"),
+                    _runtime_manager.state.agent,
+                    _runtime_manager.state.bindings.get("llm_id"),
                     current_summary,
                     normalized_history[:boundary],
                 )
                 compressed_history_messages = boundary
                 normalized_history = normalized_history[boundary:]
         if history is not None:
-            _runtime_agent._history = normalized_history[-effective_keep_turns * 2:]
+            _runtime_manager.state.agent._history = normalized_history[-effective_keep_turns * 2:]
         summary_context = (
             "以下是较早对话的压缩摘要，用于保持对话连续性；如与最近的原文对话冲突，以较新的信息为准：\n"
             + current_summary
             if current_summary
             else ""
         )
-        if not any(node["type"] == "agent.react_runtime" for node in graph.nodes):
-            agent = _runtime_agent
-            agent.display_mode = mode
-            agent.trace_sink.clear()
-            run_id = uuid.uuid4().hex
-            agent._active_run_id = run_id
-            tool_schemas = []
-            tools_id = _runtime_bindings.get("tools_id")
-            if tools_id and agent._enabled.get(tools_id, False):
-                tool_schemas = discovery_schemas()
-            def capability_text(module_id: str | None, action: str) -> str:
-                if not module_id or not agent._enabled.get(module_id, False):
-                    return ""
-                response = agent.bus.request(source="agent", target=module_id, payload={"action": action})
-                return response.payload.get("text", "")
-            services = {
-                "agent": agent,
-                "read_prompt": lambda filename: _safe_markdown(PROMPT_DIR, filename).read_text(encoding="utf-8"),
-                "tools_text": TOOL_DISCOVERY_TEXT if tool_schemas else "",
-                "skills_text": capability_text(_runtime_bindings.get("skills_id"), "format_skill_overview"),
-                "tool_schemas": tool_schemas,
-                "tools_id": tools_id,
-                "skills_id": _runtime_bindings.get("skills_id"),
-                "tts": tts,
-                "stream_update": stream_update,
-                "reasoning_effort": reasoning_effort,
-                "conversation_summary": summary_context,
-            }
-            executor = GraphExecutor(graph, agent._modules, services, agent._trace)
-            executor.run_id = run_id
-            if job_id:
-                with _jobs_lock:
-                    _run_jobs[job_id]["trace_ready"] = True
-            try:
-                result = executor.run(user_input)
-            except Exception as exc:
-                agent._trace("workflow_failed", {"error": str(exc)})
-                raise
-            agent._add_to_history(user_input, result["answer"])
-            result["events"] = [event.as_dict() for event in agent.get_trace_events()]
-            result["context_summary"] = current_summary
-            result["compressed_history_messages"] = compressed_history_messages
-            return result
-        previews = _graph_previews(graph_data, user_input)
-        runtime_node = next(node for node in graph_data["nodes"] if node["type"] in {"llm.chat", "agent.react_runtime"})
-        prompt_edge = next((edge for edge in graph_data["edges"] if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "prompt"), None)
-        prompt_override = previews.get(prompt_edge["source"]) if prompt_edge else None
-        workflow_context = _runtime_context_preview(graph_data, previews)
-        context_override = "\n\n".join(part for part in (summary_context, workflow_context) if part)
-        prompt_preview = _runtime_prompt_preview(graph_data, previews)
-        for edge in graph_data["edges"]:
-            if edge["target"] == runtime_node["id"] and edge.get("targetHandle") == "message":
-                previews[runtime_node["id"]] = previews.get(edge["source"], user_input)
-                break
-        if prompt_edge:
-            previews[prompt_edge["source"]] = prompt_preview
-        if job_id:
-            _runtime_agent.trace_sink.clear()
-            with _jobs_lock:
-                _run_jobs[job_id]["trace_ready"] = True
-        answer = _runtime_agent.run(
-            user_input=user_input,
-            mode=mode,
-            prompt_override=prompt_override,
-            context_override=context_override,
-            graph_previews=previews,
-            stream_update=stream_update,
-            reasoning_effort=reasoning_effort if reasoning_effort is not None else runtime_node.get("data", {}).get("config", {}).get("reasoning_effort", "auto"),
-            **_runtime_bindings,
-        )
-        previews[runtime_node["id"]] = answer
-        output = next((node["id"] for node in graph_data["nodes"] if node["type"] == "core.chat_output"), None)
-        if output:
-            previews[output] = answer
-        return {
-            "answer": answer,
-            "run_id": getattr(_runtime_agent, "_active_run_id", ""),
-            "events": [event.as_dict() for event in _runtime_agent.get_trace_events()],
-            "previews": previews,
-            "workflow_id": graph.workflow_id,
-            "context_summary": current_summary,
-            "compressed_history_messages": compressed_history_messages,
+        agent = _runtime_manager.state.agent
+        agent.display_mode = mode
+        agent.trace_sink.clear()
+        run_id = uuid.uuid4().hex
+        agent._active_run_id = run_id
+        tool_schemas = []
+        tools_id = _runtime_manager.state.bindings.get("tools_id")
+        if tools_id and agent._enabled.get(tools_id, False):
+            tool_schemas = discovery_schemas()
+
+        def capability_text(module_id: str | None, action: str) -> str:
+            if not module_id or not agent._enabled.get(module_id, False):
+                return ""
+            response = agent.bus.request(source="agent", target=module_id, payload={"action": action})
+            return response.payload.get("text", "")
+
+        services = {
+            "agent": agent,
+            "read_prompt": lambda filename: _safe_markdown(PROMPT_DIR, filename).read_text(encoding="utf-8"),
+            "tools_text": TOOL_DISCOVERY_TEXT if tool_schemas else "",
+            "skills_text": capability_text(_runtime_manager.state.bindings.get("skills_id"), "format_skill_overview"),
+            "tool_schemas": tool_schemas,
+            "tools_id": tools_id,
+            "skills_id": _runtime_manager.state.bindings.get("skills_id"),
+            "tts": tts,
+            "stream_update": stream_update,
+            "reasoning_effort": reasoning_effort,
+            "conversation_summary": summary_context,
+            "user_content_parts": user_content_parts,
         }
+        executor = GraphExecutor(graph, agent._modules, services, agent._trace)
+        executor.run_id = run_id
+        if job_id:
+            _runtime_manager.mark_run_trace_ready(job_id)
+        try:
+            result = executor.run(user_input)
+        except Exception as exc:
+            agent._trace("workflow_failed", {"error": str(exc)})
+            raise
+        agent._add_to_history(user_input, result["answer"])
+        result["events"] = [event.as_dict() for event in agent.get_trace_events()]
+        result["context_summary"] = current_summary
+        result["compressed_history_messages"] = compressed_history_messages
+        result["input_context"] = user_input
+        return result
 
 
 def _start_run_job(payload: dict) -> dict:
     job_id = uuid.uuid4().hex
-    with _jobs_lock:
-        if any(not job["done"] for job in _run_jobs.values()):
-            raise GraphWorkflowError("已有工作流正在运行，请等待完成")
-        _run_jobs.clear()
-        _run_jobs[job_id] = {"done": False, "result": None, "error": None, "trace_ready": False, "draft": ""}
+    if not _runtime_manager.create_run_job(job_id):
+        raise GraphWorkflowError("已有工作流正在运行，请等待完成")
 
     def worker() -> None:
         try:
             result = run_graph(
                 payload.get("workflow"),
                 payload.get("input", "").strip(),
-                payload.get("mode", "transparent"),
-                bool(payload.get("require_started", False)),
-                job_id,
-                payload.get("history"),
-                payload.get("reasoning_effort"),
-                payload.get("history_summary"),
-                payload.get("context_compression"),
+                mode=payload.get("mode", "transparent"),
+                require_started=bool(payload.get("require_started", False)),
+                job_id=job_id,
+                history=payload.get("history"),
+                reasoning_effort=payload.get("reasoning_effort"),
+                history_summary=payload.get("history_summary"),
+                context_compression=payload.get("context_compression"),
+                attachments=payload.get("attachments"),
             )
-            with _jobs_lock:
-                _run_jobs[job_id].update(done=True, result=result)
+            _runtime_manager.update_run_job(job_id, done=True, result=result)
         except Exception as exc:
-            with _jobs_lock:
-                events = [event.as_dict() for event in _runtime_agent.get_trace_events()] if _runtime_agent is not None else []
-                _run_jobs[job_id].update(done=True, error=str(exc), events=events)
+            with _runtime_manager.lock:
+                events = [event.as_dict() for event in _runtime_manager.state.agent.get_trace_events()] if _runtime_manager.state.agent is not None else []
+            _runtime_manager.update_run_job(job_id, done=True, error=str(exc), events=events)
 
     threading.Thread(target=worker, daemon=True, name=f"atri-run-{job_id[:8]}").start()
     return {"job_id": job_id}
 
 
 def _run_job_status(job_id: str) -> dict:
-    with _jobs_lock:
-        job = _run_jobs.get(job_id)
-        if job is None:
-            raise ValueError("运行任务不存在")
-        snapshot = dict(job)
+    snapshot = _runtime_manager.get_run_job(job_id)
+    if snapshot is None:
+        raise ValueError("运行任务不存在")
     if snapshot["done"]:
         return snapshot
     if not snapshot["trace_ready"]:
         return {"done": False, "events": [], "draft": snapshot["draft"]}
-    agent = _runtime_agent
-    events = [event.as_dict() for event in agent.get_trace_events()] if agent is not None else []
+    with _runtime_manager.lock:
+        agent = _runtime_manager.state.agent
+        events = [event.as_dict() for event in agent.get_trace_events()] if agent is not None else []
     return {"done": False, "events": events, "draft": snapshot["draft"]}
 
 
@@ -1919,6 +1923,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             except (ValueError, OSError) as exc:
                 self._send(400, {"error": str(exc)})
             return
+        if parsed_url.path == "/api/memory/conversations":
+            self._send(200, {"conversations": conversation_store.list()})
+            return
         if parsed_url.path == "/api/memories":
             self._send(200, {"files": sorted(path.name for path in MEMORY_DIR.glob("*.md"))})
             return
@@ -1946,9 +1953,9 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/status":
             self._send(200, {
-                "running": _runtime_started,
+                "running": _runtime_manager.state.started,
                 "model_loaded": _runtime_model_loaded(),
-                "workflow_id": _runtime_workflow_id,
+                "workflow_id": _runtime_manager.state.workflow_id,
             })
             return
         if self.path == "/api/nodes":
@@ -1976,11 +1983,14 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/workflows/delete", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory", "/api/tts/speech", "/api/tts/model", "/api/tts/voices/create", "/api/tts/voices/selection", "/api/context/compress", "/api/sandbox/settings", "/api/avatars/create"}:
+        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/workflows/delete", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/tools", "/api/memory", "/api/memory/conversations", "/api/tts/speech", "/api/tts/model", "/api/tts/voices/create", "/api/tts/voices/selection", "/api/context/compress", "/api/sandbox/settings", "/api/avatars/create"}:
             self._send(404, {"error": "Not found"})
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
+            if self.path in {"/api/run", "/api/run/async"} and size > 36 * 1024 * 1024:
+                self.close_connection = True
+                raise ValueError("消息和附件请求不能超过 36 MB")
             if self.path == "/api/avatars/create":
                 if size <= 0 or size > MAX_AVATAR_UPLOAD_BYTES + 8 * 1024 * 1024:
                     raise ValueError("桌宠上传请求为空或超过 512 MB")
@@ -2023,13 +2033,33 @@ class ApiHandler(BaseHTTPRequestHandler):
                 )
                 self._send(200, result)
                 return
+            if self.path == "/api/memory/conversations":
+                action = payload.get("action", "save")
+                if action == "save":
+                    result = conversation_store.save(payload.get("conversation"))
+                elif action == "summarize":
+                    result = update_conversation_summaries({
+                        "conversations": payload.get("conversations", []),
+                        "conversation_ids": payload.get("conversation_ids"),
+                        "force": payload.get("force", False),
+                    })
+                elif action == "delete":
+                    result = {"deleted": conversation_store.delete(payload.get("id"))}
+                else:
+                    raise ValueError("未知的记忆操作")
+                self._send(200, result)
+                return
             if self.path == "/api/sandbox/settings":
                 settings = save_sandbox_settings(payload)
                 self._send(200, {"settings": settings, "runtime": sandbox_runtime_info()})
                 return
             if self.path == "/api/run/async":
-                if not isinstance(payload.get("input"), str) or not payload["input"].strip():
-                    raise ValueError("请输入一条消息")
+                text = payload.get("input", "")
+                attachments = payload.get("attachments", [])
+                if not isinstance(text, str) or (not text.strip() and not attachments):
+                    raise ValueError("请输入消息或选择附件")
+                if attachments and (not isinstance(attachments, list) or len(attachments) > MAX_ATTACHMENT_COUNT):
+                    raise ValueError(f"一次最多上传 {MAX_ATTACHMENT_COUNT} 个附件")
                 self._send(200, _start_run_job(payload))
                 return
             if self.path == "/api/model-credentials":
@@ -2082,9 +2112,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                 result = start_graph(payload.get("workflow"))
                 self._send(200, result)
                 return
-            user_input = payload.get("input", "").strip()
-            if not user_input:
-                self._send(400, {"error": "请输入一条消息"})
+            user_input = payload.get("input", "")
+            attachments = payload.get("attachments", [])
+            if not isinstance(user_input, str) or (not user_input.strip() and not attachments):
+                self._send(400, {"error": "请输入消息或选择附件"})
                 return
             result = run_graph(
                 payload.get("workflow"),
@@ -2095,6 +2126,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 reasoning_effort=payload.get("reasoning_effort"),
                 history_summary=payload.get("history_summary"),
                 context_compression=payload.get("context_compression"),
+                attachments=attachments,
             )
             self._send(200, result)
         except (GraphWorkflowError, ModuleConfigError, ValueError, KeyError) as exc:
@@ -2120,8 +2152,8 @@ def main() -> None:
     finally:
         server.server_close()
         tts.close()
-        if _runtime_agent is not None:
-            _runtime_agent.stop()
+        if _runtime_manager.state.agent is not None:
+            _runtime_manager.state.agent.stop()
 
 
 if __name__ == "__main__":

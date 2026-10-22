@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple, Optional, Any, Callable
 from .base_agent import BaseAgent, Colors
 from .protocol import TraceEvent, ToolCall, ToolResult
 from .tool_executor import ToolExecutor
+from .trace import trace_safe_messages
 from .tool_call_parser import parse_embedded_tool_calls
 from .tool_discovery import GET_TOOL_USAGE, LIST_TOOLS, TOOL_DISCOVERY_TEXT, discovery_schemas, merge_schemas
 from .trace import MemoryTraceSink, TraceSink
@@ -350,6 +351,7 @@ class ReactAgent(BaseAgent):
         graph_previews: Optional[Dict[str, str]] = None,
         stream_update: Optional[Callable[[str], None]] = None,
         reasoning_effort: str = "auto",
+        user_content_parts: Optional[list[dict[str, Any]]] = None,
         **kwargs
     ) -> str:
         """
@@ -427,9 +429,9 @@ class ReactAgent(BaseAgent):
         messages = [
             {"role": "system", "content": system_prompt},
             *context_messages,
-            {"role": "user", "content": user_input}
+            {"role": "user", "content": [{"type": "text", "text": user_input}, *(user_content_parts or [])] if user_content_parts else user_input}
         ]
-        self._trace("message_context_ready", {"messages": messages}, "llm.chat")
+        self._trace("message_context_ready", {"messages": trace_safe_messages(messages)}, "llm.chat")
 
         # 品红色输出：用户输入
         self._show(f"\n{Colors.MAGENTA}{Colors.BOLD}用户输入:{Colors.RESET} {user_input}")

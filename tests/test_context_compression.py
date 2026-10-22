@@ -3,6 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.runtime_manager import RuntimeState
+import web_server
 from web_server import (
     _context_threshold_reached,
     _history_summary_boundary,
@@ -93,13 +95,9 @@ class ContextCompressionTests(unittest.TestCase):
             for role in ("user", "assistant")
         ]
 
-        with patch.multiple(
-            "web_server",
-            _runtime_agent=agent,
-            _runtime_execution_key="active-execution",
-            _runtime_bindings={"llm_id": "selected-llm"},
-            _runtime_started=True,
-        ), patch("web_server._validate_runtime_graph", return_value=(graph, {"llm_id": "selected-llm"})), \
+        state = RuntimeState(agent=agent, execution_key="active-execution", bindings={"llm_id": "selected-llm"}, started=True)
+        with patch.object(web_server._runtime_manager, "state", state), \
+             patch("web_server._validate_runtime_graph", return_value=(graph, {"llm_id": "selected-llm"})), \
              patch("web_server._execution_graph_key", return_value="active-execution"):
             result = compress_context_now(workflow, history, "older summary", 2)
 
@@ -163,15 +161,8 @@ class ContextCompressionTests(unittest.TestCase):
             for role in ("user", "assistant")
         ]
 
-        with patch.multiple(
-            "web_server",
-            _runtime_agent=None,
-            _runtime_graph_key=None,
-            _runtime_execution_key=None,
-            _runtime_bindings={},
-            _runtime_started=False,
-            _runtime_workflow_id=None,
-        ), patch("web_server._make_agent", return_value=(agent, {"llm_id": "selected-llm"})):
+        with patch.object(web_server._runtime_manager, "state", RuntimeState()), \
+                patch("web_server._make_agent", return_value=(agent, {"llm_id": "selected-llm"})):
             result = run_graph(
                 workflow,
                 "new question",

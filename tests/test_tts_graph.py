@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.graph_executor import GraphExecutor
+from agent.runtime_manager import RuntimeState
+import web_server
 from web_server import ROOT, _is_tts_graph, _load_models, _model_kind, _validate_runtime_graph, _voice_tts_model, run_graph
 from modules.module_loader import resolve_config_value
 
@@ -141,15 +143,7 @@ class TTSGraphTests(unittest.TestCase):
     def test_llm_workflow_injects_and_starts_tts_service(self):
         fake_tts = FakeTTS()
         fake_agent = FakeAgent()
-        runtime_state = {
-            "_runtime_agent": None,
-            "_runtime_graph_key": None,
-            "_runtime_execution_key": None,
-            "_runtime_bindings": {},
-            "_runtime_started": False,
-            "_runtime_workflow_id": None,
-        }
-        with patch.multiple("web_server", **runtime_state), \
+        with patch.object(web_server._runtime_manager, "state", RuntimeState()), \
                 patch("web_server._make_agent", return_value=(fake_agent, {"llm_id": "llm", "tools_id": None})), \
                 patch("web_server.tts", fake_tts):
             result = run_graph(llm_tts_workflow(), "你好")

@@ -24,8 +24,8 @@ class WorkflowDeleteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = self.create_workflow(directory)
             with patch.object(web_server, "WORKFLOW_DIR", Path(directory)), \
-                    patch.object(web_server, "_runtime_started", False), \
-                    patch.object(web_server, "_runtime_workflow_id", None):
+                    patch.object(web_server._runtime_manager.state, "started", False), \
+                    patch.object(web_server._runtime_manager.state, "workflow_id", None):
                 result = web_server._delete_graph_workflow("delete-test")
 
             self.assertEqual(result, {"id": "delete-test", "deleted": True})
@@ -35,8 +35,8 @@ class WorkflowDeleteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = self.create_workflow(directory)
             with patch.object(web_server, "WORKFLOW_DIR", Path(directory)), \
-                    patch.object(web_server, "_runtime_started", True), \
-                    patch.object(web_server, "_runtime_workflow_id", "delete-test"):
+                    patch.object(web_server._runtime_manager.state, "started", True), \
+                    patch.object(web_server._runtime_manager.state, "workflow_id", "delete-test"):
                 with self.assertRaisesRegex(GraphWorkflowError, "停止运行"):
                     web_server._delete_graph_workflow("delete-test")
 
@@ -47,8 +47,8 @@ class WorkflowDeleteTests(unittest.TestCase):
             other = Path(directory) / "other.json"
             other.write_text("{}", encoding="utf-8")
             with patch.object(web_server, "WORKFLOW_DIR", Path(directory)), \
-                    patch.object(web_server, "_runtime_started", False), \
-                    patch.object(web_server, "_runtime_workflow_id", None):
+                    patch.object(web_server._runtime_manager.state, "started", False), \
+                    patch.object(web_server._runtime_manager.state, "workflow_id", None):
                 with self.assertRaises(GraphWorkflowError):
                     web_server._delete_graph_workflow("../other")
                 with self.assertRaisesRegex(GraphWorkflowError, "图工作流"):

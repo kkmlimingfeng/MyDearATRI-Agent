@@ -3,7 +3,7 @@
 The model adapter produces a normalized call and this class owns the rest of
 the boundary: module availability, dispatch, normalized errors, timing, and
 trace events.  A future web runtime can reuse it without importing
-``ReactAgent``.
+the graph workflow runtime.
 """
 
 from __future__ import annotations

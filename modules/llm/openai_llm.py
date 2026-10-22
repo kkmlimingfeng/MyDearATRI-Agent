@@ -190,6 +190,19 @@ class OpenAILLM(BaseLLM):
                 inputs.append({"type": "function_call_output", "call_id": message.get("tool_call_id", ""), "output": str(message.get("content", ""))})
                 continue
             content = message.get("content")
+            if isinstance(content, list):
+                converted = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        converted.append({"type": "input_text", "text": str(part.get("text", ""))})
+                    elif part.get("type") == "image_url":
+                        image = part.get("image_url") or {}
+                        image_url = image.get("url") if isinstance(image, dict) else image
+                        if image_url:
+                            converted.append({"type": "input_image", "image_url": image_url})
+                content = converted
             if content:
                 inputs.append({"role": role, "content": content})
             for call in message.get("tool_calls") or []:

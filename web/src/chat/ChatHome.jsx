@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, AlertCircle, AlertTriangle, ArrowUp, Bot, Check, ChevronDown, ChevronRight, FileClock, Folder, FolderUp, Image as ImageIcon, MessageSquarePlus, Minimize2, PanelLeftClose, Pencil, Plus, RotateCcw, Save, Settings2, Shield, Trash2, Upload, Workflow, X, Zap } from 'lucide-react';
+import { Activity, AlertCircle, AlertTriangle, ArrowUp, Bot, Check, ChevronDown, ChevronRight, FileClock, FileText, Film, Folder, FolderUp, Image as ImageIcon, MessageSquarePlus, Minimize2, Paperclip, PanelLeftClose, Pencil, Plus, RotateCcw, Save, Settings2, Shield, Trash2, Upload, Workflow, X, Zap } from 'lucide-react';
 import { ThemePicker } from '../theme.jsx';
 import { modelChoices } from '../workflow/catalog';
 import TraceView from '../workflow/TraceView';
@@ -14,8 +14,11 @@ import SandboxPermissionMatrix, { permissionsForSandboxMode, updateSandboxPermis
 
 const CHAT_STORAGE_KEY = 'atri.chat.sessions.v1';
 const ACTIVE_CHAT_STORAGE_KEY = 'atri.chat.active.v1';
+const CHAT_ATTACHMENT_DB = 'atri.chat.attachments.v1';
 const CONTEXT_COMPRESSION_STORAGE_KEY = 'atri.chat.context-compression.v1';
+const MEMORY_SETTINGS_STORAGE_KEY = 'atri.chat.memory-settings.v1';
 const DEFAULT_CONTEXT_COMPRESSION = { enabled: true, keep_recent_turns: 6, threshold_percent: 75 };
+const DEFAULT_MEMORY_SETTINGS = { summary_interval_turns: 8 };
 function getVoiceRequest(workflow) {
   const nodes = workflow?.nodes || [];
   const output = nodes.find((node) => node.type === 'core.chat_output');
@@ -47,11 +50,42 @@ const starter = {
 const isLegacyDefault = (document) => document?.id === 'atri_companion_graph' && !document.nodes?.some((node) => node.type === 'llm.chat');
 
 function createSession() {
+  const now = Date.now();
   return {
     id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     title: '新的对话',
     messages: [],
-    updatedAt: Date.now(),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function readMemorySettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(MEMORY_SETTINGS_STORAGE_KEY) || 'null');
+    const value = Number(saved?.summary_interval_turns);
+    return {
+      summary_interval_turns: Number.isInteger(value) ? Math.min(100, Math.max(1, value)) : DEFAULT_MEMORY_SETTINGS.summary_interval_turns,
+    };
+  } catch {
+    return DEFAULT_MEMORY_SETTINGS;
+  }
+}
+
+function conversationArchivePayload(session) {
+  if (!session || session.isTestRun) return null;
+  const messages = (session.messages || [])
+    .filter((message) => !message?.error && typeof message?.content === 'string' && ['user', 'assistant'].includes(message.role))
+    .map(({ role, content, contextContent, sentAt }) => ({ role, content: contextContent || content, sentAt }));
+  if (!messages.length) return null;
+  return {
+    id: session.id,
+    title: session.title || '新的对话',
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    source: 'chat',
+    test_run: false,
+    messages,
   };
 }
 
@@ -180,6 +214,174 @@ function formatMessageTime(sentAt, language) {
   };
 }
 
+const ATTACHMENT_LIMIT = 10;
+const ATTACHMENT_FILE_LIMIT = 12 * 1024 * 1024;
+const DOCUMENT_EXTENSIONS = new Set(['pdf', 'docx', 'docm', 'xlsx', 'xlsm', 'pptx', 'pptm', 'odt', 'ods', 'odp', 'txt', 'md', 'csv', 'tsv', 'json', 'log', 'py', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'xml', 'yaml', 'yml', 'toml', 'ini', 'sql', 'sh', 'rs', 'java', 'go', 'c', 'h', 'cpp']);
+const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp']);
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
+const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v', 'ogv']);
+
+function openChatAttachmentDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error('浏览器不支持本地附件缓存'));
+      return;
+    }
+    const request = window.indexedDB.open(CHAT_ATTACHMENT_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('attachments');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('打开附件缓存失败'));
+  });
+}
+
+async function writeChatAttachment(key, value) {
+  const database = await openChatAttachmentDb();
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction('attachments', 'readwrite');
+    transaction.objectStore('attachments').put(value, key);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error || new Error('保存附件缓存失败'));
+    transaction.onabort = () => reject(transaction.error || new Error('保存附件缓存失败'));
+  }).finally(() => database.close());
+}
+
+async function readChatAttachment(key) {
+  const database = await openChatAttachmentDb();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction('attachments', 'readonly');
+    const request = transaction.objectStore('attachments').get(key);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error || new Error('读取附件缓存失败'));
+    transaction.oncomplete = () => database.close();
+    transaction.onerror = () => database.close();
+  });
+}
+
+async function deleteChatAttachment(key) {
+  try {
+    const database = await openChatAttachmentDb();
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction('attachments', 'readwrite');
+      transaction.objectStore('attachments').delete(key);
+      transaction.oncomplete = resolve;
+      transaction.onerror = () => reject(transaction.error || new Error('删除附件缓存失败'));
+      transaction.onabort = () => reject(transaction.error || new Error('删除附件缓存失败'));
+    }).finally(() => database.close());
+  } catch {
+    // A missing local cache must not block deleting a conversation.
+  }
+}
+
+function bytesToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const step = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += step) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + step));
+  }
+  return btoa(binary);
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',', 2)[1] || '');
+    reader.onerror = () => reject(new Error('读取附件失败'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function makeVideoFrames(file) {
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.preload = 'metadata';
+  video.muted = true;
+  video.playsInline = true;
+  video.src = url;
+  try {
+    await new Promise((resolve, reject) => {
+      video.onloadedmetadata = resolve;
+      video.onerror = () => reject(new Error('浏览器无法读取该视频格式'));
+    });
+    if (video.readyState < 2) {
+      await new Promise((resolve, reject) => {
+        video.onloadeddata = resolve;
+        video.onerror = () => reject(new Error('无法解码视频画面'));
+      });
+    }
+    if (!Number.isFinite(video.duration) || video.duration <= 0 || video.duration > 20 * 60) {
+      throw new Error('视频时长需要在 20 分钟以内');
+    }
+    const frameCount = Math.min(8, Math.max(1, Math.ceil(video.duration / 2)));
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('浏览器无法创建视频画布');
+    const scale = Math.min(1, 640 / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+    canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const frames = [];
+    for (let index = 0; index < frameCount; index += 1) {
+      const timestamp = frameCount === 1 ? 0 : (video.duration - 0.05) * index / (frameCount - 1);
+      if (timestamp > 0) {
+        video.currentTime = timestamp;
+        await new Promise((resolve, reject) => {
+          video.onseeked = resolve;
+          video.onerror = () => reject(new Error('无法读取视频画面'));
+        });
+      }
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.76));
+      if (!blob) throw new Error('视频画面转换失败');
+      frames.push({ timestamp, data: await blobToBase64(blob) });
+    }
+    return frames;
+  } finally {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function prepareAttachment(file) {
+  const extension = file.name.split('.').pop()?.toLowerCase() || '';
+  const previewUrl = URL.createObjectURL(file);
+  try {
+    if (IMAGE_MIMES.has(file.type) || IMAGE_EXTENSIONS.has(extension)) {
+      if (file.size > ATTACHMENT_FILE_LIMIT) throw new Error(`${file.name} 超过 12 MB`);
+      let data;
+      if (typeof createImageBitmap === 'function') {
+        const bitmap = await createImageBitmap(file);
+        const scale = Math.min(1, 2048 / Math.max(bitmap.width, bitmap.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close();
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.86));
+        if (!blob) throw new Error('图片转换失败');
+        data = await blobToBase64(blob);
+      } else {
+        data = bytesToBase64(await file.arrayBuffer());
+      }
+      return { id: crypto.randomUUID(), name: file.name, kind: 'image', mimeType: file.type, data, previewUrl };
+    }
+    if (file.type.startsWith('video/') || VIDEO_EXTENSIONS.has(extension)) {
+      if (file.size > 512 * 1024 * 1024) throw new Error('视频文件不能超过 512 MB');
+      const frames = await makeVideoFrames(file);
+      return { id: crypto.randomUUID(), name: file.name, kind: 'video', mimeType: file.type, frames, previewUrl };
+    }
+    if (DOCUMENT_EXTENSIONS.has(extension)) {
+      if (file.size > ATTACHMENT_FILE_LIMIT) throw new Error(`${file.name} 超过 12 MB`);
+      return { id: crypto.randomUUID(), name: file.name, kind: 'document', mimeType: file.type, data: bytesToBase64(await file.arrayBuffer()), previewUrl };
+    }
+    throw new Error(`暂不支持 ${file.name}，请选图片、视频、PDF、Office 或文本文件`);
+  } catch (error) {
+    URL.revokeObjectURL(previewUrl);
+    throw error;
+  }
+}
+
 function MessageTime({ message, language }) {
   const time = formatMessageTime(message.sentAt, language);
   return <div className="message-meta" title={time?.full || undefined}>
@@ -223,6 +425,10 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [runtimeStatus, setRuntimeStatus] = useState({ loading: true, running: false, workflow_id: null });
   const [chatState, setChatState] = useState(readChatState);
   const [input, setInput] = useState('');
+  const [selectedAttachments, setSelectedAttachments] = useState([]);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const attachmentInputRef = useRef(null);
   const [mode, setMode] = useState('normal');
   const [reasoningEffort, setReasoningEffort] = useState('workflow');
   const [modelCatalog, setModelCatalog] = useState(modelChoices);
@@ -260,6 +466,10 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [contextCompression, setContextCompression] = useState(readContextCompressionSettings);
   const [contextCompressing, setContextCompressing] = useState(false);
   const [contextCompressionFeedback, setContextCompressionFeedback] = useState(null);
+  const [memorySettings, setMemorySettings] = useState(readMemorySettings);
+  const [memoryConversations, setMemoryConversations] = useState([]);
+  const [memorySummaryBusy, setMemorySummaryBusy] = useState(null);
+  const [memorySummaryFeedback, setMemorySummaryFeedback] = useState(null);
   const [contextPopoverPosition, setContextPopoverPosition] = useState({ left: 0, top: 0 });
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [pendingDeleteSessionId, setPendingDeleteSessionId] = useState(null);
@@ -275,10 +485,100 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [avatarError, setAvatarError] = useState('');
   const userAvatarInputRef = useRef(null);
   const agentAvatarInputRef = useRef(null);
+  const archiveSyncRef = useRef(new Map());
+  const archiveInFlightRef = useRef(new Map());
+  const memorySummaryBusyRef = useRef(false);
+  const memorySummaryQueueRef = useRef([]);
   const { sessions, activeSessionId } = chatState;
   const activeSession = sessions.find((session) => session.id === activeSessionId) || sessions[0];
   const messages = activeSession?.messages || [];
   const recentActions = getRecentActions(liveEvents, interfaceLanguage);
+  const memoryConversationItems = useMemo(() => {
+    const entries = new Map(memoryConversations.map((conversation) => [conversation.id, conversation]));
+    for (const session of sessions) {
+      const archive = conversationArchivePayload(session);
+      if (!archive || entries.has(session.id)) continue;
+      const completeMessages = archive.messages.slice(0, Math.max(
+        0,
+        archive.messages.reduce((last, message, index) => message.role === 'assistant' ? index + 1 : last, 0),
+      ));
+      entries.set(session.id, {
+        id: session.id,
+        title: session.title || '新的对话',
+        turn_count: completeMessages.filter((message) => message.role === 'assistant').length,
+        summary: '',
+        summary_status: 'pending',
+        updated_at: session.updatedAt || 0,
+      });
+    }
+    return [...entries.values()].sort((left, right) => (right.updated_at || 0) - (left.updated_at || 0));
+  }, [memoryConversations, sessions]);
+
+  const saveConversationArchive = async (session) => {
+    const conversation = conversationArchivePayload(session);
+    if (!conversation) return { saved: false, empty: true };
+    const response = await fetch('/api/memory/conversations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'save', conversation }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || '保存会话记忆失败');
+    if (result.saved) archiveSyncRef.current.set(session.id, JSON.stringify(conversation));
+    return result;
+  };
+
+  const refreshMemoryConversations = async () => {
+    const response = await fetch('/api/memory/conversations', { cache: 'no-store' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || '读取会话摘要失败');
+    setMemoryConversations(Array.isArray(result.conversations) ? result.conversations : []);
+    return result.conversations || [];
+  };
+
+  const requestMemorySummaryUpdate = async ({ conversationIds, force = false, sourceSessions = sessions } = {}) => {
+    if (memorySummaryBusyRef.current) {
+      memorySummaryQueueRef.current.push({ conversationIds, force, sourceSessions });
+      return;
+    }
+    memorySummaryBusyRef.current = true;
+    setMemorySummaryBusy(conversationIds?.length === 1 ? conversationIds[0] : 'all');
+    setMemorySummaryFeedback(null);
+    try {
+      for (const session of sourceSessions) {
+        const conversation = conversationArchivePayload(session);
+        if (!conversation) continue;
+        if (archiveSyncRef.current.get(session.id) === JSON.stringify(conversation)) continue;
+        await saveConversationArchive(session);
+      }
+      const response = await fetch('/api/memory/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'summarize', conversation_ids: conversationIds, force }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '更新会话摘要失败');
+      const failures = (result.results || []).filter((item) => !item.updated);
+      await refreshMemoryConversations();
+      if (failures.length) {
+        setMemorySummaryFeedback({
+          type: 'error',
+          text: `${result.updated || 0} 段已更新，${failures.length} 段失败：${failures[0].error || '模型未返回摘要'}`,
+        });
+      } else if (result.updated) {
+        setMemorySummaryFeedback({ type: 'success', text: `已更新 ${result.updated} 段会话摘要。` });
+      } else {
+        setMemorySummaryFeedback({ type: 'info', text: force ? '没有可整理的会话。' : '没有待更新的会话摘要。' });
+      }
+    } catch (error) {
+      setMemorySummaryFeedback({ type: 'error', text: error.message || '更新会话摘要失败' });
+    } finally {
+      memorySummaryBusyRef.current = false;
+      setMemorySummaryBusy(null);
+      const nextRequest = memorySummaryQueueRef.current.shift();
+      if (nextRequest) window.setTimeout(() => requestMemorySummaryUpdate(nextRequest), 0);
+    }
+  };
 
   useEffect(() => {
     const thread = threadRef.current;
@@ -299,9 +599,47 @@ export default function ChatHome({ onNavigate, active = true }) {
   }, [sessions, activeSessionId]);
 
   useEffect(() => {
+    for (const session of sessions) {
+      const conversation = conversationArchivePayload(session);
+      if (!conversation) continue;
+      const signature = JSON.stringify(conversation);
+      if (archiveSyncRef.current.get(session.id) === signature || archiveInFlightRef.current.get(session.id) === signature) continue;
+      archiveInFlightRef.current.set(session.id, signature);
+      fetch('/api/memory/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'save', conversation }),
+      })
+        .then(async (response) => {
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || '保存会话记忆失败');
+          if (result.saved || result.empty) archiveSyncRef.current.set(session.id, signature);
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (archiveInFlightRef.current.get(session.id) === signature) archiveInFlightRef.current.delete(session.id);
+        });
+    }
+  }, [sessions, runtimeStatus.running]);
+
+  useEffect(() => {
     try { localStorage.setItem(CONTEXT_COMPRESSION_STORAGE_KEY, JSON.stringify(contextCompression)); }
     catch { /* Keep this control usable when browser storage is unavailable. */ }
   }, [contextCompression]);
+
+  useEffect(() => {
+    try { localStorage.setItem(MEMORY_SETTINGS_STORAGE_KEY, JSON.stringify(memorySettings)); }
+    catch { /* Keep these controls usable when browser storage is unavailable. */ }
+  }, [memorySettings]);
+
+  useEffect(() => {
+    let disposed = false;
+    fetch('/api/memory/conversations', { cache: 'no-store' })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('读取会话摘要失败')))
+      .then((result) => { if (!disposed) setMemoryConversations(Array.isArray(result.conversations) ? result.conversations : []); })
+      .catch(() => {});
+    return () => { disposed = true; };
+  }, [runtimeStatus.running]);
 
   useEffect(() => {
     let disposed = false;
@@ -339,7 +677,7 @@ export default function ChatHome({ onNavigate, active = true }) {
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, [active]);
+  }, [active, sessions]);
 
   useEffect(() => {
     let disposed = false;
@@ -406,7 +744,7 @@ export default function ChatHome({ onNavigate, active = true }) {
   }, []);
 
   const activeModel = useMemo(() => {
-    const runtime = workflow?.nodes?.find((item) => ['llm.chat', 'agent.react_runtime'].includes(item.type));
+    const runtime = workflow?.nodes?.find((item) => item.type === 'llm.chat');
     const modelEdge = workflow?.edges?.find((edge) => edge.target === runtime?.id && edge.targetHandle === 'llm');
     const node = workflow?.nodes?.find((item) => item.id === modelEdge?.source);
     const modelId = node?.data?.config?.model;
@@ -460,7 +798,7 @@ export default function ChatHome({ onNavigate, active = true }) {
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [contextPopoverOpen, contextSettingsOpen, contextTokens, activeModel.contextWindow, contextCompressing, contextCompressionFeedback]);
+  }, [contextPopoverOpen, contextSettingsOpen, contextTokens, activeModel.contextWindow, contextCompressing, contextCompressionFeedback, memoryConversationItems.length, memorySummaryBusy, memorySummaryFeedback]);
 
   useLayoutEffect(() => {
     if (!sandboxPermissionOpen) return undefined;
@@ -580,10 +918,41 @@ export default function ChatHome({ onNavigate, active = true }) {
     }
   };
 
+  const handleAttachmentChange = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!files.length) return;
+    setAttachmentError('');
+    setAttachmentBusy(true);
+    const room = Math.max(0, ATTACHMENT_LIMIT - selectedAttachments.length);
+    const prepared = [];
+    const errors = [];
+    for (const file of files.slice(0, room)) {
+      try {
+        prepared.push(await prepareAttachment(file));
+      } catch (error) {
+        errors.push(error.message || `无法读取 ${file.name}`);
+      }
+    }
+    if (files.length > room) errors.push(`一次最多上传 ${ATTACHMENT_LIMIT} 个附件`);
+    setSelectedAttachments((current) => [...current, ...prepared].slice(0, ATTACHMENT_LIMIT));
+    setAttachmentError(errors.join('；'));
+    setAttachmentBusy(false);
+  };
+
+  const removeSelectedAttachment = (attachmentId) => {
+    setSelectedAttachments((current) => {
+      const removed = current.find((item) => item.id === attachmentId);
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((item) => item.id !== attachmentId);
+    });
+  };
+
   const sendMessage = async () => {
     const text = input.trim();
+    const attachments = selectedAttachments;
     const sessionId = activeSession?.id;
-    if (!text || busy || contextCompressing || !workflow || !sessionId) return;
+    if ((!text && !attachments.length) || busy || attachmentBusy || contextCompressing || !workflow || !sessionId) return;
     void primeAudioPlayback().catch(() => {});
     if (!runtimeStatus.running) {
       appendMessage(sessionId, { role: 'assistant', error: '工作流尚未启动，请先到工作流页点击“启动工作流”后再对话。', sentAt: Date.now() });
@@ -591,9 +960,24 @@ export default function ChatHome({ onNavigate, active = true }) {
     }
     const sentAt = Date.now();
     const started = performance.now();
+    const attachmentNames = attachments.map((item) => item.name);
+    const visualAttachments = attachments.filter((item) => ['image', 'video'].includes(item.kind));
+    const attachmentRefs = visualAttachments.map((item) => `${sessionId}:${item.id}`);
+    const storedUserText = text || `附件：${attachmentNames.join('、')}`;
     setInput('');
+    setAttachmentError('');
+    setSelectedAttachments([]);
+    attachments.forEach((item) => { if (item.previewUrl) URL.revokeObjectURL(item.previewUrl); });
     followThreadRef.current = true;
-    appendMessage(sessionId, { role: 'user', content: text, sentAt }, text);
+    const userMessage = {
+      role: 'user',
+      content: storedUserText,
+      displayContent: text,
+      attachments: attachments.map(({ name, kind, mimeType }) => ({ name, kind, mimeType })),
+      attachmentRefs,
+      sentAt,
+    };
+    appendMessage(sessionId, userMessage, text || attachmentNames[0]);
     setBusy(true);
     setBusySessionId(sessionId);
     setLiveEvents([]);
@@ -633,6 +1017,13 @@ export default function ChatHome({ onNavigate, active = true }) {
       segments.forEach((segment) => voiceSession.enqueue(segment));
     };
     try {
+      const cacheResults = await Promise.allSettled(visualAttachments.map((item, index) => writeChatAttachment(
+        attachmentRefs[index],
+        { name: item.name, kind: item.kind, data: item.data, frames: item.frames },
+      )));
+      if (cacheResults.some((result) => result.status === 'rejected')) {
+        setAttachmentError('附件本轮已发送，但浏览器无法保存附件缓存供后续追问使用。');
+      }
       const onProgress = (events, draft) => {
         if (events.length !== liveEventsRef.current.length) {
           liveEventsRef.current = events;
@@ -643,15 +1034,39 @@ export default function ChatHome({ onNavigate, active = true }) {
       };
       const fullHistory = activeSession.messages
         .filter((message) => !message.error && typeof message.content === 'string' && ['user', 'assistant'].includes(message.role))
-        .map(({ role, content }) => ({ role, content }));
+        .map(({ role, content, contextContent, attachmentRefs: refs }) => ({ role, content: contextContent || content, attachmentRefs: refs || [] }));
       const historyOffset = Math.min(fullHistory.length, Math.max(0, Number(activeSession.contextMessageOffset) || 0));
       const history = fullHistory.slice(historyOffset);
+      let historyAttachmentBudget = attachments.length ? 0 : 3;
+      let historyAttachmentBytes = 0;
+      for (let index = history.length - 1; index >= 0 && historyAttachmentBudget > 0; index -= 1) {
+        if (history[index].role !== 'user') continue;
+        const cached = [];
+        for (const ref of history[index].attachmentRefs) {
+          if (historyAttachmentBudget <= 0) break;
+          try {
+            const value = await readChatAttachment(ref);
+            if (value) {
+              const base64Bytes = (value.data?.length || 0) + (value.frames || []).reduce((sum, frame) => sum + (frame.data?.length || 0), 0);
+              if (historyAttachmentBytes + base64Bytes > 6 * 1024 * 1024) continue;
+              cached.push(value);
+              historyAttachmentBytes += base64Bytes;
+              historyAttachmentBudget -= 1;
+            }
+          } catch {
+            setAttachmentError('部分历史图片或视频缓存不可用，请重新上传后再询问。');
+          }
+        }
+        if (cached.length) history[index].attachments = cached;
+      }
+      const requestHistory = history.map(({ attachmentRefs: _refs, ...message }) => message);
       const result = await runWorkflowRequest({
         workflow,
         input: text,
+        attachments: attachments.map(({ name, kind, data, frames }) => ({ name, kind, data, frames })),
         mode,
         require_started: true,
-        history,
+        history: requestHistory,
         history_summary: activeSession.contextSummary || '',
         context_compression: {
           ...contextCompression,
@@ -661,6 +1076,16 @@ export default function ChatHome({ onNavigate, active = true }) {
         ...(activeModel.supportsReasoning && reasoningEffort !== 'workflow' ? { reasoning_effort: reasoningEffort } : {}),
       }, onProgress);
       if (!result.answer && result.error) throw new Error(result.error);
+      userMessage.contextContent = result.input_context || storedUserText;
+      setChatState((current) => ({
+        ...current,
+        sessions: current.sessions.map((session) => session.id === sessionId ? {
+          ...session,
+          messages: session.messages.map((message) => message.sentAt === sentAt && message.role === 'user'
+            ? { ...message, contextContent: userMessage.contextContent }
+            : message),
+        } : session),
+      }));
       let voiceBlob;
       let voiceError = '';
       if (voiceSession) {
@@ -681,7 +1106,20 @@ export default function ChatHome({ onNavigate, active = true }) {
       const voice = usingLongReplySpeech && voiceRequest
         ? { ...voiceRequest, text: LONG_REPLY_SPEECH }
         : result.voice || (voiceRequest ? { ...voiceRequest, text: result.answer } : undefined);
-      appendMessage(sessionId, { role: 'assistant', content: result.answer, voice, voiceBlob, voiceError, events: result.events, sentAt: Date.now(), durationMs: performance.now() - started }, undefined, result);
+      const assistantMessage = { role: 'assistant', content: result.answer, voice, voiceBlob, voiceError, events: result.events, sentAt: Date.now(), durationMs: performance.now() - started };
+      appendMessage(sessionId, assistantMessage, undefined, result);
+      const archivedTitle = activeSession.title === '新的对话' ? (text || attachmentNames[0]).slice(0, 28) : activeSession.title;
+      const completedSession = {
+        ...activeSession,
+        title: archivedTitle,
+        messages: [...activeSession.messages, userMessage, assistantMessage],
+        updatedAt: assistantMessage.sentAt,
+      };
+      const completedTurns = completedSession.messages.filter((message) => message.role === 'assistant' && typeof message.content === 'string').length;
+      const summarizedTurns = Number(memoryConversations.find((conversation) => conversation.id === sessionId)?.summary_turn_count) || 0;
+      if (completedTurns - summarizedTurns >= memorySettings.summary_interval_turns) {
+        void requestMemorySummaryUpdate({ conversationIds: [sessionId], force: false, sourceSessions: [completedSession] });
+      }
     } catch (error) {
       voiceAbort.abort();
       voiceSession?.stop();
@@ -697,6 +1135,7 @@ export default function ChatHome({ onNavigate, active = true }) {
   const clearConversation = () => {
     const session = createSession();
     setChatState((current) => ({ sessions: [session, ...current.sessions], activeSessionId: session.id }));
+    void requestMemorySummaryUpdate({ force: false, sourceSessions: sessions });
   };
 
   const requestDeleteConversation = (event, sessionId) => {
@@ -707,6 +1146,10 @@ export default function ChatHome({ onNavigate, active = true }) {
   const deleteConversation = () => {
     const sessionId = pendingDeleteSessionId;
     if (!sessionId) return;
+    const deletedSession = sessions.find((session) => session.id === sessionId);
+    for (const message of deletedSession?.messages || []) {
+      for (const ref of message.attachmentRefs || []) void deleteChatAttachment(ref);
+    }
     setChatState((current) => {
       const remaining = current.sessions
         .filter((session) => session.id !== sessionId)
@@ -720,6 +1163,12 @@ export default function ChatHome({ onNavigate, active = true }) {
         activeSessionId: current.activeSessionId === sessionId ? remaining[0].id : current.activeSessionId,
       };
     });
+    setMemoryConversations((current) => current.filter((conversation) => conversation.id !== sessionId));
+    void fetch('/api/memory/conversations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'delete', id: sessionId }),
+    }).catch(() => {});
     setPendingDeleteSessionId(null);
   };
 
@@ -918,7 +1367,13 @@ export default function ChatHome({ onNavigate, active = true }) {
               {message.error ? <div className="message-error">{message.error}</div> : message.voice ? <div className="message-bubble-row has-voice">
                 <div className="message-bubble">{message.content}</div>
                 <VoiceOutput request={message.voice} blob={message.voiceBlob} error={message.voiceError} autoGenerate={false} label="语音回复" />
-              </div> : <div className="message-bubble">{message.content}</div>}
+              </div> : <div className="message-bubble">
+                {message.attachments?.length > 0 && <div className="message-attachments">{message.attachments.map((attachment, attachmentIndex) => <span className="message-attachment" key={`${attachment.name}-${attachmentIndex}`}>
+                  {attachment.kind === 'image' ? <ImageIcon size={13} /> : attachment.kind === 'video' ? <Film size={13} /> : <FileText size={13} />}
+                  <span>{attachment.name}</span>
+                </span>)}</div>}
+                {(message.displayContent ?? message.content) && <div className="message-text">{message.displayContent ?? message.content}</div>}
+              </div>}
               {message.events?.length > 0 && <MessageTrace events={message.events} mode={mode} language={interfaceLanguage} durationMs={message.durationMs} />}
             </div>
             {message.role === 'user' && <div className="user-avatar">{avatars.user ? <img src={avatars.user} alt="" /> : 'W'}</div>}
@@ -938,6 +1393,22 @@ export default function ChatHome({ onNavigate, active = true }) {
         <footer className="composer-area">
           <div className="composer-box">
             <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder={runtimeStatus.running ? '给 ATRI 发消息…' : '请先在工作流页启动 Agent'} rows={1} />
+            <input
+              ref={attachmentInputRef}
+              className="chat-attachment-input"
+              type="file"
+              multiple
+              accept="image/png,image/jpeg,image/webp,image/gif,image/bmp,video/*,.pdf,.docx,.docm,.xlsx,.xlsm,.pptx,.pptm,.odt,.ods,.odp,.txt,.md,.csv,.tsv,.json,.log,.py,.js,.jsx,.ts,.tsx,.html,.css,.xml,.yaml,.yml,.toml,.ini,.sql,.sh,.rs,.java,.go,.c,.h,.cpp"
+              onChange={handleAttachmentChange}
+            />
+            {(selectedAttachments.length > 0 || attachmentError) && <div className="composer-attachments">
+              {selectedAttachments.map((attachment) => <div className="composer-attachment" key={attachment.id}>
+                {attachment.kind === 'image' ? <img src={attachment.previewUrl} alt="" /> : attachment.kind === 'video' ? <Film size={14} /> : <FileText size={14} />}
+                <span>{attachment.name}</span>
+                <button type="button" onClick={() => removeSelectedAttachment(attachment.id)} aria-label={`移除附件：${attachment.name}`} title="移除附件"><X size={13} /></button>
+              </div>)}
+              {attachmentError && <div className="composer-attachment-error" role="alert">{attachmentError}</div>}
+            </div>}
             <div className="composer-tools">
               <span className="composer-model"><Zap size={13} />{activeModel.label}</span>
               {activeModel.hasModel && <label className={`composer-reasoning ${activeModel.supportsReasoning ? '' : 'is-unsupported'}`} title={activeModel.supportsReasoning ? '本次使用的思考强度' : '当前模型不支持思考强度'}>
@@ -971,8 +1442,16 @@ export default function ChatHome({ onNavigate, active = true }) {
                 title={sandboxSettings.permission === 'full' ? '全部权限：可修改工作空间外文件' : '调整沙箱执行权限'}
                 onClick={() => { setContextPopoverOpen(false); setSandboxPermissionOpen((open) => !open); }}
               >{sandboxSettings.permission === 'full' ? <AlertTriangle size={15} /> : <Shield size={15} />}</button>
+              <button
+                type="button"
+                className="composer-attachment-trigger"
+                onClick={() => attachmentInputRef.current?.click()}
+                disabled={attachmentBusy || busy || selectedAttachments.length >= ATTACHMENT_LIMIT}
+                title="添加图片、视频或文档"
+                aria-label="添加附件"
+              >{attachmentBusy ? <span className="spinner" /> : <Paperclip size={15} />}</button>
               <span className="composer-hint">Enter 发送 · Shift + Enter 换行</span>
-              <button className="send-button" disabled={!input.trim() || busy || contextCompressing || runtimeStatus.loading || !runtimeStatus.running} onClick={sendMessage} title={runtimeStatus.running ? '发送消息' : '先启动工作流'}><ArrowUp size={17} /></button>
+              <button className="send-button" disabled={(!input.trim() && !selectedAttachments.length) || busy || attachmentBusy || contextCompressing || runtimeStatus.loading || !runtimeStatus.running} onClick={sendMessage} title={runtimeStatus.running ? '发送消息' : '先启动工作流'}><ArrowUp size={17} /></button>
             </div>
           </div>
           <div className="composer-caption">ATRI 会根据当前激活的工作流配置运行。<button onClick={() => onNavigate('workflow')}>编辑工作流</button></div>
@@ -1006,9 +1485,9 @@ export default function ChatHome({ onNavigate, active = true }) {
               <button
                 type="button"
                 className={`context-settings-trigger ${contextSettingsOpen ? 'is-open' : ''}`}
-                aria-label="上下文压缩设置"
+                aria-label="上下文和记忆设置"
                 aria-expanded={contextSettingsOpen}
-                title="上下文压缩设置"
+                title="上下文和记忆设置"
                 onClick={() => setContextSettingsOpen((open) => !open)}
               ><Settings2 size={14} aria-hidden="true" /></button>
             </span>
@@ -1022,6 +1501,38 @@ export default function ChatHome({ onNavigate, active = true }) {
               {[50, 60, 70, 75, 80, 85, 90, 95].map((value) => <option key={value} value={value}>{value}%</option>)}
             </select></label>
           </div>}
+          {contextSettingsOpen && <section className="memory-settings" aria-label="会话记忆设置">
+            <div className="memory-settings-heading">
+              <strong>会话记忆</strong>
+              <button type="button" className="memory-update-all" disabled={memorySummaryBusy !== null || memoryConversationItems.length === 0 || !runtimeStatus.running || !activeModel.hasModel} onClick={() => void requestMemorySummaryUpdate({ force: true })}>
+                {memorySummaryBusy === 'all' ? <span className="spinner" /> : <RotateCcw size={12} aria-hidden="true" />}
+                {memorySummaryBusy === 'all' ? '正在更新' : '更新全部'}
+              </button>
+            </div>
+            <label className="memory-summary-interval"><span>自动摘要间隔</span><span><input type="number" min="1" max="100" value={memorySettings.summary_interval_turns} onChange={(event) => {
+              const value = Number(event.target.value);
+              setMemorySettings({ summary_interval_turns: Math.min(100, Math.max(1, Number.isFinite(value) ? value : 1)) });
+            }} /><small>轮</small></span></label>
+            <small className="context-compression-note">普通对话自动保存；工作流试运行不会保存。</small>
+            <div className="memory-summary-list">
+              {memoryConversationItems.length ? memoryConversationItems.map((conversation) => {
+                const localSession = sessions.find((session) => session.id === conversation.id);
+                const updating = memorySummaryBusy === conversation.id;
+                return <article className="memory-summary-item" key={conversation.id}>
+                  <div className="memory-summary-item-copy">
+                    <strong title={conversation.title}>{conversation.title || '新的对话'}</strong>
+                    <small>{conversation.turn_count || 0} 轮 · {conversation.summary_status === 'pending' ? '待更新' : '已整理'}</small>
+                    <p>{conversation.summary || '暂无摘要'}</p>
+                  </div>
+                  <button type="button" className="memory-summary-refresh" disabled={memorySummaryBusy !== null || !runtimeStatus.running || !activeModel.hasModel} title="重新生成此会话摘要" aria-label={`重新生成摘要：${conversation.title || '新的对话'}`} onClick={() => void requestMemorySummaryUpdate({ conversationIds: [conversation.id], force: true, sourceSessions: localSession ? [localSession] : [] })}>
+                    {updating ? <span className="spinner" /> : <RotateCcw size={13} aria-hidden="true" />}
+                  </button>
+                </article>;
+              }) : <small className="memory-summary-empty">还没有已保存的会话。</small>}
+            </div>
+            {memorySummaryFeedback && <small className={`context-compression-feedback is-${memorySummaryFeedback.type}`} role={memorySummaryFeedback.type === 'error' ? 'alert' : 'status'}>{memorySummaryFeedback.text}</small>}
+            {memoryConversationItems.length > 0 && (!runtimeStatus.running || !activeModel.hasModel) && <small className="context-compression-note">启动含语言模型的工作流后，才能生成会话摘要。</small>}
+          </section>}
           {!runtimeStatus.loading && !runtimeStatus.running && <small className="context-compression-note">请先启动当前工作流，再手动压缩。</small>}
           {runtimeStatus.running && !activeModel.hasModel && <small className="context-compression-note">当前工作流没有可用模型，无法压缩。</small>}
           {contextCompressionFeedback?.sessionId === activeSessionId && <small className={`context-compression-feedback is-${contextCompressionFeedback.type}`} role={contextCompressionFeedback.type === 'error' ? 'alert' : 'status'}>{contextCompressionFeedback.text}</small>}

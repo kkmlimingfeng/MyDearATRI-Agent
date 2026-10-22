@@ -42,7 +42,7 @@ export default function WorkflowNode({ id, data, selected }) {
   const currentModel = data.config?.model ?? '';
   const currentMmproj = data.config?.mmproj ?? '';
   const reasoningEffort = data.config?.reasoning_effort ?? 'auto';
-  const hasPreview = !definition.hideOutputPreview && !isModelLoader && !['llm.chat', 'agent.react_runtime', 'control.loop', 'react.loop'].includes(data.kind) && (outputs.length > 0 || data.kind === 'core.chat_output');
+  const hasPreview = !definition.hideOutputPreview && !isModelLoader && !['llm.chat', 'control.loop', 'react.loop'].includes(data.kind) && (outputs.length > 0 || data.kind === 'core.chat_output');
   const editableInput = data.kind === 'core.chat_input' || data.kind === 'prompt.text';
   const inputKey = data.kind === 'prompt.text' ? 'text' : 'debug_input';
   const [draftInput, setDraftInput] = useState(data.config?.[inputKey] ?? '');

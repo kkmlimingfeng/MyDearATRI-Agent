@@ -26,6 +26,7 @@ config/tools.json
 config/model_credentials.json
 config/api_models.json
 data/theme/
+data/memory/
 
 # Web editor build output and installed frontend packages
 web/node_modules/

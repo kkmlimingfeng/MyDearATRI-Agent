@@ -6,6 +6,7 @@ readchar>=4.0
 llama-cpp-python>=0.3.16
 numpy<=2.3.2
 pillow>=10.0
+pypdf>=5.0
 
 # Linux CUDA 12.4 runtime libraries for the JamePeng cu124 wheel.
 # Windows users should use the CUDA runtime shipped/installed for their wheel.
