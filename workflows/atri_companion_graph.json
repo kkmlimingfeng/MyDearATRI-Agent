@@ -16,7 +16,7 @@
         "module_id": "prompt",
         "implementation": "modules.prompt.prompt_manager.PromptManager",
         "config": {
-          "file": "AGENT.md",
+          "file": "AGENT-zh.md",
           "source": "modules/prompt/SystemPrompt"
         },
         "sizeMode": "auto",
@@ -36,7 +36,7 @@
         "module_id": "prompt",
         "implementation": "modules.prompt.prompt_manager.PromptManager",
         "config": {
-          "file": "SOUL.md",
+          "file": "SOUL-zh.md",
           "source": "modules/prompt/SystemPrompt"
         },
         "sizeMode": "auto"
@@ -270,7 +270,7 @@
         "category": "prompt",
         "module_id": "prompt",
         "config": {
-          "file": "USER.md",
+          "file": "USER-zh.md",
           "source": "modules/prompt/SystemPrompt"
         },
         "sizeMode": "auto"
@@ -288,7 +288,7 @@
         "category": "prompt",
         "module_id": "prompt",
         "config": {
-          "file": "HEARTBEAT.md",
+          "file": "HEARTBEAT-zh.md",
           "source": "modules/prompt/SystemPrompt"
         },
         "sizeMode": "auto"

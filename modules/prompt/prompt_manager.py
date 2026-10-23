@@ -2,12 +2,13 @@
 提示词管理器 - 从SystemPrompt文件夹读取markdown格式的系统提示词
 
 参考 OpenClaw 的 workspace 配置体系，将系统提示词拆分为：
-- AGENT.md：Agent 运行规则、输出格式、可用工具与技能
-- SOUL.md：Agent 人格、语气、价值观
-- USER.md：用户个人信息与偏好
-- HEARTBEAT.md：定时任务与主动行为（当前可为空）
+- AGENT-zh.md / AGENT-en.md：Agent 运行规则、输出格式、可用工具与技能
+- SOUL-zh.md / SOUL-en.md：Agent 人格、语气、价值观
+- USER-zh.md：用户个人信息与偏好（各语言共用）
+- HEARTBEAT-zh.md / HEARTBEAT-en.md：定时任务与主动行为（当前为空）
+- reviewer-zh.md / reviewer-en.md：后台审查提示词
 
-最终系统提示词按 AGENT -> SOUL -> USER -> HEARTBEAT 顺序拼接。
+最终系统提示词按所选语言的 AGENT -> SOUL -> USER -> HEARTBEAT 顺序拼接。
 """
 import os
 from typing import Dict, List
@@ -27,8 +28,8 @@ class PromptManager(BaseModule):
         self.prompt_dir = prompt_dir
         # 缓存已加载的提示词片段，key是文件名（不含.md），value是内容
         self._prompts: Dict[str, str] = {}
-        # OpenClaw 风格的系统提示词片段顺序
-        self._bootstrap_files: List[str] = ['AGENT', 'SOUL', 'USER', 'HEARTBEAT']
+        # User profile and heartbeat are shared by both prompt languages.
+        self._bootstrap_files: List[str] = ['USER-zh']
 
     def initialize(self) -> None:
         """初始化：扫描并加载SystemPrompt文件夹中的所有markdown文件"""
@@ -51,7 +52,15 @@ class PromptManager(BaseModule):
         :param prompt_name: 提示词名称（对应SystemPrompt文件夹中的文件名，不含.md后缀）
         :return: 提示词内容，不存在则返回空字符串
         """
-        return self._prompts.get(prompt_name, '')
+        resolved_name = self._resolve_prompt_name(prompt_name)
+        return self._prompts.get(resolved_name, '')
+
+    def _resolve_prompt_name(self, prompt_name: str) -> str:
+        if prompt_name in self._prompts:
+            return prompt_name
+        legacy_names = {'AGENT': 'AGENT-zh', 'SOUL': 'SOUL-zh', 'reviewer': 'reviewer-zh'}
+        localized_name = legacy_names.get(prompt_name, '')
+        return localized_name if localized_name in self._prompts else ''
 
     def get_system_prompt(self, prompt_name: str = 'default') -> str:
         """
@@ -59,23 +68,23 @@ class PromptManager(BaseModule):
 
         拼接规则：
         1. 基础规则层：优先使用 prompt_name 对应的文件；
-           若 prompt_name 为 'default' 或对应文件不存在，则回退到 AGENT.md。
-        2. 通用注入层：依次追加 SOUL.md、USER.md、HEARTBEAT.md。
+           若 prompt_name 为 'default' 或对应文件不存在，则回退到 AGENT-zh.md。
+        2. 追加相同语言的 AGENT、SOUL、HEARTBEAT，以及共享的 USER-zh.md。
 
         :param prompt_name: 基础提示词名称
         :return: 完整的系统提示词内容
         """
         # 确定基础规则文件
-        if prompt_name == 'default' or prompt_name not in self._prompts:
-            base_name = 'AGENT'
-        else:
-            base_name = prompt_name
+        resolved_name = self._resolve_prompt_name(prompt_name)
+        base_name = resolved_name or 'AGENT-zh'
+        language = 'en' if base_name.endswith('-en') else 'zh'
+        bootstrap_files = [f'AGENT-{language}', f'SOUL-{language}', *self._bootstrap_files, f'HEARTBEAT-{language}']
 
         base_prompt = self._prompts.get(base_name, '')
         parts: List[str] = [base_prompt] if base_prompt else []
 
         # 按固定顺序追加其他 bootstrap 文件
-        for name in self._bootstrap_files:
+        for name in bootstrap_files:
             # 基础文件已经作为 parts[0] 加入，避免重复
             if name == base_name:
                 continue

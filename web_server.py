@@ -59,7 +59,7 @@ from modules.tts.qwen_gguf import TTSRuntimeError, tts
 
 ROOT = Path(__file__).resolve().parent
 WORKFLOW_DIR = ROOT / "workflows"
-USER_PROFILE_PATH = ROOT / "modules" / "prompt" / "SystemPrompt" / "USER.md"
+USER_PROFILE_PATH = ROOT / "modules" / "prompt" / "SystemPrompt" / "USER-zh.md"
 THEME_BACKGROUND_PATH = ROOT / "data" / "theme" / "background.webp"
 AVATAR_DATA_DIR = ROOT / "data" / "pets"
 CLICK_AUDIO_DIR = AVATAR_DATA_DIR / "atri" / "click"
@@ -543,21 +543,21 @@ def _read_user_profile() -> dict:
     try:
         return {"content": USER_PROFILE_PATH.read_text(encoding="utf-8")}
     except OSError as exc:
-        raise ValueError(f"读取 USER.md 失败: {exc}") from exc
+        raise ValueError(f"读取 USER-zh.md 失败: {exc}") from exc
 
 
 def _save_user_profile(content: Any) -> dict:
     if not isinstance(content, str):
         raise ValueError("用户信息内容必须是文本")
     if len(content) > 500_000:
-        raise ValueError("USER.md 内容不能超过 500 KB")
+        raise ValueError("USER-zh.md 内容不能超过 500 KB")
     temporary = USER_PROFILE_PATH.with_suffix(".md.tmp")
     try:
         temporary.write_text(content, encoding="utf-8")
         temporary.replace(USER_PROFILE_PATH)
     except OSError as exc:
         temporary.unlink(missing_ok=True)
-        raise ValueError(f"保存 USER.md 失败: {exc}") from exc
+        raise ValueError(f"保存 USER-zh.md 失败: {exc}") from exc
     return {"saved": True, "path": str(USER_PROFILE_PATH)}
 
 

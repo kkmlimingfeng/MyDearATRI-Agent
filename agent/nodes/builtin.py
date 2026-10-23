@@ -136,14 +136,14 @@ class MarkdownPromptNode(PromptProviderNode):
     node_type = "prompt.markdown_file"
     title = "Markdown 提示词"
     description = "从 Markdown 文件加载一个提示词片段。"
-    defaults = {"file": "AGENT.md", "source": "modules/prompt/SystemPrompt"}
+    defaults = {"file": "AGENT-zh.md", "source": "modules/prompt/SystemPrompt"}
     preview = "从 Markdown 文件读取提示词片段。"
 
     def execute(self, inputs: Mapping[str, Any], context: NodeContext) -> NodeResult:
         read_prompt = context.services.get("read_prompt")
         if read_prompt is None:
             raise RuntimeError("缺少 Markdown 提示词读取服务")
-        return NodeResult(outputs={"prompt": read_prompt(self.config.get("file", "AGENT.md"))})
+        return NodeResult(outputs={"prompt": read_prompt(self.config.get("file", "AGENT-zh.md"))})
 
 
 class TextPromptNode(BaseNode):

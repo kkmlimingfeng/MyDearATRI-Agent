@@ -22,7 +22,7 @@ const promptOutput = { id: 'prompt', label: 'prompt', type: 'prompt' };
 
 export const nodeCatalog = [
   { type: 'core.chat_input', label: '对话输入', category: 'io', inputs: [], outputs: [{ id: 'message', label: 'message', type: 'text' }], defaults: { placeholder: '说点什么…', debug_input: '你好，介绍一下你自己。' }, moduleId: '', preview: '来自用户的消息会从这里进入工作流。' },
-  { type: 'prompt.markdown_file', label: 'Markdown 提示词', category: 'prompt', inputs: [], outputs: [promptOutput], defaults: { file: 'AGENT.md', source: 'modules/prompt/SystemPrompt' }, moduleId: 'prompt', preview: '从 Markdown 文件读取提示词片段。' },
+  { type: 'prompt.markdown_file', label: 'Markdown 提示词', category: 'prompt', inputs: [], outputs: [promptOutput], defaults: { file: 'AGENT-zh.md', source: 'modules/prompt/SystemPrompt' }, moduleId: 'prompt', preview: '从 Markdown 文件读取提示词片段。' },
   { type: 'prompt.provider', label: '旧版提示词提供方', category: 'prompt', inputs: [], outputs: [promptOutput], defaults: { prompt_name: 'default' }, moduleId: 'prompt', legacy: true, preview: '旧版工作流兼容节点。' },
   { type: 'prompt.text', label: '文本提示词', category: 'prompt', inputs: [], outputs: [promptOutput], defaults: { text: '你是一个可靠、自然的陪伴型 Agent。' }, moduleId: '', preview: '在节点内直接编辑一段提示词。' },
   { type: 'prompt.join', label: '提示词联结', category: 'prompt', inputs: [{ id: 'prompt_a', label: '片段 A', type: 'prompt', optional: true }, { id: 'prompt_b', label: '片段 B', type: 'prompt', optional: true }, { id: 'prompt_c', label: '片段 C', type: 'prompt', optional: true }, { id: 'prompt_d', label: '片段 D', type: 'prompt', optional: true }], outputs: [promptOutput], defaults: { separator: '\n\n' }, moduleId: '', preview: '按顺序拼接多个提示词片段。' },

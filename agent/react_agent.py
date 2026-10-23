@@ -263,7 +263,7 @@ class ReactAgent(BaseAgent):
             result = self._execute_single_tool(action, tools_module_id)
             results.append((action, result))
 
-        # 合并多个 Observation，格式与 AGENT.md 中说明的一致
+        # 合并多个 Observation，格式与 AGENT-zh.md 中说明的一致
         if len(results) == 1:
             observation = results[0][1]
         else:
@@ -623,7 +623,7 @@ class ReactAgent(BaseAgent):
         """
         在最终答案输出后，后台调用 Reviewer 模块进行总结。
 
-        该过程对用户不可见，只负责更新 memory.md 和 USER.md。
+        该过程对用户不可见，只负责更新 memory.md 和 USER-zh.md。
         """
         if not self._enabled.get(reviewer_id, False):
             return
@@ -662,7 +662,7 @@ class ReactAgent(BaseAgent):
                 target=prompt_id,
                 payload={
                     'action': 'get_system_prompt',
-                    'prompt_name': 'reviewer'
+                    'prompt_name': 'reviewer-zh'
                 }
             )
             return response.payload.get('system_prompt', '')
@@ -685,7 +685,7 @@ class ReactAgent(BaseAgent):
         return '\n\n'.join(lines)
 
     def _apply_review_result(self, result: Dict[str, Any]) -> None:
-        """应用 reviewer 输出，更新 memory.md 和 USER.md"""
+        """应用 reviewer 输出，更新 memory.md 和 USER-zh.md"""
         memory_entries = result.get('memory_entries', [])
         profile_updates = result.get('user_profile_updates', {})
 
@@ -710,10 +710,10 @@ class ReactAgent(BaseAgent):
             pass
 
     def _update_user_profile(self, updates: Dict[str, str]) -> None:
-        """更新 modules/prompt/SystemPrompt/USER.md"""
+        """更新 modules/prompt/SystemPrompt/USER-zh.md"""
         user_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "modules", "prompt", "SystemPrompt", "USER.md"
+            "modules", "prompt", "SystemPrompt", "USER-zh.md"
         )
         try:
             os.makedirs(os.path.dirname(user_path), exist_ok=True)
