@@ -10,7 +10,9 @@ import inspect
 import json
 import os
 import re
+import sys
 import typing
+import types
 from concurrent.futures import ThreadPoolExecutor
 from abc import abstractmethod
 from typing import Dict, Any, Callable, List, Optional
@@ -25,6 +27,9 @@ def system_tool(
     timeout: Optional[float] = None,
     retries: int = 0,
     parallel: bool = True,
+    sandbox_action: Optional[str] = None,
+    sandbox_path_arg: str = "path",
+    context_arguments: tuple[str, ...] = (),
 ) -> Callable:
     """
     标记一个函数为系统工具。
@@ -38,7 +43,11 @@ def system_tool(
             "timeout": timeout,
             "retries": max(0, int(retries)),
             "parallel": bool(parallel),
+            "context_arguments": tuple(context_arguments),
         }
+        if sandbox_action:
+            target.__tool_metadata__["sandbox_action"] = sandbox_action  # type: ignore[attr-defined]
+            target.__tool_metadata__["sandbox_path_arg"] = sandbox_path_arg  # type: ignore[attr-defined]
         return target
 
     return decorate(func) if func is not None else decorate
@@ -210,9 +219,11 @@ class BaseTool(BaseModule):
                 continue
 
             module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
             try:
                 spec.loader.exec_module(module)
             except Exception as e:
+                sys.modules.pop(module_name, None)
                 # 某个工具依赖缺失或脚本本身有错误时，跳过该文件不影响其他工具
                 print(f"[警告] 加载工具文件 {filepath} 失败: {e}")
                 continue
@@ -233,8 +244,11 @@ class BaseTool(BaseModule):
                 continue
 
             sig = inspect.signature(func)
+            hidden_arguments = set(self.get_tool_metadata(name).get("context_arguments", ()))
             params = []
             for param_name, param in sig.parameters.items():
+                if param_name in hidden_arguments:
+                    continue
                 param_info: Dict[str, Any] = {"name": param_name}
                 if param.annotation != inspect.Parameter.empty:
                     param_info["type"] = param.annotation
@@ -257,11 +271,34 @@ class BaseTool(BaseModule):
     @staticmethod
     def _json_schema_type(annotation: Any) -> str:
         """Map common Python annotations to JSON Schema types."""
+        if typing.is_typeddict(annotation):
+            return "object"
+        if isinstance(annotation, str):
+            normalized = annotation.strip("'\" ").lower()
+            if normalized.startswith(("list[", "tuple[", "set[", "optional[list[", "optional[tuple[", "optional[set[")):
+                return "array"
+            if normalized.startswith(("dict[", "mapping[", "optional[dict[", "optional[mapping[")):
+                return "object"
+            if normalized.startswith("optional[") and normalized.endswith("]"):
+                return BaseTool._json_schema_type(normalized[9:-1])
+            return {
+                "str": "string",
+                "int": "integer",
+                "float": "number",
+                "bool": "boolean",
+                "list": "array",
+                "tuple": "array",
+                "dict": "object",
+            }.get(normalized, "string")
         origin = typing.get_origin(annotation)
-        if origin is not None:
+        if origin in (typing.Union, types.UnionType):
             args = [arg for arg in typing.get_args(annotation) if arg is not type(None)]
             if args:
                 return BaseTool._json_schema_type(args[0])
+        if origin in (list, tuple, set):
+            return "array"
+        if origin in (dict, typing.Dict):
+            return "object"
         return {
             str: "string",
             int: "integer",
@@ -271,6 +308,51 @@ class BaseTool(BaseModule):
             dict: "object",
         }.get(annotation, "string")
 
+    @staticmethod
+    def _json_schema_array_item_type(annotation: Any) -> str:
+        if isinstance(annotation, str):
+            normalized = annotation.strip("'\" ").lower()
+            if normalized.startswith("optional[") and normalized.endswith("]"):
+                normalized = normalized[9:-1]
+            match = re.match(r"(?:list|tuple|set)\[([^\]]+)\]", normalized)
+            return BaseTool._json_schema_type(match.group(1)) if match else "string"
+        origin = typing.get_origin(annotation)
+        while origin in (typing.Union, types.UnionType):
+            args = [arg for arg in typing.get_args(annotation) if arg is not type(None)]
+            if not args:
+                return "string"
+            annotation = args[0]
+            origin = typing.get_origin(annotation)
+        if origin in (list, tuple, set):
+            args = typing.get_args(annotation)
+            if args:
+                return BaseTool._json_schema_type(args[0])
+        return "string"
+
+    @staticmethod
+    def _json_schema_for_annotation(annotation: Any) -> Dict[str, Any]:
+        schema: Dict[str, Any] = {"type": BaseTool._json_schema_type(annotation)}
+        if schema["type"] == "array":
+            origin = typing.get_origin(annotation)
+            if origin in (typing.Union, types.UnionType):
+                args = [arg for arg in typing.get_args(annotation) if arg is not type(None)]
+                annotation = args[0] if args else annotation
+                origin = typing.get_origin(annotation)
+            item_annotation = typing.get_args(annotation)[0] if origin in (list, tuple, set) and typing.get_args(annotation) else str
+            schema["items"] = BaseTool._json_schema_for_annotation(item_annotation)
+        elif typing.is_typeddict(annotation):
+            try:
+                annotations = typing.get_type_hints(annotation)
+            except (NameError, TypeError):
+                annotations = getattr(annotation, "__annotations__", {})
+            schema["properties"] = {
+                name: BaseTool._json_schema_for_annotation(value)
+                for name, value in annotations.items()
+            }
+            schema["required"] = sorted(getattr(annotation, "__required_keys__", annotations.keys()))
+            schema["additionalProperties"] = False
+        return schema
+
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return enabled tools using the provider-neutral function schema."""
         schemas = []
@@ -279,12 +361,20 @@ class BaseTool(BaseModule):
                 continue
             parsed = _parse_docstring(func)
             signature = inspect.signature(func)
+            hidden_arguments = set(self.get_tool_metadata(name).get("context_arguments", ()))
+            try:
+                resolved_annotations = typing.get_type_hints(func)
+            except (NameError, TypeError):
+                resolved_annotations = {}
             properties = {}
             required = []
             for param_name, param in signature.parameters.items():
+                if param_name in hidden_arguments:
+                    continue
                 if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
                     continue
-                prop = {"type": self._json_schema_type(param.annotation)}
+                annotation = resolved_annotations.get(param_name, param.annotation)
+                prop = self._json_schema_for_annotation(annotation)
                 description = parsed["args"].get(param_name)
                 if description:
                     prop["description"] = description

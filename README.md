@@ -23,6 +23,7 @@
 - 普通对话自动保存为逐条记录，默认每 8 轮更新一次会话摘要；间隔可在记忆设置中调整，也可手动更新。试运行内容不保存。
 - 工作流节点可单独切换跳过状态；跳过的节点不会执行，主流程的输入、模型对话和回复节点不能跳过。
 - 沙箱支持选择工作空间、预设或自定义文件权限，并可单独控制是否允许命令及 MCP 工具执行。
+- 工具箱会把当前启用的工具定义直接提供给模型；结构化文件操作受沙箱权限矩阵限制，并提供免密钥的网页搜索和网页正文读取工具。
 - 在工作流页面编辑、保存和同时打开多个 JSON 工作流；同一时间只运行其中一个。
 - 支持 OpenAI 兼容 API 模型，以及通过 `llama-cpp-python` 加载本地 GGUF 模型。
 - 提示词、记忆、技能、工具和模型按模块组织，可通过配置更换实现。
@@ -140,7 +141,19 @@ python myagent.py --select-model --mode transparent
 
 在工作流的“技能目录”节点中打开详细配置，可以导入包含 `SKILL.md` 的 ZIP 包。技能安装到 `modules/skills/<技能名>/`，包内 `references/` 等文本资源可由模型按需读取。导入器会拒绝路径穿越、符号链接和超限压缩包。
 
-在“MCP 服务”节点的详细配置中，可粘贴或选择 Claude `mcpServers` JSON、Codex `mcp_servers` TOML，也可手动添加本地 stdio 或远程 Streamable HTTP 服务。默认工作流已接入 MCP 节点；添加或修改服务后会重载 MCP 进程。stdio 命令按工具页配置的沙箱工作空间和权限启动，npm、uv、pip 缓存默认写入工作空间；MCP 配置保存在被 Git 忽略的 `config/mcp_servers.json`，环境变量和请求头密钥不会通过管理 API 返回。
+在“MCP 服务”节点的详细配置中，可粘贴或选择 Claude `mcpServers` JSON、Codex `mcp_servers` TOML，也可手动添加本地 stdio 或远程 Streamable HTTP 服务。默认工作流已接入 MCP 节点；添加或修改服务后会重载 MCP 进程。stdio 命令按工具页配置的沙箱工作空间和权限启动，npm、uv、pip 缓存默认写入工作空间；MCP 配置保存在被 Git 忽略的 `config/mcp_servers.json`，环境变量和请求头密钥不会通过管理 API 返回。声明支持 MCP Resources 的服务还会提供资源列表、资源模板列表和资源读取能力；二进制资源只显示类型和大小信息，文本资源会明确标注为外部不可信内容。
+
+#### 工具、时间上下文与联网
+
+默认工具箱会将已启用工具的参数定义直接随模型请求发送，不需要先列目录再查询用法。内置文件工具包括 `read_file`、`write_file`、`edit_file`、`delete_file`、`list_files` 和 `search_files`；它们通过 Firejail/Landlock 子进程执行，并分别检查目标路径的读取、创建、编辑或删除权限，不需要打开“允许命令和 MCP 工具执行”。编辑和删除要求当前会话先读取目标文件；工具会校验读取时的 SHA-256 版本，文件发生变化后需要重新读取。普通 shell 命令和 MCP 服务仍使用该开关。
+
+`exec_sandbox_cmd` 支持 `run_in_background=true`。它返回任务 ID；当前会话可用 `job_list`、`job_output` 查看任务状态和增量输出，也可用 `job_kill` 停止任务。任务输出有大小上限，任务 ID 按对话隔离；应用退出时会停止仍在运行的后台命令。
+
+`ask_user_question(questions, timeout_seconds)` 可以在运行中一次向用户提出多个问题；聊天页会集中显示各题选项和补充输入，并按问题 ID 返回选择结果。回答后继续当前运行，等待超时或停止运行也会解除等待。它是工具能力，不需要额外增加工作流节点。
+
+每次模型调用都会收到一条系统生成的时间上下文，包含浏览器时区下的当前时间，以及距上一条对话消息或上一步模型调用的时长。时区由浏览器提供；缺失或无效时回退到服务进程时区。
+
+`web_search(query)` 使用 Bing RSS 搜索，`web_fetch(url)` 读取公开 HTTP/HTTPS 页面并提取标题和正文。两者基于 Python 标准库，不需安装额外解析包或配置 API Key；如果环境配置了 HTTP/HTTPS 代理，会沿用代理设置。请求只接受公开地址的 HTTP/HTTPS 标准端口，搜索结果和网页正文应当作为不可信参考资料处理。网页受登录限制、反爬或网络策略阻拦时，可以改用下方的 `bb_browser` 浏览器工具。
 
 安装第三方能力时，将 Skill 包原样放入 `modules/skills/<技能名>/`；项目会保留 Skill 的 `allowed-tools` 声明，并兼容标准 `Bash(command)` 调用，将一般命令映射到 `exec_sandbox_cmd`，`bb-browser` 命令则转发到专用的 `bb_browser` 工具。命令和 MCP 调用默认拒绝，显式开启后由工作空间及文件权限约束。CLI 依赖使用固定版本安装到工作空间缓存，例如 npm 包可运行 `npm install --global --prefix .cache/tools <包>@<版本>`；沙箱会把 `.cache/tools/bin` 加入 PATH。npm、uv、pip 缓存放在工作空间的 `.cache/`，不会加入 Git。Skill 是模型使用工具的说明，不会自行创建可调用工具。真正实现 MCP 协议的服务，则通过“MCP 服务”节点导入配置并启用，stdio 进程遵守项目沙箱权限。
 

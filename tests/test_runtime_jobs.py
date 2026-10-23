@@ -11,6 +11,22 @@ from myagent import _apply_model_override
 
 
 class RuntimeJobTests(unittest.TestCase):
+    def test_run_status_includes_question_waiting_for_user(self):
+        manager = RuntimeManager()
+        job_id = "question-job"
+        manager.create_run_job(job_id)
+        manager.mark_run_trace_ready(job_id)
+        question = {"id": "question-1", "questions": [{
+            "id": "continue", "question": "继续吗？", "options": ["继续"], "multi_select": False,
+        }]}
+
+        with patch.object(web_server, "_runtime_manager", manager), patch.object(
+            web_server, "current_question", return_value=question
+        ):
+            status = web_server._run_job_status(job_id)
+
+        self.assertEqual(status["question"], question)
+
     def test_run_status_reads_trace_without_waiting_for_runtime_lock(self):
         manager = RuntimeManager()
         agent = WorkflowRuntime()

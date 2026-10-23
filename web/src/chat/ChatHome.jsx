@@ -436,6 +436,12 @@ export default function ChatHome({ onNavigate, active = true }) {
   const [busySessionId, setBusySessionId] = useState(null);
   const [liveEvents, setLiveEvents] = useState([]);
   const [liveDraft, setLiveDraft] = useState('');
+  const [pendingQuestion, setPendingQuestion] = useState(null);
+  const [questionResponse, setQuestionResponse] = useState({ id: '', answers: {} });
+  const [questionSubmitting, setQuestionSubmitting] = useState(false);
+  const [questionError, setQuestionError] = useState('');
+  const [answeredQuestionId, setAnsweredQuestionId] = useState('');
+  const pendingQuestionRef = useRef(null);
   const liveEventsRef = useRef([]);
   const threadRef = useRef(null);
   const contextRingRef = useRef(null);
@@ -949,6 +955,37 @@ export default function ChatHome({ onNavigate, active = true }) {
     });
   };
 
+  const submitQuestionAnswer = async () => {
+    if (!pendingQuestion || questionSubmitting || answeredQuestionId === pendingQuestion.id) return;
+    const answers = pendingQuestion.questions.map((question) => {
+      const response = questionResponse.id === pendingQuestion.id
+        ? questionResponse.answers[question.id] || { selected: [], custom: '' }
+        : { selected: [], custom: '' };
+      const custom = response.custom.trim();
+      return {
+        id: question.id,
+        selected: custom && !question.multi_select ? [] : response.selected,
+        ...(custom ? { custom } : {}),
+      };
+    });
+    setQuestionSubmitting(true);
+    setQuestionError('');
+    try {
+      const response = await fetch('/api/run/answer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question_id: pendingQuestion.id, answers }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '提交回答失败');
+      setAnsweredQuestionId(pendingQuestion.id);
+    } catch (error) {
+      setQuestionError(error.message || '提交回答失败');
+    } finally {
+      setQuestionSubmitting(false);
+    }
+  };
+
   const sendMessage = async () => {
     const text = input.trim();
     const attachments = selectedAttachments;
@@ -983,6 +1020,11 @@ export default function ChatHome({ onNavigate, active = true }) {
     setBusySessionId(sessionId);
     setLiveEvents([]);
     setLiveDraft('');
+    setPendingQuestion(null);
+    pendingQuestionRef.current = null;
+    setQuestionResponse({ id: '', answers: {} });
+    setAnsweredQuestionId('');
+    setQuestionError('');
     liveEventsRef.current = [];
     const voiceRequest = getVoiceRequest(workflow);
     let voiceAbort = new AbortController();
@@ -1025,17 +1067,28 @@ export default function ChatHome({ onNavigate, active = true }) {
       if (cacheResults.some((result) => result.status === 'rejected')) {
         setAttachmentError('附件本轮已发送，但浏览器无法保存附件缓存供后续追问使用。');
       }
-      const onProgress = (events, draft) => {
+      const onProgress = (events, draft, question) => {
         if (events.length !== liveEventsRef.current.length) {
           liveEventsRef.current = events;
           setLiveEvents(events);
         }
         setLiveDraft(draft);
+        setPendingQuestion(question || null);
+        if (question && question.id !== pendingQuestionRef.current?.id) {
+          setQuestionResponse({
+            id: question.id,
+            answers: Object.fromEntries(question.questions.map((item) => [item.id, { selected: [], custom: '' }])),
+          });
+          setAnsweredQuestionId('');
+          setQuestionSubmitting(false);
+          setQuestionError('');
+        }
+        pendingQuestionRef.current = question || null;
         updateSpeechDraft(draft);
       };
       const fullHistory = activeSession.messages
         .filter((message) => !message.error && typeof message.content === 'string' && ['user', 'assistant'].includes(message.role))
-        .map(({ role, content, contextContent, attachmentRefs: refs }) => ({ role, content: contextContent || content, attachmentRefs: refs || [] }));
+        .map(({ role, content, contextContent, attachmentRefs: refs, sentAt }) => ({ role, content: contextContent || content, attachmentRefs: refs || [], sentAt }));
       const historyOffset = Math.min(fullHistory.length, Math.max(0, Number(activeSession.contextMessageOffset) || 0));
       const history = fullHistory.slice(historyOffset);
       let historyAttachmentBudget = attachments.length ? 0 : 3;
@@ -1063,11 +1116,13 @@ export default function ChatHome({ onNavigate, active = true }) {
       const requestHistory = history.map(({ attachmentRefs: _refs, ...message }) => message);
       const result = await runWorkflowRequest({
         workflow,
+        conversation_id: sessionId,
         input: text,
         attachments: attachments.map(({ name, kind, data, frames }) => ({ name, kind, data, frames })),
         mode,
         require_started: true,
         history: requestHistory,
+        client_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || undefined,
         history_summary: activeSession.contextSummary || '',
         context_compression: {
           ...contextCompression,
@@ -1128,6 +1183,11 @@ export default function ChatHome({ onNavigate, active = true }) {
     } finally {
       setBusy(false);
       setBusySessionId(null);
+      setPendingQuestion(null);
+      pendingQuestionRef.current = null;
+      setQuestionResponse({ id: '', answers: {} });
+      setAnsweredQuestionId('');
+      setQuestionSubmitting(false);
       setLiveEvents(liveEventsRef.current);
       setLiveDraft('');
     }
@@ -1393,7 +1453,61 @@ export default function ChatHome({ onNavigate, active = true }) {
         </section>
         <footer className="composer-area">
           <div className="composer-box">
-            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder={runtimeStatus.running ? '给 ATRI 发消息…' : '请先在工作流页启动 Agent'} rows={1} />
+            {pendingQuestion && <section className="composer-question" role="dialog" aria-label="ATRI 正在等待回答">
+              <strong>{answeredQuestionId === pendingQuestion.id ? '回答已提交' : 'ATRI 需要你回答'}</strong>
+              <div className="composer-question-items">
+                {pendingQuestion.questions.map((question, index) => {
+                  const answer = questionResponse.id === pendingQuestion.id
+                    ? questionResponse.answers[question.id] || { selected: [], custom: '' }
+                    : { selected: [], custom: '' };
+                  const disabled = questionSubmitting || answeredQuestionId === pendingQuestion.id;
+                  return <div className="composer-question-item" key={question.id}>
+                    <div className="composer-question-heading"><span>{question.header || `问题 ${index + 1}`}</span>{question.multi_select && <small>可多选</small>}</div>
+                    <p>{question.question}</p>
+                    {question.options.length > 0 && <div className="composer-question-options">
+                      {question.options.map((option) => {
+                        const selected = answer.selected.includes(option);
+                        return <button
+                          key={option}
+                          type="button"
+                          className={selected ? 'is-selected' : ''}
+                          aria-pressed={selected}
+                          disabled={disabled}
+                          onClick={() => setQuestionResponse((current) => {
+                            const currentAnswers = current.id === pendingQuestion.id ? current.answers : {};
+                            const previous = currentAnswers[question.id] || { selected: [], custom: '' };
+                            const nextSelected = question.multi_select
+                              ? (selected ? previous.selected.filter((item) => item !== option) : [...previous.selected, option])
+                              : (selected ? [] : [option]);
+                            return { id: pendingQuestion.id, answers: { ...currentAnswers, [question.id]: { ...previous, selected: nextSelected } } };
+                          })}
+                        >{option}</button>;
+                      })}
+                    </div>}
+                    <input
+                      value={answer.custom}
+                      onChange={(event) => setQuestionResponse((current) => {
+                        const currentAnswers = current.id === pendingQuestion.id ? current.answers : {};
+                        const previous = currentAnswers[question.id] || { selected: [], custom: '' };
+                        return { id: pendingQuestion.id, answers: { ...currentAnswers, [question.id]: { ...previous, custom: event.target.value } } };
+                      })}
+                      onKeyDown={(event) => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submitQuestionAnswer(); } }}
+                      placeholder="补充回答或跳过此题…"
+                      aria-label={`问题 ${index + 1} 的补充回答`}
+                      disabled={disabled}
+                    />
+                  </div>;
+                })}
+              </div>
+              <div className="composer-question-actions">
+                <small>未填写的问题会作为跳过提交</small>
+                <button type="button" disabled={questionSubmitting || answeredQuestionId === pendingQuestion.id} onClick={() => void submitQuestionAnswer()}>
+                  <Check size={14} />{questionSubmitting ? '提交中' : answeredQuestionId === pendingQuestion.id ? '已提交' : '提交全部'}
+                </button>
+              </div>
+              {questionError && <small role="alert">{questionError}</small>}
+            </section>}
+            <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} placeholder={pendingQuestion ? '请先回答上方问题' : runtimeStatus.running ? '给 ATRI 发消息…' : '请先在工作流页启动 Agent'} rows={1} disabled={Boolean(pendingQuestion)} />
             <input
               ref={attachmentInputRef}
               className="chat-attachment-input"

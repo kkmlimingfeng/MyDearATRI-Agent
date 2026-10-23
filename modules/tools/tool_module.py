@@ -44,7 +44,16 @@ class ToolModule(BaseTool):
     def _handle_call(self, message: Message) -> None:
         """执行工具调用"""
         tool_name = message.payload.get('tool_name')
-        tool_kwargs = message.payload.get('params', {})
+        raw_params = message.payload.get('params', {})
+        if not isinstance(raw_params, dict):
+            self.send(
+                target=message.source,
+                payload={'error': '工具参数必须是 JSON 对象'},
+                msg_type=MessageType.RESPONSE,
+                correlation_id=message.correlation_id
+            )
+            return
+        tool_kwargs = dict(raw_params)
 
         tool_func = self.get_tool(tool_name)
         if tool_func is None:
@@ -65,6 +74,16 @@ class ToolModule(BaseTool):
             )
             return
 
+        metadata = self.get_tool_metadata(tool_name)
+        context_arguments = set(metadata.get('context_arguments', ()))
+        tool_context = message.payload.get('tool_context', {})
+        if not isinstance(tool_context, dict):
+            tool_context = {}
+        for argument in context_arguments:
+            tool_kwargs.pop(argument, None)
+            if argument in tool_context:
+                tool_kwargs[argument] = tool_context[argument]
+
         validation_error = self.validate_tool_arguments(tool_name, tool_kwargs)
         if validation_error:
             self.send(
@@ -75,7 +94,6 @@ class ToolModule(BaseTool):
             )
             return
 
-        metadata = self.get_tool_metadata(tool_name)
         timeout = metadata.get('timeout')
         retries = int(metadata.get('retries', 0) or 0)
         last_error = None

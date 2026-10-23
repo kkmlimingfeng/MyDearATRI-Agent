@@ -15,10 +15,10 @@ export async function runWorkflowRequest(payload, onProgress) {
     const status = await statusResponse.json();
     if (!statusResponse.ok) throw new Error(status.error || '读取运行状态失败');
     if (status.done) {
-      onProgress(status.events || status.result?.events || [], status.draft || '');
+      onProgress(status.events || status.result?.events || [], status.draft || '', null);
       if (status.error) throw new Error(status.error);
       return status.result;
     }
-    onProgress(status.events || [], status.draft || '');
+    onProgress(status.events || [], status.draft || '', status.question || null);
   }
 }

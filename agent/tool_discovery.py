@@ -4,8 +4,8 @@ LIST_TOOLS = "atri_list_available_tools"
 GET_TOOL_USAGE = "atri_get_tool_usage"
 
 TOOL_DISCOVERY_TEXT = (
-    "需要使用工具时，先调用 atri_list_available_tools 查看可用工具；"
-    "再调用 atri_get_tool_usage 读取目标工具的参数和用法，然后调用该工具。"
+    "本轮可用工具的名称、参数和用途已通过工具定义提供；需要工具时直接调用对应工具。"
+    "技能说明按需读取，只有在技能与当前请求相关时才加载。"
 )
 
 

@@ -8,13 +8,20 @@ import shutil
 import subprocess
 import sys
 from modules.tools.base_tool import system_tool
+from modules.tools.system_tools.job_manager import job_manager
 from modules.sandbox_config import load_sandbox_settings
 from modules.sandbox_landlock import landlock_abi
 from modules.sandbox_process import sandbox_process_options
 
 
-@system_tool(risk="execute", timeout=35, retries=0, parallel=False)
-def exec_sandbox_cmd(cmd: str, timeout: int = 30) -> str:
+@system_tool(risk="execute", timeout=35, retries=0, parallel=False, context_arguments=("owner_id",))
+def exec_sandbox_cmd(
+    cmd: str,
+    timeout: int = 30,
+    run_in_background: bool = False,
+    description: str = "",
+    owner_id: str = "",
+) -> str:
     """
     在 firejail 沙箱中执行 shell 命令。
 
@@ -25,6 +32,8 @@ def exec_sandbox_cmd(cmd: str, timeout: int = 30) -> str:
     Args:
         cmd: 要在沙箱中执行的 bash 命令
         timeout: 最大执行时间（秒）默认为30秒
+        run_in_background: 立即返回后台任务 ID，供 job_output/job_list/job_kill 管理
+        description: 后台任务的简短名称
 
     Returns:
         命令的输出内容
@@ -56,6 +65,19 @@ def exec_sandbox_cmd(cmd: str, timeout: int = 30) -> str:
         )
     except (RuntimeError, ValueError) as exc:
         return f"[沙盒错误] {exc}"
+
+    if run_in_background:
+        try:
+            job_id = job_manager.start(
+                owner_id=owner_id,
+                args=args,
+                cwd=str(workspace),
+                environment=environment,
+                label=description,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            return f"[后台任务错误] {exc}"
+        return f"后台任务已启动：{job_id}。使用 job_output(job_id=\"{job_id}\") 查看输出。"
 
     try:
         proc = subprocess.run(

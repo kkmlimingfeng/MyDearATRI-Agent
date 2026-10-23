@@ -70,7 +70,12 @@ class ToolExecutor:
             tools_module_id,
         )
 
-    def execute(self, call: ToolCall, tools_module_id: str = "tools") -> ToolResult:
+    def execute(
+        self,
+        call: ToolCall,
+        tools_module_id: str = "tools",
+        tool_context: Optional[Dict[str, Any]] = None,
+    ) -> ToolResult:
         """Execute one call and always return a structured result."""
         started = time.perf_counter()
         if not self.enabled(tools_module_id):
@@ -93,14 +98,15 @@ class ToolExecutor:
         except Exception:
             metadata = {}
         risk = metadata.get("risk", "read")
-        if risk in {"write", "execute"} and not (
+        if risk in {"write", "execute", "sandbox"} and not (
             self.approve and self.approve(call, metadata)
         ):
-            error = (
-                "命令执行未启用；请在沙箱设置中明确开启命令和 MCP 工具执行。"
-                if risk == "execute"
-                else f"工具调用未获批准 (risk={risk})"
-            )
+            if risk == "execute":
+                error = "命令执行未启用；请在沙箱设置中明确开启命令和 MCP 工具执行。"
+            elif risk == "sandbox":
+                error = "沙箱权限不允许此文件操作，或目标路径无法确认。"
+            else:
+                error = f"工具调用未获批准 (risk={risk})"
             result = ToolResult(
                 call_id=call.call_id,
                 name=call.name,
@@ -124,6 +130,7 @@ class ToolExecutor:
                     "action": "call",
                     "tool_name": call.name,
                     "params": call.arguments,
+                    "tool_context": tool_context or {},
                 },
             )
             if "error" in response.payload:

@@ -6,6 +6,7 @@ import json
 import base64
 import binascii
 import io
+import math
 import mimetypes
 import os
 import random
@@ -39,6 +40,7 @@ from modules.module_loader import (
 from modules.mem.conversation_store import conversation_store
 from modules.attachments import MAX_ATTACHMENT_COUNT, prepare_chat_attachments
 from modules.sandbox_config import (
+    _path_from_user_input,
     browse_sandbox_directories,
     load_sandbox_settings,
     sandbox_runtime_info,
@@ -55,6 +57,11 @@ from modules.mcp.configuration import (
 )
 from modules.skills.skill_installer import install_skill_archive
 from modules.tts.qwen_gguf import TTSRuntimeError, tts
+from modules.tools.system_tools.question_state import (
+    answer_question,
+    cancel_pending_question,
+    current_question,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -780,7 +787,7 @@ def _graph_previews(graph: dict, user_input: str = "") -> dict:
         kind = node["type"]
         config = node.get("data", {}).get("config", {})
         if kind == "prompt.markdown_file":
-            value = _safe_markdown(PROMPT_DIR, config.get("file", "AGENT.md")).read_text(encoding="utf-8")
+            value = _safe_markdown(PROMPT_DIR, config.get("file", "AGENT-zh.md")).read_text(encoding="utf-8")
         elif kind == "prompt.text":
             value = str(config.get("text", ""))
         elif kind == "prompt.join":
@@ -1167,13 +1174,36 @@ def _make_agent(graph: dict):
 
 
 def _approve_workflow_tool(call: Any, metadata: dict) -> bool:
-    if metadata.get("risk") != "execute":
-        return False
-    if call.name not in {"exec_sandbox_cmd", "Bash", "bb_browser"} and not call.name.startswith("mcp__"):
-        return False
     try:
-        return load_sandbox_settings().get("allow_command_execution", False)
-    except (OSError, ValueError):
+        settings = load_sandbox_settings()
+        if metadata.get("risk") == "execute":
+            if call.name not in {"exec_sandbox_cmd", "Bash", "bb_browser"} and not call.name.startswith("mcp__"):
+                return False
+            return settings.get("allow_command_execution", False)
+        sandbox_tools = {
+            "read_file": "read",
+            "write_file": "write",
+            "edit_file": "edit",
+            "delete_file": "delete",
+            "list_files": "read",
+            "search_files": "read",
+        }
+        action = sandbox_tools.get(call.name)
+        if metadata.get("risk") != "sandbox" or not action or metadata.get("sandbox_action") != action:
+            return False
+        argument = metadata.get("sandbox_path_arg", "path")
+        value = call.arguments.get(argument, ".")
+        if not isinstance(value, str) or not value.strip():
+            return False
+        workspace = Path(settings["workspace"]).resolve(strict=True)
+        if re.match(r"^[A-Za-z]:[\\/]", value):
+            target = _path_from_user_input(value).resolve(strict=False)
+        else:
+            requested = Path(value).expanduser()
+            target = (requested if requested.is_absolute() else workspace / requested).resolve(strict=False)
+        scope = "workspace" if target == workspace or workspace in target.parents else "outside"
+        return settings["permissions"][scope][action] is True
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
         return False
 
 
@@ -1582,6 +1612,7 @@ def start_graph(graph_data: Any) -> dict:
 
 def stop_runtime() -> dict:
     """Stop the active Agent and release model resources."""
+    cancel_pending_question()
     _runtime_manager.clear_runtime()
     tts.close()
     return {"running": False, "model_loaded": False}
@@ -1617,6 +1648,8 @@ def run_graph(
     history_summary: Any = None,
     context_compression: Any = None,
     attachments: Any = None,
+    client_timezone: Any = None,
+    conversation_id: Any = None,
 ) -> dict:
     graph, bindings = _validate_runtime_graph(graph_data)
     prepared_input = prepare_chat_attachments(user_input, attachments)
@@ -1713,6 +1746,7 @@ def run_graph(
         if history is not None and not isinstance(history, list):
             raise GraphWorkflowError("对话历史必须是数组")
         normalized_history = []
+        previous_message_at = None
         history_attachment_count = 0
         for item in history or []:
             if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"} or not isinstance(item.get("content"), str):
@@ -1730,6 +1764,9 @@ def run_graph(
                     raise GraphWorkflowError("历史上下文最多附带最近 3 个图片或视频")
                 prepared_history = prepare_chat_attachments("", history_attachments)
                 content = [{"type": "text", "text": content}, *prepared_history["image_parts"]]
+            sent_at = item.get("sentAt", item.get("sent_at"))
+            if isinstance(sent_at, (int, float)) and not isinstance(sent_at, bool) and math.isfinite(sent_at) and 0 < sent_at < 10**16:
+                previous_message_at = sent_at
             normalized_history.append({"role": item["role"], "content": content})
         if not hasattr(_runtime_manager.state.agent, "_configured_max_history_turns"):
             _runtime_manager.state.agent._configured_max_history_turns = _runtime_manager.state.agent.max_history_turns
@@ -1783,6 +1820,11 @@ def run_graph(
             "reasoning_effort": reasoning_effort,
             "conversation_summary": summary_context,
             "user_content_parts": user_content_parts,
+            "runtime_time_context": {
+                "time_zone": client_timezone if isinstance(client_timezone, str) else None,
+                "previous_message_at": previous_message_at,
+            },
+            "conversation_id": conversation_id if isinstance(conversation_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,120}", conversation_id) else None,
         }
         executor = GraphExecutor(graph, agent._modules, services, agent._trace)
         executor.run_id = run_id
@@ -1819,6 +1861,8 @@ def _start_run_job(payload: dict) -> dict:
                 history_summary=payload.get("history_summary"),
                 context_compression=payload.get("context_compression"),
                 attachments=payload.get("attachments"),
+                client_timezone=payload.get("client_timezone"),
+                conversation_id=payload.get("conversation_id"),
             )
             _runtime_manager.update_run_job(job_id, done=True, result=result)
         except Exception as exc:
@@ -1836,13 +1880,14 @@ def _run_job_status(job_id: str) -> dict:
         raise ValueError("运行任务不存在")
     if snapshot["done"]:
         return snapshot
+    question = current_question()
     if not snapshot["trace_ready"]:
-        return {"done": False, "events": [], "draft": snapshot["draft"]}
+        return {"done": False, "events": [], "draft": snapshot["draft"], "question": question}
     # run_graph holds the runtime lock while executing. Trace snapshots use their
     # own lock so polling can keep returning node progress during that execution.
     agent = _runtime_manager.state.agent
     events = [event.as_dict() for event in agent.get_trace_events()] if agent is not None else []
-    return {"done": False, "events": events, "draft": snapshot["draft"]}
+    return {"done": False, "events": events, "draft": snapshot["draft"], "question": question}
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -2090,7 +2135,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "Not found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/api/run", "/api/run/async", "/api/start", "/api/stop", "/api/workflows/save", "/api/workflows/delete", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/skills/import", "/api/tools", "/api/mcp", "/api/memory", "/api/memory/conversations", "/api/tts/speech", "/api/tts/model", "/api/tts/voices/create", "/api/tts/voices/selection", "/api/context/compress", "/api/sandbox/settings", "/api/avatars/create"}:
+        if self.path not in {"/api/run", "/api/run/async", "/api/run/answer", "/api/start", "/api/stop", "/api/workflows/save", "/api/workflows/delete", "/api/user-profile", "/api/theme/background", "/api/preview", "/api/model-credentials", "/api/api-models", "/api/skills", "/api/skills/import", "/api/tools", "/api/mcp", "/api/memory", "/api/memory/conversations", "/api/tts/speech", "/api/tts/model", "/api/tts/voices/create", "/api/tts/voices/selection", "/api/context/compress", "/api/sandbox/settings", "/api/avatars/create"}:
             self._send(404, {"error": "Not found"})
             return
         try:
@@ -2098,6 +2143,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             if self.path in {"/api/run", "/api/run/async"} and size > 36 * 1024 * 1024:
                 self.close_connection = True
                 raise ValueError("消息和附件请求不能超过 36 MB")
+            if self.path == "/api/run/answer" and size > 64 * 1024:
+                raise ValueError("回答请求不能超过 64 KiB")
             if self.path == "/api/avatars/create":
                 if size <= 0 or size > MAX_AVATAR_UPLOAD_BYTES + 8 * 1024 * 1024:
                     raise ValueError("桌宠上传请求为空或超过 512 MB")
@@ -2128,6 +2175,18 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send(201, {"profile": profile, "profiles": tts.voice_profiles(), "references": tts.references()})
                 return
             payload = json.loads(self.rfile.read(size)) if size else {}
+            if self.path == "/api/run/answer":
+                if not isinstance(payload, dict):
+                    raise ValueError("回答请求必须是 JSON 对象")
+                question_id = payload.get("question_id")
+                answers = payload.get("answers")
+                if not isinstance(question_id, str) or not isinstance(answers, list):
+                    raise ValueError("问题 ID 或回答格式无效")
+                if not answer_question(question_id, answers):
+                    self._send(409, {"error": "问题已结束或已回答，请查看当前运行状态"})
+                    return
+                self._send(200, {"answered": True})
+                return
             if self.path == "/api/tts/speech":
                 self._send_tts(payload)
                 return
@@ -2246,6 +2305,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 history_summary=payload.get("history_summary"),
                 context_compression=payload.get("context_compression"),
                 attachments=attachments,
+                client_timezone=payload.get("client_timezone"),
+                conversation_id=payload.get("conversation_id"),
             )
             self._send(200, result)
         except (GraphWorkflowError, ModuleConfigError, ValueError, KeyError) as exc:
